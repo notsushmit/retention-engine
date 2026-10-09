@@ -1,0 +1,37 @@
+.PHONY: setup data features train test lint up
+
+# Load .env if present (Kaggle credentials, SAMPLE_FRACTION).
+-include .env
+export
+
+PY := uv run python -u
+SAMPLE_FRACTION ?=
+SKIP_V1_LOGS ?=
+DATA_ARGS := $(if $(SKIP_V1_LOGS),--skip-group v1_logs,)
+SAMPLE_ARGS := $(if $(SAMPLE_FRACTION),--fraction $(SAMPLE_FRACTION),)
+
+setup:
+	uv python install 3.11
+	uv sync --group dev
+	uv run pre-commit install
+
+data:
+	mkdir -p data/raw data/interim data/processed
+	$(PY) -m retention.data download $(DATA_ARGS)
+	$(PY) -m retention.data sample $(DATA_ARGS) $(SAMPLE_ARGS)
+
+features:
+	@echo "make features is not implemented until Phase 2" && exit 1
+
+train:
+	@echo "make train is not implemented until Phase 3" && exit 1
+
+up:
+	@echo "make up is not implemented until Phase 8" && exit 1
+
+lint:
+	uv run ruff check .
+	uv run ruff format --check .
+
+test: lint
+	uv run pytest

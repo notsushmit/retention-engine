@@ -1,0 +1,34 @@
+# KKBox churn prediction challenge (WSDM Cup 2018).
+# Phase 1 adds the churn definition and snapshot dates to this file.
+
+competition: kkbox-churn-prediction-challenge
+
+data:
+  raw_dir: data/raw
+  interim_dir: data/interim/kkbox
+
+  # Share of customers to keep, chosen by a stable hash of msno.
+  # Samples are nested: every customer in the 0.2 sample is also in the 0.5 sample.
+  # Override with SAMPLE_FRACTION in .env or `make data SAMPLE_FRACTION=0.5`.
+  sample_fraction: 0.2
+
+  # A download whose file stops growing for stall_seconds is killed and retried.
+  download:
+    stall_seconds: 120
+    retries: 3
+
+  # Competition files to download. `table` is the Parquet name for CSV files.
+  # `group` lets `make data SKIP_V1_LOGS=1` skip the 30 GB v1 listening log.
+  files:
+    # v2 set: refreshed labels, transactions and logs up to March 2017.
+    - {name: train_v2.csv, table: train_v2, group: v2}
+    - {name: transactions_v2.csv, table: transactions_v2, group: v2}
+    - {name: user_logs_v2.csv, table: user_logs_v2, group: v2}
+    - {name: members_v3.csv, table: members_v3, group: v2}
+    # v1 set: the longer history needed for monthly snapshots.
+    - {name: train.csv, table: train, group: v1}
+    - {name: transactions.csv, table: transactions, group: v1}
+    # Streamed from the .7z into Parquet; never unpacked (about 30 GB as CSV).
+    - {name: user_logs.csv, table: user_logs, group: v1_logs, stream: true}
+    # Official labelling script, used in Phase 1 to compare labels.
+    - {name: WSDMChurnLabeller.scala, group: v2, remote: WSDMChurnLabeller.scala}
