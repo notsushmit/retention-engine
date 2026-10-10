@@ -2,7 +2,9 @@
 
 Predicts which subscribers will churn and when, explains why, estimates which retention action works for each customer, and allocates a retention budget. The primary data is the KKBox churn prediction challenge (WSDM Cup 2018).
 
-Status: Phase 0 (project skeleton and data download).
+A customer is anyone with at least one paid transaction or a full discount on a priced plan. Free trials and free promotional periods alone do not count.
+
+Status: Phase 1 (data and churn labels).
 
 ## Setup
 
@@ -77,12 +79,32 @@ The two listening logs join up with no gap and no overlap: every day from 2015-0
 
 All data stays under `data/`, which git ignores. The KKBox files are competition data and are not redistributed by this project.
 
+## Churn labels
+
+```bash
+make labels                        # all five stages for the sample made by `make data`
+uv run python -m retention.labels quality   # or one stage: clean, timeline, quality, labels, compare
+```
+
+Churn means no new subscription within 30 days (inclusive) after a membership expiry. The full definition, with the reasons for each choice, is in [docs/churn_definition.md](docs/churn_definition.md); every number that defines a label is in the `labels` block of [configs/kkbox.yaml](configs/kkbox.yaml).
+
+| Stage | Writes to `data/processed/kkbox/sample_<pct>/` | Does |
+| --- | --- | --- |
+| clean | `transactions`, `members`, `train`, `train_v2` (.parquet) | explicit types, strict date parsing, v1 + v2 union, row flags; structural errors stop the run |
+| timeline | `timeline`, `spells` | each customer's effective expiry after every row, and continuous memberships |
+| quality | `month_quality`, `snapshot_reliability` | monthly check for months with missing transactions; reliable / uncertain / unreliable |
+| labels | `labels` | one row per customer with coverage at each snapshot: time to churn, censoring, churn within 7 / 30 / 60 days |
+| compare | `label_comparison` | agreement with the competition labels, one reason code per disagreement |
+
+Every stage also writes its checks and counts to `validation.json`. On the 20% sample the five stages take about 5 minutes (305 s measured) and write about 410 MB.
+
 ## Make targets
 
 | Target | Does |
 | --- | --- |
 | `make setup` | installs Python 3.11, dev dependencies and the pre-commit hook |
 | `make data` | downloads, extracts and samples the KKBox data |
+| `make labels` | typed tables, timelines, data-quality check, churn labels, comparison with the competition labels |
 | `make test` | ruff check, ruff format check, pytest |
 | `make features` | Phase 2 (not yet implemented) |
 | `make train` | Phase 3 (not yet implemented) |

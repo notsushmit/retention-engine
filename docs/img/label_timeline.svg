@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 230" width="680" height="230" font-family="Helvetica, Arial, sans-serif" font-size="12">
+  <rect width="680" height="230" fill="#ffffff"/>
+  <text x="20" y="22" font-size="14" font-weight="bold" fill="#222">One customer, one lapse (illustrative dates in 2016)</text>
+  <!-- coverage and window -->
+  <rect x="40" y="96" width="360" height="22" fill="#4C78A8"/>
+  <text x="50" y="111" fill="#ffffff">paid coverage: each payment moves the effective expiry</text>
+  <rect x="400" y="96" width="180" height="22" fill="#F2CF9E" stroke="#C98A2E"/>
+  <text x="408" y="111" fill="#5a3a06">30 days: no payment</text>
+  <!-- payments -->
+  <path d="M40 84 l-6 -10 h12 z" fill="#222"/>
+  <text x="20" y="66" fill="#222">Jan 1: pays, covered to Jan 31</text>
+  <path d="M202 84 l-6 -10 h12 z" fill="#222"/>
+  <text x="160" y="50" fill="#222">Jan 28: pays early, covered to Mar 1</text>
+  <line x1="202" y1="54" x2="202" y2="72" stroke="#222"/>
+  <!-- snapshot and expiry -->
+  <line x1="226" y1="120" x2="226" y2="160" stroke="#555" stroke-dasharray="4 3"/>
+  <text x="196" y="176" fill="#555">snapshot T = Feb 1</text>
+  <line x1="400" y1="60" x2="400" y2="160" stroke="#B2182B" stroke-width="2"/>
+  <text x="404" y="74" fill="#B2182B" font-weight="bold">lapse at Mar 1 = the churn event</text>
+  <text x="404" y="88" fill="#B2182B">(known once Mar 31 is in the data)</text>
+  <!-- days to event -->
+  <line x1="226" y1="130" x2="400" y2="130" stroke="#222" marker-end="url(#a)" marker-start="url(#b)"/>
+  <text x="252" y="146" fill="#222">days_to_event = 29</text>
+  <!-- axis -->
+  <line x1="40" y1="196" x2="600" y2="196" stroke="#888"/>
+  <g fill="#555">
+    <line x1="40" y1="192" x2="40" y2="200" stroke="#888"/><text x="30" y="215">Jan 1</text>
+    <line x1="226" y1="192" x2="226" y2="200" stroke="#888"/><text x="214" y="215">Feb 1</text>
+    <line x1="400" y1="192" x2="400" y2="200" stroke="#888"/><text x="388" y="215">Mar 1</text>
+    <line x1="580" y1="192" x2="580" y2="200" stroke="#888"/><text x="566" y="215">Mar 31</text>
+  </g>
+  <defs>
+    <marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#222"/></marker>
+    <marker id="b" markerWidth="8" markerHeight="8" refX="1" refY="4" orient="auto"><path d="M8 0 L0 4 L8 8 z" fill="#222"/></marker>
+  </defs>
+</svg>
