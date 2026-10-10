@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import duckdb
@@ -35,6 +36,11 @@ def bucket(msno: str) -> int:
 
 def bucket_sql(column: str = "msno") -> str:
     return f"(('0x' || left(md5({column}), 8))::UBIGINT % {N_BUCKETS})"
+
+
+def resolve_fraction(cli_value: float | None, data_cfg: dict) -> float:
+    """Sample fraction: command line, then SAMPLE_FRACTION in the environment, then the config."""
+    return cli_value or float(os.environ.get("SAMPLE_FRACTION") or data_cfg["sample_fraction"])
 
 
 def sample_dir(interim_dir: Path, fraction: float) -> Path:

@@ -3,19 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 
 import yaml
 
 from retention.data.download import download_all, parse_files
-from retention.data.sample import sample_all, sample_dir
+from retention.data.sample import resolve_fraction, sample_all, sample_dir
 from retention.data.stream import compare_logs, stream_sample
-
-
-def _fraction(args: argparse.Namespace, data_cfg: dict) -> float:
-    env_fraction = os.environ.get("SAMPLE_FRACTION") or None
-    return args.fraction or float(env_fraction or data_cfg["sample_fraction"])
 
 
 def verify_stream(raw_dir: Path, interim_dir: Path, fraction: float) -> None:
@@ -72,9 +66,11 @@ def main(argv: list[str] | None = None) -> None:
             retries=dl.get("retries", 3),
         )
     elif args.command == "verify-stream":
-        verify_stream(raw_dir, Path(data_cfg["interim_dir"]), _fraction(args, data_cfg))
+        verify_stream(
+            raw_dir, Path(data_cfg["interim_dir"]), resolve_fraction(args.fraction, data_cfg)
+        )
     else:
-        fraction = _fraction(args, data_cfg)
+        fraction = resolve_fraction(args.fraction, data_cfg)
         wanted = [f for f in files if f.table and f.group not in args.skip_group]
         tables = {f.table: f.name for f in wanted if not f.stream}
         streamed = {
