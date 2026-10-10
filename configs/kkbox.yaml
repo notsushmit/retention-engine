@@ -1,5 +1,5 @@
 # KKBox churn prediction challenge (WSDM Cup 2018).
-# Phase 1 adds the churn definition and snapshot dates to this file.
+# The churn definition and snapshot dates are under `labels`.
 
 competition: kkbox-churn-prediction-challenge
 
@@ -32,3 +32,105 @@ data:
     - {name: user_logs.csv, table: user_logs, group: v1_logs, stream: true}
     # Official labelling script, used in Phase 1 to compare labels.
     - {name: WSDMChurnLabeller.scala, group: v2, remote: WSDMChurnLabeller.scala}
+
+# Churn definition and snapshots. Explained in docs/churn_definition.md.
+labels:
+  processed_dir: data/processed/kkbox
+
+  # Churn: no new subscription within 30 days after a membership expiry.
+  # A renewal dated exactly 30 days after the expiry still counts (inclusive).
+  renewal_window_days: 30
+
+  # Last transaction date in the data. Labels are built "as of" this date:
+  # an outcome is observed only if expiry + renewal_window_days <= as_of,
+  # so the last fully labelable expiry is as_of - 30 days = 2017-03-01.
+  # Set as_of earlier to build labels as they were known on that date
+  # (for example, training labels that cannot see the test period).
+  as_of: 2017-03-31
+
+  # Follow each customer forward from the snapshot to the first lapse,
+  # censored at min(T + followup_cap_days, as_of - renewal_window_days).
+  # Horizons beyond the cap are not supported.
+  followup_cap_days: 90
+  horizons: [7, 30, 60]
+
+  # Snapshot dates T. Either `dates: [YYYY-MM-DD, ...]` or a range:
+  # `freq` is a pandas offset alias (MS = month start, W-MON = weekly on Monday).
+  snapshots:
+    start: 2015-03-01
+    end: 2017-02-01
+    freq: MS
+    # Snapshots whose 90-day follow-up runs past the last labelable expiry
+    # (here 2017-01-01 and 2017-02-01) are kept, with censored outcomes.
+    allow_partial: true
+
+  # A row counts as "before snapshot T" when its transaction date is strictly
+  # before T. Set true to also count rows dated exactly T (not recommended:
+  # payments made on day T would leak into the state at T).
+  snapshot_includes_same_day_rows: false
+
+  # First transaction date in the data. Snapshots before data_start +
+  # left_truncation_days carry left_truncation_risk: a customer whose last
+  # payment before data_start was a long plan (up to 410 days) is invisible.
+  data_start: 2015-01-01
+  left_truncation_days: 410
+
+  # Feature lookback in days. Phase 2 sets it. A snapshot is usable for
+  # horizon h only if no unreliable month falls inside [T - lookback, T + h].
+  lookback_days: null
+
+  # Monthly data-quality check on expiry months, run on paid customers.
+  # A month with missing transactions shows a halved month-end auto-renew batch,
+  # more churn, churners who keep listening, and churners who pay again soon.
+  data_quality:
+    first_month: 2015-01
+    last_month: 2017-03
+    # One window per indicator, in days after the lapse, for every month.
+    # Customers whose window runs past as_of are left out of that month.
+    listening_days: [31, 45]
+    listening_min_active_days: 5
+    returns_days: [31, 90]
+    # Batch ratio: non-cancel auto-renew rows on the month's last day divided
+    # by the mean per day on days 1 to batch_baseline_days of that month.
+    batch_baseline_days: 25
+    # Churn, listening and returns fail above median + mad_k * MAD (MAD scaled
+    # by 1.4826, over all months where the indicator was assessed). The batch
+    # ratio fails below the midpoint of the largest gap in its sorted values.
+    mad_k: 3.0
+    # A month whose failing indicators change at mad_k * (1 -/+ sensitivity)
+    # is uncertain, not reliable.
+    sensitivity: 0.25
+    # Reliable: at least min_assessed indicators assessed, no failure, no flip.
+    # Unreliable: unreliable_failures or more failures. Otherwise uncertain.
+    min_assessed: 3
+    unreliable_failures: 2
+
+  # Zero-price, zero-paid rows: a trial covers at most this many days
+  # (expiry minus transaction date); anything longer is a promo.
+  trial_max_coverage_days: 21
+
+  # Expiries before this date are placeholders (1970-01-01 and similar).
+  # Non-cancel rows get the median coverage of their payment method;
+  # cancel rows never cut coverage.
+  placeholder_expiry_before: 2004-01-01
+
+  # Coverage in days (expiry minus transaction date) given to non-cancel rows
+  # with a placeholder expiry, by payment_method_id and then payment_plan_days.
+  # Frozen values, not computed at run time: the median coverage of all
+  # non-placeholder, non-cancel rows with the same method and plan days in the
+  # FULL v1 + v2 files (computed 2026-10-10). Using all dates gives these
+  # constants a tiny look-ahead; they affect under 60 (customer, snapshot) pairs.
+  # The pairs listed are every one that carries a non-cancel placeholder in the
+  # full data (v2 has none); each reference group has an IQR of at most 3 days.
+  # Method 17 rows list 60-240 plan days but expire 3 days after the transaction.
+  # A placeholder row with any other (method, plan days) fails validation.
+  placeholder_coverage_days:
+    13: {195: 195, 410: 410}
+    17: {60: 3, 120: 3, 240: 3}
+    32: {180: 183}
+    35: {7: 7}
+    41: {30: 31}
+
+  # Expiries after this date are kept and the customer is flagged
+  # stacked_far_future. Never clipped in labels.
+  far_future_expiry_after: 2018-12-31
