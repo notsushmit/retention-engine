@@ -1,4 +1,4 @@
-.PHONY: setup data features train test lint up
+.PHONY: setup data labels features train test lint up
 
 # Load .env if present (Kaggle credentials, SAMPLE_FRACTION).
 -include .env
@@ -19,6 +19,11 @@ data:
 	mkdir -p data/raw data/interim data/processed
 	$(PY) -m retention.data download $(DATA_ARGS)
 	$(PY) -m retention.data sample $(DATA_ARGS) $(SAMPLE_ARGS)
+
+# Typed tables, timelines, data-quality check, labels and the comparison with
+# the competition labels, for the sample made by `make data`.
+labels:
+	$(PY) -m retention.labels all $(SAMPLE_ARGS)
 
 features:
 	@echo "make features is not implemented until Phase 2" && exit 1
