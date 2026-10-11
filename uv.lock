@@ -2957,6 +2957,14 @@ serving = [
     { name = "streamlit" },
     { name = "uvicorn" },
 ]
+training = [
+    { name = "lifelines" },
+    { name = "lightgbm" },
+    { name = "mlflow" },
+    { name = "scikit-learn" },
+    { name = "scikit-survival" },
+    { name = "xgboost" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -2998,6 +3006,14 @@ serving = [
     { name = "redis", specifier = ">=5" },
     { name = "streamlit", specifier = ">=1.36" },
     { name = "uvicorn", specifier = ">=0.30" },
+]
+training = [
+    { name = "lifelines", specifier = ">=0.29" },
+    { name = "lightgbm", specifier = ">=4.3" },
+    { name = "mlflow", specifier = ">=2.14" },
+    { name = "scikit-learn", specifier = ">=1.5" },
+    { name = "scikit-survival", specifier = ">=0.23" },
+    { name = "xgboost", specifier = ">=2.1" },
 ]
 
 [[package]]

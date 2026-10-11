@@ -12,16 +12,19 @@ Requires [uv](https://docs.astral.sh/uv/). uv installs Python 3.11 itself, so yo
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh   # once per machine
-make setup                                        # Python 3.11, dev dependencies, pre-commit hook
+make setup                                        # Python 3.11, dev and training dependencies, pre-commit hook
 make test                                         # ruff + pytest
 ```
+
+On macOS, LightGBM and XGBoost need the OpenMP runtime: `brew install libomp` (on Linux they use the system libgomp).
 
 Dependency groups, installed with `uv sync --group <name>`:
 
 | Group | Contents | Needed from |
 | --- | --- | --- |
 | core (base install) | DuckDB, pandas, pyarrow, Kaggle CLI, py7zr | Phase 0 |
-| `models` | LightGBM, XGBoost, lifelines, scikit-survival, SHAP, EconML, MLflow, ... | Phase 3 |
+| `training` | scikit-learn, LightGBM, XGBoost, lifelines, scikit-survival, MLflow | Phase 3 |
+| `models` | `training` plus SHAP, UMAP, EconML, DiCE, ruptures, OR-Tools | Phases 4 to 7 |
 | `serving` | FastAPI, Redis, Streamlit, Evidently, Prefect | Phase 8 |
 | `dev` | pytest, ruff, pre-commit | Phase 0 |
 

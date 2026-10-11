@@ -17,19 +17,25 @@ dependencies = [
 ]
 
 [dependency-groups]
-models = [
+# "training": what the baseline and survival models need. Installed by
+# `make setup` and CI. The later-phase packages stay in "models", which
+# includes this group.
+training = [
     "scikit-learn>=1.5",
     "lightgbm>=4.3",
     "xgboost>=2.1",
     "lifelines>=0.29",
     "scikit-survival>=0.23",
+    "mlflow>=2.14",
+]
+models = [
+    {include-group = "training"},
     "shap>=0.46",
     "umap-learn>=0.5",
     "econml>=0.15",
     "dice-ml>=0.11",
     "ruptures>=1.1",
     "ortools>=9.10",
-    "mlflow>=2.14",
 ]
 serving = [
     "fastapi>=0.111",

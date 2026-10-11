@@ -12,7 +12,7 @@ SAMPLE_ARGS := $(if $(SAMPLE_FRACTION),--fraction $(SAMPLE_FRACTION),)
 
 setup:
 	uv python install 3.11
-	uv sync --group dev
+	uv sync --group dev --group training
 	uv run pre-commit install
 
 data:

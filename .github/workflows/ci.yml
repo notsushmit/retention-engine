@@ -11,10 +11,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.0
-      - name: Install Python and dev dependencies
+      - name: Install Python, dev and training dependencies
         run: |
           uv python install 3.11
-          uv sync --group dev --locked
+          uv sync --group dev --group training --locked
       - name: Ruff
         run: |
           uv run ruff check .
