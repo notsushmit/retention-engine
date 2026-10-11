@@ -105,7 +105,7 @@ choices:
     30: [f30]
     59: [f30]
   calibration_method:
-    folds: [f7b_cal]  # chosen on 7-day evidence, then checked at every horizon
+    per_horizon: {7: f7b_cal, 30: none, 59: none}  # see calibration_method below
   # Never decided by the folds: this protocol, the success criteria, the label
   # family, the population, and anything from the single-feature leak screen.
 
@@ -390,17 +390,29 @@ order_fix: {method: pool_adjacent_violators, weights: equal, horizons: [7, 30, 5
 # 2016-11-01 (f7b_cal, 7 days). AUC barely changes under calibration, so the
 # metric is the Brier score: isotonic replaces Platt only if the 95% paired
 # interval of the Brier difference (isotonic - Platt) lies below 0.
-# Isotonic is eligible only where the calibration slice has at least
-# isotonic_min_events events; otherwise Platt only. Calibration half of
-# 2016-10-01 (P2 main): 976 lapses by day 7 (below 1,000: Platt only at 7 days),
-# 3,383 by day 30 and 5,004 by day 59 (eligible). The f7b_cal slice (2016-09,
-# 7 days) has 2,338, so the fold can choose isotonic; that choice then applies
-# only at 30 and 59 days, on 7-day evidence (a weak point, stated).
+# Calibration method per horizon. Isotonic is eligible at a horizon only if
+# BOTH hold: (a) it beats Platt on that horizon's own calibration fold (Brier,
+# paired interval of isotonic - Platt below 0), and (b) the test pipeline's
+# calibration slice has at least isotonic_min_events events at that horizon.
+# A fold decides nothing at any other horizon. Otherwise the method is Platt.
+#   7 days: the fold is f7b_cal (fit 2016-08, calibrate 2016-09 with 2,338
+#     lapses, score 2016-11). The test calibration half has 976 lapses by day 7,
+#     below 1,000, so (b) fails: Platt at 7 days whatever f7b_cal shows.
+#   30 days: no fold has a calibration slice. f30 is fit on 2016-08 and scores
+#     2016-10 at as_of 2016-10-01; the only other usable snapshot, 2016-09, is
+#     not fully observed for 30 days until 2016-10-31. So (a) cannot be tested:
+#     Platt at 30 days.
+#   59 days: no fold: Platt.
+# Result of these rules on the counts above: Platt at every horizon on test.
+# f7b_cal still compares Platt and isotonic at 7 days, reported as descriptive
+# evidence only.
 calibration_method:
   candidates: [platt, isotonic]
   metric: brier
   replace_if: interval_below_zero
   isotonic_min_events: 1000
+  fold_per_horizon: {7: f7b_cal, 30: null, 59: null}
+  method_on_test: {7: platt, 30: platt, 59: platt}
 
 # Success criteria on the test months.
 discrimination:
@@ -436,8 +448,12 @@ calibration:
   # The phase goal "calibration near the diagonal" is met only if the survival
   # model passes in all three cells. A method that fails at a horizon is not
   # switched on test data; that horizon's probabilities are labelled
-  # uncalibrated. The chosen method must also pass on f30 for 30 days, and is
-  # reported in the 59-day demonstration.
+  # uncalibrated. Correction: an earlier version said the method must also
+  # pass on f30 at 30 days. f30 has no calibration slice (see
+  # calibration_method), so no calibrated 30-day probability exists on any
+  # fold; f30 reports the calibration of the raw 30-day probabilities,
+  # descriptive only. The 30-day criterion is judged on test only. Calibration
+  # is reported in the 59-day demonstration.
   #
   # Stated before scoring: the logged 7-day P2 rates are 1.32% in 2016-10 (the
   # calibration month) and 1.78% in 2017-01. If the features do not explain the
@@ -479,9 +495,19 @@ shape_checks:
 
 # Experiment tracking: MLflow with a SQLite file and an artifact folder under
 # mlruns/ (git-ignored). Every run is tagged with its kind; fold, check-month,
-# sensitivity and the one test run are never mixed.
+# sensitivity and the one test run are never mixed. If the SQLite backend
+# fails, the fallback is a folder store under mlruns/ (fallback_uri); nothing
+# else changes, and every run carries the tag tracking_backend (sqlite or
+# folder). Tags and parameters hold paths relative to the repository root,
+# never absolute paths (a test scans a run's tags and parameters for
+# "/Users/" and for the home directory). reports/model_comparison.md is
+# generated from the numbers logged in MLflow by the report command, never
+# copied by hand from run files.
 tracking:
   uri: sqlite:///mlruns/mlflow.db
+  fallback_uri: mlruns/folder_store
+  backend_tag: tracking_backend
+  forbidden_in_tags: ["/Users/", "home_directory"]
   artifact_root: mlruns/artifacts
   experiment: kkbox_churn_models
   run_kinds: [label_check, fold, calibration_fold, check_month, freeze, test, sensitivity]
@@ -498,12 +524,18 @@ tracking:
 
 # Frozen choices and the test guard. After the fold stages, the chosen feature
 # set, candidates, family and calibration method are written to
-# configs/choices.yaml together with the pre-registration commit, the SHA-256 of
-# this file and the MLflow run ids behind each choice, and committed on their
-# own. The test run refuses to start unless all of these hold:
+# configs/choices.yaml together with the pre-registration commits, the SHA-256
+# of this file and the MLflow run ids behind each choice, and committed on
+# their own. The pre-registration commits are every commit that changed this
+# file: 8b6562c, 4369ab0 and the commit that adds this paragraph. The binding
+# one is the last of them; a commit cannot name its own hash, so choices.yaml
+# records it. The test run refuses to start unless all of these hold:
 #   1. the tracked files are unchanged against HEAD (clean working tree);
-#   2. this file's SHA-256 equals the hash recorded in choices.yaml, and the
-#      file at the recorded pre-registration commit has the same hash;
+#   2. the binding pre-registration commit is an ancestor of HEAD; the blob of
+#      configs/evaluation.yaml at that commit has the SHA-256 recorded in
+#      choices.yaml; the working-tree file has the same SHA-256; and no commit
+#      after it changed this file (a hash match on the working tree alone is
+#      not enough);
 #   3. choices.yaml is committed, says frozen: true and fills every stage;
 #   4. every run id it cites exists and carries the same config hash;
 #   5. no finished test run exists (the test is scored once; a run that
