@@ -262,3 +262,45 @@ def test_paid_mode_ignores_zero_paid_rows(clean_tx):
     paid, _ = build_timeline(clean_tx(rows), WINDOW, "paid")
     assert eff(cov) == "2016-01-07" and eff(paid) == "2015-12-31"
     assert paid.affects_coverage.tolist() == [True, False]
+
+
+@pytest.mark.parametrize("renewals", ["coverage", "paid"])
+def test_same_day_same_expiry_twins_in_either_file_order(clean_tx, renewals):
+    """Twins (same day, same expiry, different price or kind) are ordered by content, not
+    file position: swapping them in the input leaves every timeline column (except the
+    file position itself) and every spell unchanged, in both renewal modes."""
+    twins = [
+        # paid row and a 100% discount on the same day with the same expiry
+        (
+            row("20160315", "20160415", m="a", price=99, paid=99),
+            row("20160315", "20160415", m="a", price=149, paid=0),
+        ),
+        # two paid rows with different prices, after a lapse (one of them starts a spell)
+        (
+            row("20160601", "20160701", m="a", price=149, paid=149),
+            row("20160601", "20160701", m="a", price=129, paid=129, pm=38),
+        ),
+        # twins that both start a new spell for a returning customer
+        (
+            row("20160901", "20161001", m="b", price=149, paid=0),
+            row("20160901", "20161001", m="b", price=99, paid=99),
+        ),
+        # a paid twin pair next to a same-day cancel
+        (row("20161101", "20161201", m="c"), row("20161101", "20161201", m="c", paid=99)),
+    ]
+    other = [
+        row("20160101", "20160201", m="a"),
+        row("20160201", "20160301", m="a"),
+        row("20160101", "20160301", m="b"),
+        row("20161001", "20161101", m="c"),
+        row("20161101", "20161105", m="c", cancel=1),
+    ]
+    first = other + [r for pair in twins for r in pair]
+    second = other + [r for pair in twins for r in reversed(pair)]
+    results = []
+    for rows in (first, second):
+        tl, spells = build_timeline(clean_tx(rows), WINDOW, renewals)
+        tl = tl.sort_values(["msno", "seq"]).drop(columns=["row_id", "source", "source_row"])
+        results.append((tl.reset_index(drop=True), spells.reset_index(drop=True)))
+    pd.testing.assert_frame_equal(results[0][0], results[1][0])
+    pd.testing.assert_frame_equal(results[0][1], results[1][1])

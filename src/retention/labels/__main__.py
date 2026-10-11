@@ -74,7 +74,7 @@ def run_quality_cmd(out_dir: Path, logs: str, cfg: LabelConfig) -> None:
             "sensitivity": q.sensitivity,
             "min_assessed": q.min_assessed,
             "unreliable_failures": q.unreliable_failures,
-            "lookback_days": cfg.lookback_days,
+            "label_window": "[T, T + h]",
         },
         "thresholds": th,
         "sorted_values": {i: sorted(round(v, 4) for v in table[i].dropna()) for i in INDICATORS},

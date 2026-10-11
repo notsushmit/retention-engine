@@ -3,7 +3,8 @@
 Order within a customer: transaction date, then on the same day a cancel of a
 plan with no same-day subscription to it, then subscriptions, then cancels of a
 plan subscribed that same day; then expiry (later last for subscriptions,
-earlier last for cancels); then source file and row number.
+earlier last for cancels); then content (TIE_KEYS); then source file and row
+number, which only orders rows that are identical in all of the above.
 
 Walking that order once gives the effective expiry after every row:
 - a subscription more than `window` days after the effective expiry starts a
@@ -45,15 +46,34 @@ def as_datetimes(tx: pd.DataFrame) -> pd.DataFrame:
     return tx.assign(**{c: pd.to_datetime(tx[c]) for c in cols})
 
 
+# Rows tied on date, kind of row and expiry are ordered by content, so the order
+# does not depend on file position: paid rows before zero-paid rows, then amount
+# paid, list price, plan days, payment method, auto-renew and row kind, all
+# descending. Rows equal in all of these are interchangeable; file position only
+# makes the sort total.
+TIE_KEYS = [
+    "actual_amount_paid",
+    "plan_list_price",
+    "payment_plan_days",
+    "payment_method_id",
+    "is_auto_renew",
+    "row_kind",
+]
+
+
 def order_rows(tx: pd.DataFrame) -> pd.DataFrame:
     """Sort transactions into timeline order and number them per customer."""
     rank = np.where(tx.is_cancel == 0, 1, np.where(tx.sameday_sameplan_cancel, 2, 0))
     exp = _days(tx.expiry_date)
     exp_key = np.where(tx.is_cancel == 0, exp, -exp)
-    out = tx.assign(_rank=rank, _exp_key=exp_key).sort_values(
-        ["msno", "transaction_date", "_rank", "_exp_key", "source", "source_row"], kind="stable"
+    zero_paid = (tx.actual_amount_paid <= 0).astype("int8")
+    keys = ["msno", "transaction_date", "_rank", "_exp_key", "_zero_paid", *TIE_KEYS]
+    out = tx.assign(_rank=rank, _exp_key=exp_key, _zero_paid=zero_paid).sort_values(
+        [*keys, "source", "source_row"],
+        ascending=[True] * 5 + [False] * len(TIE_KEYS) + [True, True],
+        kind="stable",
     )
-    out = out.drop(columns=["_rank", "_exp_key"]).reset_index(drop=True)
+    out = out.drop(columns=["_rank", "_exp_key", "_zero_paid"]).reset_index(drop=True)
     out["seq"] = out.groupby("msno").cumcount()
     return out
 
