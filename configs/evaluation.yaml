@@ -1,0 +1,212 @@
+# Evaluation protocol for the churn models: time split, calibration slice,
+# validation folds, baselines, success criteria and the rule for choosing
+# between candidate models.
+#
+# Fixed on 2026-10-11, before any model was scored on a 2017 snapshot and before
+# any 2017 outcome was read for modelling. Nothing in this file is changed after
+# the test months are scored. Every model choice (family, hyperparameters,
+# feature-group ablations, imputation, calibration method) is made on the
+# validation folds and the check month only, then frozen; the test months are
+# scored once, at the end.
+
+seed: 20161001
+
+# Population and labels. P2 = customers whose effective expiry falls within 30
+# days of the snapshot date T (labels column in_exp30); P1 = every customer with
+# coverage at T. The main population is the paid and 100%-discount-only
+# segments; trial_only and promo_only customers are reported separately and
+# never pooled into a headline number.
+population:
+  primary: p2
+  secondary: p1
+  main_segments: [paid, discount100_only]
+  label_family: coverage  # churned_7/30/60, days_to_event, event_observed
+  horizons: [7, 30, 60]
+
+# Purge rule. A snapshot T may be used to fit or calibrate a model that is judged
+# at date D only if it is fully observed at D: T + h + purge_days_after_horizon
+# <= D. Its labels are built with as_of = D, never with a later as_of.
+# Snapshots must also be usable for h (snapshot_usable_h in the feature table).
+purge_days_after_horizon: 30
+
+# The 2016-10-01 snapshot is split by customer, using the same bucket as the
+# sample (first 8 hex digits of md5(msno) mod 100): even buckets are scored by
+# the validation folds (selection half), odd buckets fit the calibrator of the
+# test pipeline (calibration half). The split depends only on the customer ID.
+# P2 main rows: selection 72,395, calibration 72,601.
+# The halves share the month's conditions, so the split separates customers,
+# not months: a mild dependence, stated in the report.
+customer_halves:
+  snapshot: 2016-10-01
+  selection: even
+  calibration: odd
+
+# Validation folds. Each fold builds its labels with as_of = its date and uses
+# only snapshots fully observed at that date.
+folds:
+  f7a:
+    horizon: 7
+    as_of: 2016-10-01
+    fit: [2016-08-01]
+    score: {snapshot: 2016-10-01, half: selection}
+    decides: discrimination
+  f7b:
+    horizon: 7
+    as_of: 2016-11-01
+    fit: [2016-08-01, 2016-09-01]
+    score: {snapshot: 2016-11-01}  # also the check month
+    decides: discrimination
+  f7b_cal:
+    horizon: 7
+    as_of: 2016-11-01
+    fit: [2016-08-01]
+    calibration: {snapshot: 2016-09-01}
+    score: {snapshot: 2016-11-01}
+    decides: calibration_method
+  f30:
+    horizon: 30
+    as_of: 2016-10-01
+    fit: [2016-08-01]
+    score: {snapshot: 2016-10-01, half: selection}
+    decides: discrimination
+# 60 days has no fold: no usable snapshot is fully observed 90 days before a
+# usable scoring month. The 60-day model inherits the 30-day choices.
+
+# Check month: 2016-11-01, never used to fit, calibrate or test. Its unexplained
+# 7-day churn rate is examined there before 7-day test metrics are trusted.
+check_month: 2016-11-01
+
+# Which months each kind of choice may use.
+choices:
+  shared_across_horizons:  # feature set, imputation and encoding, survival family
+    folds: [f7a, f7b, f30]
+  classifier_hyperparameters:
+    7: [f7a, f7b]
+    30: [f30]
+    60: [f30]
+  calibration_method:
+    folds: [f7b_cal]  # chosen on 7-day evidence, then checked at every horizon
+  # Never decided by the folds: this protocol, the success criteria, the label
+  # family, the population, and anything from the single-feature leak screen.
+
+# Test pipeline: one model per family, fit and calibrated with labels as of
+# 2017-01-01, scored once on the test months with labels as of 2017-03-31.
+test:
+  fit_as_of: 2017-01-01
+  fit: [2016-08-01, 2016-09-01]
+  calibration: {snapshot: 2016-10-01, half: calibration}
+  label_as_of: 2017-03-31
+  months:
+    7: [2017-01-01, 2017-02-01]  # the two months are the finding; pooled is a summary
+    30: [2017-01-01]  # the whole 30-day test rests on this one month
+  demonstration:
+    # One test month, scored at 59 days (the 60-day window ends one day past the
+    # last labelable expiry), three training months. Reported in its own
+    # section, outside the headline table.
+    60: {month: 2017-01-01, score_at_days: 59}
+  sensitivity:
+    - survival model also fit on 2016-11-01 (partly observed at 2017-01-01)
+    - 7-day results without 2017-01-01 and without 2017-02-01
+    - with and without discount100_only customers; results by segment
+    - feature-group ablations (profile group; segment and paid_state; 365-day counts)
+
+# Customers in a test month with no row of any segment in the fit or
+# calibration snapshots. Only for comparing models with each other, always with
+# its own interval. A number is shown only with at least min_events events and
+# min_non_events non-events in that horizon and month; this floor is a choice
+# for showing a number, not a claim that the subset is large enough (100 events
+# still gives a wide AUC interval). Below it the cell reads "not interpretable".
+never_seen:
+  reference_snapshots: [2016-08-01, 2016-09-01, 2016-10-01]
+  min_events: 100
+  min_non_events: 100
+
+# Baselines. The two simple rules were chosen after the single-feature leak
+# screen. Auto-renew off was strong there (AUC 0.711 for 30-day churn when
+# inverted). Fewer days to expiry was not (0.483 at 30 days); it is included
+# because at 7 days only customers expiring within 7 days can lapse.
+baselines:
+  base_rate: {score: fit-month churn rate}
+  auto_renew_off: {score: 1 - last_is_auto_renew}
+  fewer_days_to_expiry: {score: -days_until_expiry}
+  two_feature_logistic: {features: [days_until_expiry, last_is_auto_renew], fit: test.fit}
+# The strongest simple baseline at each horizon is the one with the highest
+# fold-mean AUC on that horizon's folds (7: f7a, f7b; 30 and 60: f30), frozen
+# before the test.
+
+# Bootstrap used for every interval: in each replicate, draw customers with
+# replacement from the union of customers across the folds or months being
+# combined; a drawn customer brings all their rows in every fold or month.
+# Compute the statistic per fold or month, average across them, repeat.
+# Percentile interval; the point estimate is the value on the original data.
+bootstrap:
+  replicates: 1000
+  level: 0.95
+  cluster: customer
+interval_note: >-
+  This interval covers which customers happened to be in that month, not
+  month-to-month change.
+
+# Choosing between candidates on the folds.
+selection:
+  metric: AUC of churn within h days on P2 main (survival models score 1 - S(h))
+  score: mean over the horizon's folds; the gap between folds is reported
+  # Candidate A beats the simplest candidate B only if the 95% bootstrap
+  # interval of the fold-mean AUC difference A - B lies above 0. Otherwise they
+  # tie and the simpler one is kept.
+  # Simpler means, in order: fewer feature groups; default over tuned
+  # hyperparameters; Platt over isotonic; Cox over XGBoost.
+  # A candidate worse than B on any single fold by more than that fold's 95%
+  # interval is not eligible, whatever its mean.
+  tie: interval_includes_zero
+
+# Success criteria on the test months.
+discrimination:
+  metric: AUC of churn within h days on P2 main
+  comparators: [lightgbm_classifier, strongest_simple_baseline]
+  min_difference: 0.01  # threshold of practical relevance
+  report_thresholds: [0.005, 0.02]  # verdicts shown for these too; the 0.01 verdict stands
+  # d = AUC(survival) - AUC(comparator), paired 95% interval [lo, hi]:
+  verdicts:
+    win: "lo > 0 and d >= 0.01: survival beats X at h days in month M"
+    below_threshold: "lo > 0 and d < 0.01: better by less than the 0.01 minimum; not a win"
+    no_difference: "lo <= 0 <= hi: no difference shown"
+    loss: "hi < 0: survival is worse than X"
+  # At 7 days a cell wins only if both test months win; a win in one month and
+  # anything else in the other is "mixed: not shown at 7 days".
+  # The phase goal "survival beats the baseline on the test snapshot" is met only
+  # if survival wins against both comparators in all three cells: 30 days
+  # 2017-01, 7 days 2017-01, 7 days 2017-02. Not meeting it is a legitimate
+  # outcome: the report states the result and the cells that failed.
+  # No multiple-comparison correction; requiring every cell is the safeguard.
+
+calibration:
+  # On calibrated probabilities at horizon h, per test month, P2 main.
+  # Pass/fail on slope and intercept (point estimates; intervals from the same
+  # customer bootstrap, "borderline" when an interval crosses a limit).
+  slope: [0.8, 1.2]  # logistic regression of outcome on logit(p)
+  intercept: [-0.2, 0.2]  # same regression with slope fixed at 1 (log-odds)
+  # Descriptive only: 10 equal-count bins of p, size-weighted mean of
+  # |mean p - event rate|, shown with its bootstrap interval and as a share of
+  # the event rate. Not interpretable when the interval reaches below 0.5x or
+  # above 1.5x its value.
+  ece: {bins: 10, binning: equal_count, criterion: false, reference_share: 0.2}
+  # The phase goal "calibration near the diagonal" is met only if the survival
+  # model passes in all three cells. A method that fails at a horizon is not
+  # switched on test data; that horizon's probabilities are labelled
+  # uncalibrated. The chosen method must also pass on f30 for 30 days, and is
+  # reported in the 60-day demonstration.
+  #
+  # Stated before scoring: the logged 7-day P2 rates are 1.32% in 2016-10 (the
+  # calibration month) and 1.78% in 2017-01. If the features do not explain the
+  # January rise, a model calibrated on October has an intercept of about
+  # logit(0.0178) - logit(0.0132) = -4.0106 - (-4.3143) = +0.30 at 7 days in
+  # 2017-01, outside the limit. The limits above were not set around this.
+
+# Shape-over-days checks: descriptive, feed no win condition.
+shape_checks:
+  - lapses in days 8-30 predicted as the sum of S(7) - S(30) against observed,
+    using the same labels the 30-day classifier is scored on
+  - share of test customers whose separate 7, 30 and 60-day classifiers give
+    crossing probabilities (describes three independent classifiers, not a
+    property of any one model)
