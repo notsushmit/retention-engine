@@ -11,6 +11,15 @@
 
 seed: 20161001
 
+# Execution settings, applied in one place by the code: LightGBM num_threads,
+# XGBoost nthread, and a thread limit for scikit-learn (and any other OpenMP or
+# BLAS pool) all equal threads. The value 4 transcribes the classifier and AFT
+# settings below; extending the limit to scikit-learn and the BLAS pools was
+# added after registration (two OpenMP runtimes load in one process on macOS).
+# verbosity: -1 in classifier.fixed_params is also new; it only silences logs.
+execution:
+  threads: 4
+
 # Population and labels. P2 = customers whose effective expiry falls within 30
 # days of the snapshot date T (labels column in_exp30); P1 = every customer with
 # coverage at T. The main population is the paid and 100%-discount-only
@@ -178,6 +187,9 @@ baselines:
 # seed: the global seed.
 classifier:
   categorical: [last_payment_method_id, registered_via, segment, paid_state, last_row_kind]
+  # The fixed settings stated above, in machine-readable form (threads come
+  # from execution.threads).
+  fixed_params: {deterministic: true, force_col_wise: true, bagging_fraction: 1.0, feature_fraction: 1.0, verbosity: -1}
   # 13 candidates. c00 is the library default (min_child_samples 20); it is not
   # one of the 12 grid points, which all use min_child_samples 200.
   # Columns: num_leaves, n_estimators, learning_rate, min_child_samples.
@@ -282,6 +294,8 @@ survival:
     # Proportional-hazards test (scaled Schoenfeld residuals) reported per
     # feature and summarised per feature group; at this sample size almost every
     # test rejects, so the size of the statistic is read, not the p-value.
+    ties: efron
+    strata_bands: {p2: [7, 14, 21, 29], p1: [7, 14, 21, 29, 59, 89]}  # upper edges; last band open
     candidates:  # [stratified, penalizer]
       cox01: [false, 0.1]
       cox02: [false, 0.01]
@@ -292,6 +306,7 @@ survival:
     # Time counted from day 1 (a lapse on day 0 is at time 1); censored rows
     # have an open upper bound. max_depth 6, eta 0.05, 300 rounds, hist trees,
     # native missing values and categoricals, nthread 4, global seed.
+    fixed_params: {max_depth: 6, eta: 0.05, num_boost_round: 300, tree_method: hist}
     candidates:  # [distribution, sigma]
       aft01: [normal, 1.0]
       aft02: [normal, 0.5]
@@ -527,9 +542,9 @@ tracking:
 # configs/choices.yaml together with the pre-registration commits, the SHA-256
 # of this file and the MLflow run ids behind each choice, and committed on
 # their own. The pre-registration commits are every commit that changed this
-# file: 8b6562c, 4369ab0 and the commit that adds this paragraph. The binding
-# one is the last of them; a commit cannot name its own hash, so choices.yaml
-# records it. The test run refuses to start unless all of these hold:
+# file: 8b6562c, 4369ab0, 7b18e2b and the commit that adds the execution
+# block. The binding one is the last of them; a commit cannot name its own
+# hash, so choices.yaml records it. The test run refuses to start unless all of these hold:
 #   1. the tracked files are unchanged against HEAD (clean working tree);
 #   2. the binding pre-registration commit is an ancestor of HEAD; the blob of
 #      configs/evaluation.yaml at that commit has the SHA-256 recorded in
