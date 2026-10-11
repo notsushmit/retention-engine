@@ -98,6 +98,15 @@ Churn means no new subscription within 30 days (inclusive) after a membership ex
 
 Every stage also writes its checks and counts to `validation.json`. On the 20% sample the five stages take about 5 minutes (305 s measured) and write about 410 MB.
 
+## Features
+
+```bash
+make features                      # features.parquet for every labelled snapshot (needs make labels)
+uv run python -m retention.features docs   # regenerate the feature dictionary from the registry
+```
+
+One row per customer and snapshot, keyed to the labels table; every feature for snapshot T reads only rows dated before T. The feature dictionary, with the window and null rule of every column, is in [docs/features.md](docs/features.md).
+
 ## Make targets
 
 | Target | Does |
@@ -106,6 +115,6 @@ Every stage also writes its checks and counts to `validation.json`. On the 20% s
 | `make data` | downloads, extracts and samples the KKBox data |
 | `make labels` | typed tables, timelines, data-quality check, churn labels, comparison with the competition labels |
 | `make test` | ruff check, ruff format check, pytest |
-| `make features` | Phase 2 (not yet implemented) |
+| `make features` | leakage-safe feature table for every labelled snapshot (docs/features.md) |
 | `make train` | Phase 3 (not yet implemented) |
 | `make up` | Phase 8 (not yet implemented) |

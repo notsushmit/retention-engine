@@ -25,8 +25,9 @@ data:
 labels:
 	$(PY) -m retention.labels all $(SAMPLE_ARGS)
 
+# Feature table for every labelled snapshot of the sample (needs `make labels`).
 features:
-	@echo "make features is not implemented until Phase 2" && exit 1
+	$(PY) -m retention.features build $(SAMPLE_ARGS)
 
 train:
 	@echo "make train is not implemented until Phase 3" && exit 1
