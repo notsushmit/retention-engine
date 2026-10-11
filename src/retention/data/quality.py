@@ -176,28 +176,81 @@ def classify(table: pd.DataFrame, q: QualityConfig) -> tuple[pd.DataFrame, dict[
 
 
 def snapshot_status(month_status: pd.Series, cfg: LabelConfig) -> pd.DataFrame:
-    """Status per (snapshot, horizon) from every month inside [T - lookback, T + h].
+    """Label status per (snapshot, horizon) from every month inside [T, T + h].
 
     unknown: T + h is past the last labelable expiry. Otherwise the worst month
     status in the window (unreliable > uncertain > reliable); a month outside
-    the checked range counts as uncertain.
+    the checked range counts as uncertain. lookback_days does not enter here;
+    it belongs to the pre-T completeness check of the feature table.
     """
     rank = {"reliable": 0, "uncertain": 1, "unreliable": 2}
     names = {v: k for k, v in rank.items()}
-    lookback = cfg.lookback_days or 0
     rows = []
     for t in cfg.snapshots:
         for h in (*cfg.horizons, cfg.followup_cap_days):
             if not cfg.fully_observable(t, h):
                 status = "unknown"
             else:
-                span = pd.period_range(
-                    t - timedelta(days=lookback), t + timedelta(days=h), freq="M"
-                )
+                span = pd.period_range(t, t + timedelta(days=h), freq="M")
                 worst = max(rank[month_status.get(str(p), "uncertain")] for p in span)
                 status = names[worst]
             rows.append({"snapshot": t, "horizon": h, "status": status})
     return pd.DataFrame(rows)
+
+
+# Indicators that respond to transactions missing from a month. Returns is left
+# out: it looks at payments 31-90 days after the month, not at rows dated in it.
+COMPLETENESS_INDICATORS = ["batch", "churn", "listening"]
+STATUS_RANK = {"reliable": 0, "uncertain": 1, "unreliable": 2}
+
+
+def _only(names: object, keep: list[str]) -> str:
+    """Comma-joined indicator names from `names`, restricted to `keep` (in that order)."""
+    given = set(str(names).split(",")) if isinstance(names, str) else set()
+    return ",".join(i for i in keep if i in given)
+
+
+def completeness_status(classified: pd.DataFrame, q: QualityConfig) -> pd.Series:
+    """Pre-T completeness status per month from the output of `classify`.
+
+    Same thresholds and rule as the four-indicator status, on batch, churn and
+    listening only: unreliable with unreliable_failures or more failures;
+    uncertain with one failure, a flip at mad_k * (1 -/+ sensitivity), or fewer
+    than min_assessed of the three assessed (so all three must be assessed).
+    """
+    keep = COMPLETENESS_INDICATORS
+    fails = classified.fails.map(lambda v: _only(v, keep))
+    low = classified.fails_low_k.map(lambda v: _only(v, keep))
+    high = classified.fails_high_k.map(lambda v: _only(v, keep))
+    n_fail = fails.map(lambda v: len(v.split(",")) if v else 0)
+    n_assessed = classified.assessed.map(
+        lambda v: len(_only(v, keep).split(",")) if _only(v, keep) else 0
+    )
+    flips = (low != fails) | (high != fails)
+    status = np.select(
+        [n_fail >= q.unreliable_failures, (n_fail == 1) | flips | (n_assessed < q.min_assessed)],
+        ["unreliable", "uncertain"],
+        "reliable",
+    )
+    return pd.Series(status, index=classified.index, name="completeness_status")
+
+
+def pre_t_status(month_status: pd.Series, snapshots: list, lookback_days: int) -> pd.Series:
+    """Worst completeness status of the months touched by [T - lookback_days, T - 1].
+
+    `month_status` is indexed by "YYYY-MM". A month outside the checked range
+    counts as uncertain. A window spanning two months takes the worse one.
+    """
+    if lookback_days < 1:
+        raise ValueError("lookback_days must be at least 1 for the pre-T check")
+    names = {v: k for k, v in STATUS_RANK.items()}
+    out = {}
+    for snap in snapshots:
+        t = pd.Timestamp(snap)
+        span = pd.period_range(t - timedelta(days=lookback_days), t - timedelta(days=1), freq="M")
+        worst = max(STATUS_RANK[month_status.get(str(p), "uncertain")] for p in span)
+        out[snap] = names[worst]
+    return pd.Series(out, name="pre_t_status")
 
 
 def run_quality(

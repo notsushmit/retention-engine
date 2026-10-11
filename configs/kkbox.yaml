@@ -75,9 +75,11 @@ labels:
   data_start: 2015-01-01
   left_truncation_days: 410
 
-  # Feature lookback in days. Phase 2 sets it. A snapshot is usable for
-  # horizon h only if no unreliable month falls inside [T - lookback, T + h].
-  lookback_days: null
+  # Longest fixed feature window, in days. Used only by the pre-T completeness
+  # check of transaction data (pre_t_status in the feature table): the worst
+  # completeness status of the months touched by [T - lookback_days, T - 1].
+  # Label reliability (label_reliable_h) uses [T, T + h] and ignores it.
+  lookback_days: 28
 
   # Monthly data-quality check on expiry months, run on paid customers.
   # A month with missing transactions shows a halved month-end auto-renew batch,

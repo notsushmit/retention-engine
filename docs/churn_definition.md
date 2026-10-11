@@ -68,7 +68,21 @@ Some months are missing transactions: the month-end auto-renew billing batch is 
 | Churners paying again on days 31-90 after the lapse | above 39.13% |
 | Month-end auto-renew batch ratio | below 6.03 (the largest gap between two groups of months) |
 
-A month with two or more failures is **unreliable**: 2015-04, 2016-03, 2016-05. A month with one failure, fewer than three assessable indicators, or a result that changes when the threshold multiplier moves by 25% is **uncertain**: 2015-01, 2015-09 to 2015-12, 2016-02, 2016-04, 2016-06, 2016-12 and 2017-03 (10 months). The other 14 months are **reliable**. Each snapshot and horizon gets the worst status of the months its window touches (`reliability_status_h`, `label_reliable_h`). For the 30-day horizon, 11 of 24 snapshots are reliable, 7 uncertain, 5 unreliable and 1 not yet observable. Metrics on reliable snapshots are primary; uncertain snapshots are a stress test; nothing is tuned on these flags. Because churn itself is one of the indicators, "churn is stable across reliable snapshots" is partly true by construction.
+A month with two or more failures is **unreliable**: 2015-04, 2016-03, 2016-05. A month with one failure, fewer than three assessable indicators, or a result that changes when the threshold multiplier moves by 25% is **uncertain**: 2015-01, 2015-09 to 2015-12, 2016-02, 2016-04, 2016-06, 2016-12 and 2017-03 (10 months). The other 14 months are **reliable**. Each snapshot and horizon gets the worst status of the months its label window [T, T + h] touches (`reliability_status_h`, `label_reliable_h`). For the 30-day horizon, 11 of 24 snapshots are label-reliable, 7 uncertain, 5 unreliable and 1 not yet observable. Because churn itself is one of the indicators, "churn is stable across reliable snapshots" is partly true by construction.
+
+### Completeness before T
+
+A label-reliable snapshot can still describe the customer at T from incomplete data. At 2016-07-01 the label window is reliable, but the June 30 auto-renew batch is halved, so June renewals are missing from what is known at T. A second status, `pre_t_status`, covers the months touched by [T - 28 days, T - 1], 28 days being the longest fixed feature window. It uses only the three indicators that respond to transactions missing from a month: the batch ratio, the churn rate and churners who keep listening. The returns indicator is left out because it looks at payments 31 to 90 days after the month. The thresholds and the rule are the same as above: two or more failures make a month unreliable; one failure, a result that changes when the multiplier moves by 25%, or fewer than three assessed indicators make it uncertain. Only one month changes: 2016-12 is uncertain under all four indicators (only returns failed) and reliable under these three. For a monthly snapshot the window touches only the previous month; a weekly snapshot whose window touches two months takes the worse status. Listening logs have rows on every day from 2015-01-01 to 2017-03-31, so usage features need no such check.
+
+A snapshot is **usable** for horizon h when `label_reliable_h` is true and `pre_t_status` is reliable. Both columns, and `snapshot_usable_h`, are stored in the feature table as row metadata, never as model inputs; the labels table is unchanged. From 2016-03 on (the snapshots without left-truncation risk):
+
+| Horizon | Label-reliable | Usable |
+| --- | --- | --- |
+| 7 days | 2016-07 to 2016-11, 2017-01, 2017-02 | 2016-08 to 2016-11, 2017-01, 2017-02 |
+| 30 days | 2016-07 to 2016-10, 2017-01 | 2016-08 to 2016-10, 2017-01 |
+| 60 days | 2016-07 to 2016-10 | 2016-08 to 2016-10 |
+
+Metrics on usable snapshots are primary; label-reliable snapshots that are not usable, and uncertain snapshots, are a stress test; nothing is tuned on these flags. 2017-01-01 is usable only because 2016-12 passes the completeness check, so metrics on it are also reported without it.
 
 ## Comparison with the competition labels
 
