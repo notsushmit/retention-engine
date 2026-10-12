@@ -167,3 +167,21 @@ def test_cox_inputs_omit_paid_expiry_and_stratified_omits_days_until_expiry():
     p = plain.lapse_probability(rows.head(100), [7, 30, 59])
     assert (np.diff(p, axis=1) >= -1e-12).all()
     assert strat.lapse_probability(rows.head(100), [7]).shape == (100, 1)
+
+
+def test_stratified_cox_batch_predictions_keep_row_order():
+    rows = survival_rows(n=2000)
+    bands = RAW["survival"]["cox"]["strata_bands"]["p2"]
+    m = CoxModel(True, 0.1, [], bands, P.threads).fit(rows, COLS[:5])
+    batch = m.lapse_probability(rows.head(60), [7])[:, 0]
+    one = [m.lapse_probability(rows.iloc[[i]], [7])[0, 0] for i in range(60)]
+    assert np.allclose(batch, one)
+
+
+def test_a_cox_fit_reports_whether_it_beats_the_no_covariate_model():
+    rows = survival_rows()
+    m = CoxModel(False, 0.1, [], RAW["survival"]["cox"]["strata_bands"]["p2"], P.threads).fit(
+        rows, COLS[:5]
+    )
+    assert m.fit_ok and m.log_likelihood >= m.null_log_likelihood
+    assert m.summary()["fit_ok"] is True

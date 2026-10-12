@@ -154,6 +154,11 @@ class CoxModel:
                 event_col="event",
                 strata=[STRATUM] if self.stratified else None,
             )
+        # A valid fit is never worse than the no-covariate model; a weak penalty on
+        # near-separated data can leave the optimiser far below it (a failed fit).
+        self.log_likelihood = float(self.fitter.log_likelihood_)
+        self.null_log_likelihood = float(self.fitter._ll_null_)
+        self.fit_ok = self.log_likelihood >= self.null_log_likelihood
         return self
 
     def _frame(self, rows: pd.DataFrame) -> pd.DataFrame:
@@ -166,12 +171,19 @@ class CoxModel:
 
     def lapse_probability(self, rows: pd.DataFrame, days: list[int]) -> np.ndarray:
         """P(lapse by day h) for each row (rows x days)."""
+        x = self._frame(rows)
         with self.threads.limit():
-            surv = self.fitter.predict_survival_function(self._frame(rows), times=days)
-        return 1 - surv.to_numpy().T
+            surv = self.fitter.predict_survival_function(x, times=days)
+        # A stratified model returns one column per row grouped by stratum; select
+        # the columns by row label so each probability stays with its customer.
+        return 1 - surv[x.index].to_numpy().T
 
     def summary(self) -> dict[str, Any]:
         return {
+            "fit_ok": self.fit_ok,
+            "log_likelihood": self.log_likelihood,
+            "null_log_likelihood": self.null_log_likelihood,
+            "max_abs_coefficient": float(self.fitter.params_.abs().max()),
             "inputs": len(self.inputs),
             "design_columns": len(self.prep.columns),
             "flags": self.prep.flags,

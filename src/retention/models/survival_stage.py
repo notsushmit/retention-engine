@@ -143,8 +143,15 @@ def survival_stage(
                 unseen = dict(model.prep.unseen)
             scores[cid][name] = p[:, 0]
             details[cid]["unseen_levels"][name] = unseen
+        details[cid]["status"] = "ok"
         if isinstance(fitted[(cid, "aug")], CoxModel):
             details[cid]["cox_design"] = {s: fitted[(cid, s)].summary() for s in fit_sets}
+            failed = [s for s in fit_sets if not fitted[(cid, s)].fit_ok]
+            if failed:
+                details[cid]["status"] = (
+                    "failed fit: log-likelihood below the no-covariate model on "
+                    + ", ".join(failed)
+                )
         y = {n: scored[n].y.to_numpy() for n in FOLDS}
         aucs = {n: SortedScores(scores[cid][n]).auc(y[n]) for n in FOLDS}
         details[cid]["auc_by_fold"] = aucs
@@ -191,9 +198,24 @@ def survival_stage(
             "fold_mean": _interval(paired_auc_difference(joint, replicates, seed)),
         }
 
+    usable = [cid for cid in ids if details[cid]["status"] == "ok"]
     for cid in ids:
+        if cid not in usable:
+            details[cid]["versus_classifier_c01"] = details[cid]["status"]
+            continue
         details[cid]["versus_classifier_c01"] = versus(cid, "classifier_c01")
-        details[cid]["versus_banded_logistic"] = versus(cid, "banded_logistic")
+        joint = [
+            FoldScores(
+                scored[n].msno.to_numpy(),
+                scored[n].y.to_numpy(),
+                scores[cid][n],
+                reference[n]["banded_logistic"],
+            )
+            for n in FOLDS
+        ]
+        details[cid]["versus_banded_logistic"] = {
+            "fold_mean": _interval(paired_auc_difference(joint, replicates, seed))
+        }
 
     # Ladder within each family, then across families.
     n_groups = len({FEATURE_COLUMNS[c] for c in cols})
@@ -201,7 +223,9 @@ def survival_stage(
     winners, steps = {}, {}
     for family in ("cox", "xgboost_aft", "discrete_time"):
         cands = [
-            Candidate(c, family, n_groups, len(cols)) for c in ids if details[c]["family"] == family
+            Candidate(c, family, n_groups, len(cols))
+            for c in usable
+            if details[c]["family"] == family
         ]
         chosen, st = ladder(cands, compare)
         winners[family], steps[family] = chosen, st
