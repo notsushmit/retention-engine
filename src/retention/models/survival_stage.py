@@ -42,6 +42,9 @@ from retention.models.tracking import Tracking, run_name, start
 
 FOLDS = ("f7a", "f7b", "f30")
 PH_BUCKETS = 2
+# The proportional-hazards test grows faster than quadratically with rows
+# (60,902 rows took 1,605 s); it may only run on the fixed subsample.
+PH_MAX_ROWS = 50_000
 FIT_SET = {"f7a": "aug", "f30": "aug", "f7b": "aug_sep"}
 
 
@@ -52,6 +55,8 @@ def _group(design_column: str) -> str:
 
 def ph_by_group(model: CoxModel, rows) -> dict[str, Any]:
     """Proportional-hazards test (rank time transform) summarised per feature group."""
+    if len(rows) > PH_MAX_ROWS:
+        raise ValueError(f"the PH test runs only on the fixed subsample (<= {PH_MAX_ROWS} rows)")
     df = model._frame(rows).assign(time=rows.time.to_numpy(), event=rows.event.to_numpy())
     with model.threads.limit():
         res = proportional_hazard_test(model.fitter, df, time_transform="rank")

@@ -185,3 +185,23 @@ def test_a_cox_fit_reports_whether_it_beats_the_no_covariate_model():
     )
     assert m.fit_ok and m.log_likelihood >= m.null_log_likelihood
     assert m.summary()["fit_ok"] is True
+
+
+def test_stratified_cox_predictions_follow_their_customer_in_any_row_order():
+    # Regression test: lifelines groups stratified predictions by stratum.
+    rows = survival_rows(n=2000)
+    bands = RAW["survival"]["cox"]["strata_bands"]["p2"]
+    m = CoxModel(True, 0.1, [], bands, P.threads).fit(rows, COLS[:5])
+    scored = rows.head(300).reset_index(drop=True)
+    in_order = m.lapse_probability(scored, [7])[:, 0]
+    perm = np.random.default_rng(1).permutation(len(scored))
+    shuffled = m.lapse_probability(scored.iloc[perm].reset_index(drop=True), [7])[:, 0]
+    assert np.allclose(shuffled, in_order[perm])
+
+
+def test_the_proportional_hazards_test_refuses_more_than_the_subsample_size():
+    from retention.models.survival_stage import PH_MAX_ROWS, ph_by_group
+
+    rows = survival_rows(n=PH_MAX_ROWS + 1)
+    with pytest.raises(ValueError, match="fixed subsample"):
+        ph_by_group(None, rows)
