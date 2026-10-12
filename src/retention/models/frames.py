@@ -47,6 +47,11 @@ def _join(
     protocol: Protocol,
 ) -> pd.DataFrame:
     feats = load_features(features, snapshots, feature_cols)
+    # segment (and paid_state) are copied unchanged from labels into features in
+    # Phase 2, whose build stops if they differ; keep the features' copy.
+    labels = labels.drop(
+        columns=[c for c in labels.columns if c in feats.columns and c not in KEYS]
+    )
     labels = labels.assign(snapshot_date=labels.snapshot_date.astype("datetime64[ns]"))
     feats = feats.assign(snapshot_date=feats.snapshot_date.astype("datetime64[ns]"))
     df = feats.merge(labels, on=KEYS, how="inner", validate="one_to_one")

@@ -1,6 +1,6 @@
 """Command line entry: `python -m retention.models <command>`.
 
-Commands: protocol-check, label-check, guard-dry-run, build-labels, baselines.
+Commands: protocol-check, label-check, guard-dry-run, build-labels, baselines, classifier.
 
 protocol-check loads configs/evaluation.yaml (which runs the purge-rule and
 locked-month checks), then counts snapshot membership for the fold, fit,
@@ -163,9 +163,13 @@ def main() -> None:
     bl = sub.add_parser("build-labels", help="build one cached label set in this process")
     bl.add_argument("--split", required=True, help="a fold name (for example f7a) or 'test'")
     bl.add_argument("--fraction", type=float, default=None)
-    bs = sub.add_parser("baselines", help="simple baselines on the folds")
-    bs.add_argument("--fraction", type=float, default=None)
-    bs.add_argument("--replicates", type=int, default=None)
+    for name, text in (
+        ("baselines", "simple baselines on the folds"),
+        ("classifier", "LightGBM classifier stages 1 and 2 on the folds"),
+    ):
+        stage = sub.add_parser(name, help=text)
+        stage.add_argument("--fraction", type=float, default=None)
+        stage.add_argument("--replicates", type=int, default=None)
     args = parser.parse_args()
 
     if args.command == "build-labels":
@@ -195,8 +199,8 @@ def main() -> None:
         )
         return
 
-    if args.command == "baselines":
-        from retention.models.stages import baseline_stage
+    if args.command in ("baselines", "classifier"):
+        from retention.models import stages
         from retention.models.tracking import setup
 
         t0 = time.time()
@@ -204,12 +208,14 @@ def main() -> None:
         raw = yaml.safe_load(EVAL_CONFIG.read_text())
         reps = args.replicates or raw["bootstrap"]["replicates"]
         out_dir = processed_dir(args.fraction)
-        report = baseline_stage(
+        stage = {"baselines": stages.baseline_stage, "classifier": stages.classifier_stage}
+        report = stage[args.command](
             protocol, out_dir, interim_dir(args.fraction) / "labels_asof", setup(Path.cwd()), reps
         )
         report["seconds"] = round(time.time() - t0, 1)
         report["peak_rss_gb"] = peak_rss_gb()
-        (out_dir / "baselines_folds.json").write_text(json.dumps(report, indent=2) + "\n")
+        name = {"baselines": "baselines_folds.json", "classifier": "classifier_folds.json"}
+        (out_dir / name[args.command]).write_text(json.dumps(report, indent=2, default=str) + "\n")
         print(json.dumps({k: report[k] for k in ("seconds", "peak_rss_gb")}))
         return
 
