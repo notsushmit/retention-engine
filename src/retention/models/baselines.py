@@ -47,12 +47,12 @@ class Baselines:
         days = fit.days_until_expiry.to_numpy(dtype=float)
         self.mu, self.sd = days.mean(), days.std()
         with threads.limit():
-            self.two = LogisticRegression(penalty=None, max_iter=1000, random_state=seed).fit(
+            self.two = LogisticRegression(C=np.inf, max_iter=1000, random_state=seed).fit(
                 self._two_x(fit), fit.y
             )
             bands = self._band_x(fit)
             self.kept = bands.std(axis=0) > 0  # a band empty in the fit rows has no coefficient
-            self.banded = LogisticRegression(penalty=None, max_iter=1000, random_state=seed).fit(
+            self.banded = LogisticRegression(C=np.inf, max_iter=1000, random_state=seed).fit(
                 bands[:, self.kept], fit.y
             )
         self.dropped_bands = int((~self.kept).sum())
