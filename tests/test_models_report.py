@@ -47,3 +47,17 @@ def test_a_missing_cell_is_listed_as_missing_and_not_met():
     assert len(rows) == len(cells)
     assert {r["status"] for r in rows if r["kind"] == "calibration"} == {"pass", "missing"}
     assert summarize(cells, results)["calibration"]["cells_met"] == 2
+
+
+def test_last_row_breakdown_groups():
+    from retention.models.report import DESCRIPTIVE_BREAKDOWNS, breakdown_group
+
+    b = DESCRIPTIVE_BREAKDOWNS["last_row"]
+    assert [breakdown_group(v, b) for v in ("paid", "trial", "promo", "discount100", None)] == [
+        "paid",
+        "zero-paid",
+        "zero-paid",
+        "zero-paid",
+        "missing",
+    ]
+    assert b["decides"] == "nothing"

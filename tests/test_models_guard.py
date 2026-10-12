@@ -268,3 +268,15 @@ def test_a_strongest_baseline_run_made_under_another_config_is_refused(env):
     freeze(tr, choices, run_ids)
     commit(tr.repo, "Freeze choices")
     refused(tr, 8)
+
+
+def test_the_guard_accepts_the_descriptive_breakdowns_key(env):
+    from retention.models.report import DESCRIPTIVE_BREAKDOWNS
+
+    tr, runs = env
+    freeze(tr, {**CHOICES_DOC, "descriptive_breakdowns": DESCRIPTIVE_BREAKDOWNS}, runs)
+    commit(tr.repo, "Freeze choices")
+    assert yaml.safe_load((tr.repo / CHOICES).read_text())["choices"]["descriptive_breakdowns"]
+    assert {r.status for r in dry_run(tr)} == {"passed"}
+    unlock, _ = open_test_session(tr)
+    assert isinstance(unlock, TestUnlock)

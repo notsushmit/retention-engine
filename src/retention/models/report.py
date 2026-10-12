@@ -75,3 +75,33 @@ def summarize(cells: list[Cell], results: dict[tuple, str]) -> dict[str, dict[st
             ],
         }
     return out
+
+
+# Descriptive breakdowns of the test cells, defined before any 2017 outcome was
+# read (added after registration; they change no verdict). For every test cell
+# and group: rows, share of rows, lapses, lapse rate, AUC, calibration slope and
+# intercept, with customer-bootstrap intervals, or "not computable".
+DESCRIPTIVE_BREAKDOWNS = {
+    "last_row": {
+        "column": "last_row_kind",
+        "groups": {"paid": ["paid"], "zero-paid": ["trial", "promo", "discount100"]},
+        "statistics": [
+            "rows",
+            "share_of_rows",
+            "lapses",
+            "lapse_rate",
+            "auc",
+            "calibration_slope",
+            "calibration_intercept",
+        ],
+        "decides": "nothing",
+    }
+}
+
+
+def breakdown_group(value: object, breakdown: dict[str, Any]) -> str:
+    """The group of one row's value; a value in no group (or missing) reads 'missing'."""
+    for group, values in breakdown["groups"].items():
+        if value in values:
+            return group
+    return "missing"
