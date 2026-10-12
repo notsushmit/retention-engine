@@ -1,7 +1,7 @@
 """Command line entry: `python -m retention.models <command>`.
 
 Commands: protocol-check, label-check, guard-dry-run, build-labels, baselines, classifier,
-survival,
+survival, calibration,
 check-month (descriptive analysis of 2016-11; decides nothing).
 
 protocol-check loads configs/evaluation.yaml (which runs the purge-rule and
@@ -169,6 +169,7 @@ def main() -> None:
         ("baselines", "simple baselines on the folds"),
         ("classifier", "LightGBM classifier stages 1 and 2 on the folds"),
         ("survival", "Cox, XGBoost AFT and discrete-time candidates on the folds"),
+        ("calibration", "calibration on f7b_cal and the October halves (2016 only)"),
     ):
         stage = sub.add_parser(name, help=text)
         stage.add_argument("--fraction", type=float, default=None)
@@ -241,7 +242,7 @@ def main() -> None:
         )
         return
 
-    if args.command in ("baselines", "classifier", "survival"):
+    if args.command in ("baselines", "classifier", "survival", "calibration"):
         from retention.models import stages
         from retention.models.bootstrap import use_workers
         from retention.models.tracking import setup
@@ -252,12 +253,14 @@ def main() -> None:
         raw = yaml.safe_load(EVAL_CONFIG.read_text())
         reps = args.replicates or raw["bootstrap"]["replicates"]
         out_dir = processed_dir(args.fraction)
+        from retention.models.calibration_stage import calibration_stage
         from retention.models.survival_stage import survival_stage
 
         stage = {
             "baselines": stages.baseline_stage,
             "classifier": stages.classifier_stage,
             "survival": survival_stage,
+            "calibration": calibration_stage,
         }
         report = stage[args.command](
             protocol, out_dir, interim_dir(args.fraction) / "labels_asof", setup(Path.cwd()), reps
@@ -268,6 +271,7 @@ def main() -> None:
             "baselines": "baselines_folds.json",
             "classifier": "classifier_folds.json",
             "survival": "survival_folds.json",
+            "calibration": "calibration_folds.json",
         }
         (out_dir / name[args.command]).write_text(json.dumps(report, indent=2, default=str) + "\n")
         print(json.dumps({k: report[k] for k in ("seconds", "peak_rss_gb")}))
