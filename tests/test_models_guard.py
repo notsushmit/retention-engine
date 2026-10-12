@@ -229,3 +229,42 @@ def test_dry_run_reports_a_failure_without_raising(env):
     (tr.repo / "README.md").write_text("changed\n")
     status = {r.check: r.status for r in dry_run(tr)}
     assert status[1] == "failed" and status[4] == "passed"
+
+
+# --- the strongest simple baseline: an extra key, not a registered stage --------------------
+
+
+def with_strongest_baseline(tr, runs):
+    summary = {7: fold_run(tr, "fold-f7a_f7b-baseline-strongest-h7-baseline_inputs")}
+    summary[30] = fold_run(tr, "fold-f30-baseline-strongest-h30-baseline_inputs")
+    choices = {
+        **CHOICES_DOC,
+        "strongest_simple_baseline": {7: "banded_logistic", 30: "banded_logistic"},
+    }
+    return choices, {**runs, "strongest_simple_baseline": summary}
+
+
+def test_the_guard_accepts_the_strongest_baseline_key_and_checks_its_runs(env):
+    tr, runs = env
+    choices, run_ids = with_strongest_baseline(tr, runs)
+    freeze(tr, choices, run_ids)
+    commit(tr.repo, "Freeze choices")
+    doc = yaml.safe_load((tr.repo / CHOICES).read_text())
+    assert doc["choices"]["strongest_simple_baseline"] == {
+        7: "banded_logistic",
+        30: "banded_logistic",
+    }
+    assert {r.status for r in dry_run(tr)} == {"passed"}
+    unlock, _ = open_test_session(tr)
+    assert isinstance(unlock, TestUnlock)
+
+
+def test_a_strongest_baseline_run_made_under_another_config_is_refused(env):
+    tr, runs = env
+    choices, run_ids = with_strongest_baseline(tr, runs)
+    MlflowClient(tr.uri).set_tag(
+        run_ids["strongest_simple_baseline"][30], "config_sha256", "0" * 64
+    )
+    freeze(tr, choices, run_ids)
+    commit(tr.repo, "Freeze choices")
+    refused(tr, 8)
