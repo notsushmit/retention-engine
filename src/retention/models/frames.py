@@ -33,6 +33,9 @@ def add_target(df: pd.DataFrame, horizon: int) -> pd.DataFrame:
     if horizon in (7, 30):
         y = df[f"churned_{horizon}"]
     else:
+        unknown = (df.event_observed == 0) & (df.days_to_event < horizon)
+        if unknown.any():
+            raise ValueError(f"{int(unknown.sum())} rows are censored before day {horizon}")
         y = ((df.event_observed == 1) & (df.days_to_event <= horizon)).astype("Int8")
     if y.isna().any():
         raise ValueError(f"{int(y.isna().sum())} rows have no {horizon}-day outcome")
@@ -80,6 +83,25 @@ def fit_rows(
     require_as_of(labels, as_of)
     df = _join(processed / "features.parquet", labels, list(snapshots), feature_cols, protocol)
     return add_target(df, horizon)
+
+
+def survival_fit_rows(
+    protocol: Protocol,
+    processed: Path,
+    cache: Path,
+    as_of: date,
+    snapshots: tuple[date, ...],
+    feature_cols: list[str],
+) -> pd.DataFrame:
+    """Fit rows for a survival model: `time` (days to the lapse or the stop day) and `event`."""
+    path = cached_labels(cache, as_of, tuple(sorted(snapshots)))
+    cols = ["in_exp30", "segment", "event_observed", "days_to_event"]
+    labels = load_labels(path, list(snapshots), cols, protocol)
+    require_as_of(labels, as_of)
+    df = _join(processed / "features.parquet", labels, list(snapshots), feature_cols, protocol)
+    return df.assign(
+        time=df.days_to_event.astype(int).to_numpy(), event=df.event_observed.astype(int).to_numpy()
+    )
 
 
 def score_rows(

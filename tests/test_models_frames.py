@@ -89,3 +89,21 @@ def test_the_59_day_target_is_derived_from_the_lapse_day(dirs):
     processed, _ = dirs
     df = score_rows(P, processed, Slice(OCT), ["days_until_expiry"], 59)
     assert (df.y == (df.days_to_event <= 59).astype(int)).all()
+
+
+def test_a_59_day_target_with_rows_censored_before_day_59_raises(dirs):
+    processed, cache = dirs
+    lab = labels_frame(AUG)
+    lab["event_observed"] = 0  # all censored, days_to_event 0..39 < 59
+    write_labels(cache_path(cache, OCT, (AUG,)), lab, as_of=OCT)
+    with pytest.raises(ValueError, match="censored before day 59"):
+        fit_rows(P, processed, cache, OCT, (AUG,), ["days_until_expiry"], 59)
+
+
+def test_survival_fit_rows_carry_time_and_event(dirs):
+    from retention.models.frames import survival_fit_rows
+
+    processed, cache = dirs
+    write_labels(cache_path(cache, OCT, (AUG,)), labels_frame(AUG), as_of=OCT)
+    df = survival_fit_rows(P, processed, cache, OCT, (AUG,), ["days_until_expiry"])
+    assert (df.time == df.days_to_event).all() and set(df.event) == {1}
