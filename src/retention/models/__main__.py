@@ -1,6 +1,7 @@
 """Command line entry: `python -m retention.models <command>`.
 
-Commands: protocol-check, label-check, guard-dry-run, build-labels, baselines, classifier.
+Commands: protocol-check, label-check, guard-dry-run, build-labels, baselines, classifier,
+check-month (descriptive analysis of 2016-11; decides nothing).
 
 protocol-check loads configs/evaluation.yaml (which runs the purge-rule and
 locked-month checks), then counts snapshot membership for the fold, fit,
@@ -170,7 +171,44 @@ def main() -> None:
         stage = sub.add_parser(name, help=text)
         stage.add_argument("--fraction", type=float, default=None)
         stage.add_argument("--replicates", type=int, default=None)
+    cm = sub.add_parser("check-month", help="descriptive analysis of the check month 2016-11")
+    cm.add_argument("--fraction", type=float, default=None)
+    cm.add_argument("--replicates", type=int, default=None)
     args = parser.parse_args()
+
+    if args.command == "check-month":
+        import mlflow
+
+        from retention.models.check_month import check_month
+        from retention.models.stages import assert_no_label_building_code
+        from retention.models.tracking import setup, start
+
+        t0 = time.time()
+        protocol = load_protocol()
+        raw = yaml.safe_load(EVAL_CONFIG.read_text())
+        reps = args.replicates or raw["bootstrap"]["replicates"]
+        out_dir = processed_dir(args.fraction)
+        tr = setup(Path.cwd())
+        with start(
+            tr,
+            "check_month",
+            "check_month-2016-11-lightgbm-c01-h7-fs1",
+            {"month": "2016-11-01", "decides": "nothing", "replicates": reps},
+            data_files={
+                "labels": out_dir / "labels.parquet",
+                "features": out_dir / "features.parquet",
+            },
+        ):
+            report = check_month(
+                protocol, out_dir, interim_dir(args.fraction) / "labels_asof", reps
+            )
+            mlflow.log_dict(json.loads(json.dumps(report, default=str)), "check_month.json")
+        assert_no_label_building_code()
+        report["seconds"] = round(time.time() - t0, 1)
+        report["peak_rss_gb"] = peak_rss_gb()
+        (out_dir / "check_month.json").write_text(json.dumps(report, indent=2, default=str) + "\n")
+        print(json.dumps({k: report[k] for k in ("seconds", "peak_rss_gb")}))
+        return
 
     if args.command == "build-labels":
         from retention.models.data import fit_label_requests
