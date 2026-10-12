@@ -315,8 +315,18 @@ def _newton_logistic(x: np.ndarray, y: np.ndarray, w: np.ndarray, offset: np.nda
         mu = expit(x @ beta + offset)
         grad = x.T @ (w * (y - mu))
         hess = (x * (w * mu * (1 - mu))[:, None]).T @ x
-        step = np.linalg.solve(hess, grad)
+        # On separated outcomes the Hessian can become singular before the
+        # iteration limit (it does with OpenBLAS on Linux); either way the
+        # regression has no finite answer.
+        try:
+            step = np.linalg.solve(hess, grad)
+        except np.linalg.LinAlgError as err:
+            raise NotComputable(
+                "calibration regression did not converge (singular Hessian; separated outcomes)"
+            ) from err
         beta += step
+        if not np.isfinite(beta).all():
+            raise NotComputable("calibration regression did not converge (non-finite coefficients)")
         if np.abs(step).max() < 1e-12:
             return beta
     raise NotComputable("calibration regression did not converge (outcomes separated by p)")

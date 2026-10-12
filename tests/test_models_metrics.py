@@ -275,3 +275,17 @@ def test_a_computable_cell_is_ok():
 def test_a_day_beyond_the_stop_day_is_still_an_error_not_a_cell():
     with pytest.raises(ValueError, match="beyond the stop day"):
         m.cell(m.td_auc, np.array([59, 59]), np.array([1, 0]), [0.2, 0.4], 60)
+
+
+def test_a_singular_hessian_is_not_computable_on_every_platform(monkeypatch):
+    # Linux OpenBLAS hits a singular matrix on separated outcomes where macOS
+    # runs to the iteration limit; force the singular path here.
+    def singular(*args, **kwargs):
+        raise np.linalg.LinAlgError("Singular matrix")
+
+    monkeypatch.setattr(m.np.linalg, "solve", singular)
+    with pytest.raises(m.NotComputable, match="singular Hessian"):
+        m.calibration_slope([0, 1, 0, 1], [0.2, 0.6, 0.3, 0.7])
+    assert (
+        m.cell(m.calibration_slope, [0, 1, 0, 1], [0.2, 0.6, 0.3, 0.7]).status == m.NOT_COMPUTABLE
+    )
