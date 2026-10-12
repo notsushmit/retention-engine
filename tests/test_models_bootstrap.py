@@ -131,3 +131,36 @@ def test_replicates_without_lapses_make_the_interval_not_computable():
     assert out.point == 1.0  # computable on the original data: AUC 1 minus AUC 0
     assert out.status == "not computable" and "replicates not computable" in out.reason
     assert np.isnan(out.lo) and np.isnan(out.hi)
+
+
+def test_one_and_four_workers_give_identical_replicates_and_intervals():
+    from retention.models import bootstrap as b
+
+    f = [fold(seed=1), fold(seed=2, customers=np.arange(200, 600))]
+    b.use_workers(1)
+    one = paired_auc_difference(f, 301, 42)
+    b.use_workers(4)
+    try:
+        four = paired_auc_difference(f, 301, 42)
+        rows = paired_auc_difference(f, 101, 5, cluster="row")
+    finally:
+        b.use_workers(1)
+    assert np.array_equal(one.replicates, four.replicates)
+    assert (one.point, one.lo, one.hi) == (four.point, four.lo, four.hi)
+    assert np.array_equal(
+        rows.replicates, paired_auc_difference(f, 101, 5, cluster="row").replicates
+    )
+
+
+def test_workers_report_not_computable_replicates_too():
+    from retention.models import bootstrap as b
+
+    y = np.zeros(30, int)
+    y[0] = 1
+    f = FoldScores(np.arange(30), y, np.linspace(1, 0, 30), np.linspace(0, 1, 30))
+    b.use_workers(4)
+    try:
+        four = paired_auc_difference([f], 200, 3)
+    finally:
+        b.use_workers(1)
+    assert four.reason == paired_auc_difference([f], 200, 3).reason

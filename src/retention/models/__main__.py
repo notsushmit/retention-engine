@@ -181,12 +181,14 @@ def main() -> None:
     if args.command == "check-month":
         import mlflow
 
+        from retention.models.bootstrap import use_workers
         from retention.models.check_month import check_month
         from retention.models.stages import assert_no_label_building_code
         from retention.models.tracking import setup, start
 
         t0 = time.time()
         protocol = load_protocol()
+        use_workers(protocol.threads.n)  # identical intervals for any number of workers
         raw = yaml.safe_load(EVAL_CONFIG.read_text())
         reps = args.replicates or raw["bootstrap"]["replicates"]
         out_dir = processed_dir(args.fraction)
@@ -241,10 +243,12 @@ def main() -> None:
 
     if args.command in ("baselines", "classifier", "survival"):
         from retention.models import stages
+        from retention.models.bootstrap import use_workers
         from retention.models.tracking import setup
 
         t0 = time.time()
         protocol = load_protocol()
+        use_workers(protocol.threads.n)  # identical intervals for any number of workers
         raw = yaml.safe_load(EVAL_CONFIG.read_text())
         reps = args.replicates or raw["bootstrap"]["replicates"]
         out_dir = processed_dir(args.fraction)

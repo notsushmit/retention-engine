@@ -10,6 +10,11 @@ point estimate is the statistic on the original data.
 The interval covers which customers happened to be in the month, not
 month-to-month change.
 
+Replicates can run on several worker processes (`use_workers`): each worker
+replays the one random stream up to the start of its block of replicates and
+computes only that block, so the replicates, and the interval, are identical
+for any number of workers.
+
 If the statistic is not computable on the original data, or on any replicate
 (for example a resample with no lapses), the interval is labelled "not
 computable" with the reason, and no interval is formed from the other
@@ -18,6 +23,7 @@ replicates; nothing raises.
 
 from __future__ import annotations
 
+import multiprocessing as mp
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -26,6 +32,14 @@ import numpy as np
 from retention.models.metrics import NOT_COMPUTABLE, NotComputable, SortedScores
 
 VERDICT_THRESHOLDS = (0.005, 0.01, 0.02)
+_WORKERS = 1
+_JOB: dict = {}
+
+
+def use_workers(n: int) -> None:
+    """Number of worker processes for every bootstrap in this process (1 = no workers)."""
+    global _WORKERS
+    _WORKERS = max(1, int(n))
 
 
 @dataclass(frozen=True)
@@ -61,6 +75,15 @@ class Draws:
         bounds = np.cumsum([0, *[len(c) for c in customers]])
         self.index = [inverse[a:b] for a, b in zip(bounds[:-1], bounds[1:], strict=True)]
 
+    def skip(self, replicates: int) -> None:
+        """Advance the random stream past `replicates` draws without computing weights."""
+        for _ in range(replicates):
+            if self.cluster == "row":
+                for i in self.index:
+                    self.rng.integers(0, len(i), len(i))
+            else:
+                self.rng.integers(0, self.n_customers, self.n_customers)
+
     def next(self) -> list[np.ndarray]:
         if self.cluster == "row":
             return [
@@ -87,21 +110,46 @@ def bootstrap(
         point = float(np.mean([statistic(f, None) for f in range(k)]))
     except NotComputable as err:
         return Interval(nan, nan, nan, np.array([]), NOT_COMPUTABLE, str(err))
-    draws = Draws(customers, seed, cluster)
-    reps = np.full(replicates, np.nan)
-    failed, reason = 0, ""
-    for r in range(replicates):
-        weights = draws.next()
-        try:
-            reps[r] = np.mean([statistic(f, weights[f]) for f in range(k)])
-        except NotComputable as err:
-            failed, reason = failed + 1, str(err)
+    workers = min(_WORKERS, replicates)
+    if workers == 1:
+        reps, failed, reason = _block((0, replicates), customers, statistic, seed, cluster)
+    else:
+        _JOB["args"] = (customers, statistic, seed, cluster)
+        edges = np.linspace(0, replicates, workers + 1).astype(int)
+        blocks = list(zip(edges[:-1], edges[1:], strict=True))
+        with mp.get_context("fork").Pool(workers) as pool:
+            parts = pool.map(_job_block, blocks)
+        _JOB.clear()
+        reps = np.concatenate([p[0] for p in parts])
+        failed = sum(p[1] for p in parts)
+        reason = next((p[2] for p in parts if p[2]), "")
     if failed:
         why = f"{failed} of {replicates} replicates not computable ({reason})"
         return Interval(point, nan, nan, reps, NOT_COMPUTABLE, why)
     tail = (1 - level) / 2 * 100
     lo, hi = np.percentile(reps, [tail, 100 - tail])
     return Interval(point, float(lo), float(hi), reps)
+
+
+def _block(bounds, customers, statistic, seed, cluster):
+    a, b = bounds
+    draws = Draws(customers, seed, cluster)
+    draws.skip(a)
+    k = len(customers)
+    out = np.full(b - a, np.nan)
+    failed, reason = 0, ""
+    for i in range(b - a):
+        weights = draws.next()
+        try:
+            out[i] = np.mean([statistic(f, weights[f]) for f in range(k)])
+        except NotComputable as err:
+            failed, reason = failed + 1, str(err)
+    return out, failed, reason
+
+
+def _job_block(bounds):
+    customers, statistic, seed, cluster = _JOB["args"]
+    return _block(bounds, customers, statistic, seed, cluster)
 
 
 def paired_auc_difference(
