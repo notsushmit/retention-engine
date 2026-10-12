@@ -112,3 +112,22 @@ def test_resampling_rows_understates_the_interval_when_customers_repeat():
     assert by_customer.point == by_row.point
     width_c, width_r = by_customer.hi - by_customer.lo, by_row.hi - by_row.lo
     assert width_c > 3 * width_r  # about sqrt(25) = 5 times wider in theory
+
+
+def test_a_fold_with_no_lapses_gives_a_labelled_not_computable_interval():
+    n = 50
+    f = FoldScores(np.arange(n), np.zeros(n, int), np.arange(n) * 1.0, -np.arange(n) * 1.0)
+    out = paired_auc_difference([f], 100, 1)
+    assert out.status == "not computable" and np.isnan(out.point) and "lapse" in out.reason
+    assert verdict(out.point, out.lo, out.hi) == "not_computable"
+
+
+def test_replicates_without_lapses_make_the_interval_not_computable():
+    # One lapse among 30 customers: many resamples contain no lapse.
+    y = np.zeros(30, int)
+    y[0] = 1
+    f = FoldScores(np.arange(30), y, np.linspace(1, 0, 30), np.linspace(0, 1, 30))
+    out = paired_auc_difference([f], 200, 3)
+    assert out.point == 1.0  # computable on the original data: AUC 1 minus AUC 0
+    assert out.status == "not computable" and "replicates not computable" in out.reason
+    assert np.isnan(out.lo) and np.isnan(out.hi)

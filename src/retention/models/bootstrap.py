@@ -9,6 +9,11 @@ point estimate is the statistic on the original data.
 
 The interval covers which customers happened to be in the month, not
 month-to-month change.
+
+If the statistic is not computable on the original data, or on any replicate
+(for example a resample with no lapses), the interval is labelled "not
+computable" with the reason, and no interval is formed from the other
+replicates; nothing raises.
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from retention.models.metrics import SortedScores
+from retention.models.metrics import NOT_COMPUTABLE, NotComputable, SortedScores
 
 VERDICT_THRESHOLDS = (0.005, 0.01, 0.02)
 
@@ -29,6 +34,8 @@ class Interval:
     lo: float
     hi: float
     replicates: np.ndarray
+    status: str = "ok"
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -75,12 +82,23 @@ def bootstrap(
 ) -> Interval:
     """`statistic(fold, weights)` per fold, averaged over folds, with its percentile interval."""
     k = len(customers)
-    point = float(np.mean([statistic(f, None) for f in range(k)]))
+    nan = float("nan")
+    try:
+        point = float(np.mean([statistic(f, None) for f in range(k)]))
+    except NotComputable as err:
+        return Interval(nan, nan, nan, np.array([]), NOT_COMPUTABLE, str(err))
     draws = Draws(customers, seed, cluster)
-    reps = np.empty(replicates)
+    reps = np.full(replicates, np.nan)
+    failed, reason = 0, ""
     for r in range(replicates):
         weights = draws.next()
-        reps[r] = np.mean([statistic(f, weights[f]) for f in range(k)])
+        try:
+            reps[r] = np.mean([statistic(f, weights[f]) for f in range(k)])
+        except NotComputable as err:
+            failed, reason = failed + 1, str(err)
+    if failed:
+        why = f"{failed} of {replicates} replicates not computable ({reason})"
+        return Interval(point, nan, nan, reps, NOT_COMPUTABLE, why)
     tail = (1 - level) / 2 * 100
     lo, hi = np.percentile(reps, [tail, 100 - tail])
     return Interval(point, float(lo), float(hi), reps)
@@ -108,6 +126,8 @@ def paired_auc_difference(
 
 def verdict(d: float, lo: float, hi: float, threshold: float = 0.01) -> str:
     """The registered verdict for a difference d with paired interval [lo, hi]."""
+    if np.isnan([d, lo, hi]).any():
+        return "not_computable"
     if lo > 0:
         return "win" if d >= threshold else "below_threshold"
     if hi < 0:

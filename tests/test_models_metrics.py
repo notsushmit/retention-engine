@@ -246,3 +246,32 @@ def test_calibration_on_separable_outcomes_raises():
 
 def test_ece_hand_case():
     assert m.ece([0, 0, 1, 1], [0.1, 0.1, 0.5, 0.5], bins=2) == pytest.approx(0.3)
+
+
+# --- cells the data cannot support ------------------------------------------------------
+
+
+def test_auc_cell_with_no_lapses_is_labelled_not_computable():
+    out = m.cell(m.auc, [0, 0, 0], [0.1, 0.2, 0.3])
+    assert out.status == m.NOT_COMPUTABLE and math.isnan(out.value)
+    assert "lapse" in out.reason
+
+
+def test_td_auc_and_concordance_cells_with_no_lapses_are_not_computable():
+    time, obs = np.array([59, 59]), np.array([0, 0])
+    assert m.cell(m.td_auc, time, obs, [0.2, 0.4], 7).status == m.NOT_COMPUTABLE
+    assert m.cell(m.harrell_c, time, obs, [0.2, 0.4]).status == m.NOT_COMPUTABLE
+
+
+def test_calibration_cell_with_no_lapses_is_not_computable():
+    out = m.cell(m.calibration_slope, [0, 0, 0, 0], [0.1, 0.2, 0.3, 0.4])
+    assert out.status == m.NOT_COMPUTABLE and "lapse" in out.reason
+
+
+def test_a_computable_cell_is_ok():
+    assert m.cell(m.auc, [1, 0], [0.9, 0.1]) == m.Cell(1.0)
+
+
+def test_a_day_beyond_the_stop_day_is_still_an_error_not_a_cell():
+    with pytest.raises(ValueError, match="beyond the stop day"):
+        m.cell(m.td_auc, np.array([59, 59]), np.array([1, 0]), [0.2, 0.4], 60)

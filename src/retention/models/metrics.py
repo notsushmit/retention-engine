@@ -8,14 +8,45 @@ so a lapse on day C is observed and censoring takes effect just after C.
 Every metric takes optional per-row `weight`s; the customer bootstrap passes
 how many times each row's customer was drawn. Equal weights give the plain
 metric.
+
+A metric that the data cannot support (no lapses or no non-lapses, no
+comparable pairs, outcomes separated perfectly by p) raises NotComputable;
+`cell` turns that into a labelled "not computable" result, so a run reports the
+cell and carries on. Asking for a day beyond the stop day is a different
+error (ValueError): it means the code asked for something the protocol forbids.
 """
 
 from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from scipy.special import expit
 
 CLIP = 1e-6
+NOT_COMPUTABLE = "not computable"
+
+
+class NotComputable(ValueError):
+    """The data in this cell cannot support the metric (for example, no lapses)."""
+
+
+@dataclass(frozen=True)
+class Cell:
+    """A metric's value, or a labelled "not computable" with the reason."""
+
+    value: Any
+    status: str = "ok"
+    reason: str = ""
+
+
+def cell(metric: Callable[..., Any], *args: Any, **kwargs: Any) -> Cell:
+    try:
+        return Cell(metric(*args, **kwargs))
+    except NotComputable as err:
+        return Cell(float("nan"), NOT_COMPUTABLE, str(err))
 
 
 def _w(n: int, weight: np.ndarray | None) -> np.ndarray:
@@ -42,7 +73,7 @@ class SortedScores:
         below = np.cumsum(neg) - neg
         total = pos.sum() * neg.sum()
         if total == 0:
-            raise ValueError("AUC needs at least one case and one control")
+            raise NotComputable("AUC needs at least one lapse and one non-lapse")
         return float((pos * (below + 0.5 * neg)).sum() / total)
 
 
@@ -129,7 +160,7 @@ def harrell_c(
                 add(rank[i], w[i])
                 total += w[i]
     if den == 0:
-        raise ValueError("no comparable pairs")
+        raise NotComputable("no comparable pairs")
     return num / den
 
 
@@ -288,7 +319,7 @@ def _newton_logistic(x: np.ndarray, y: np.ndarray, w: np.ndarray, offset: np.nda
         beta += step
         if np.abs(step).max() < 1e-12:
             return beta
-    raise ValueError("calibration regression did not converge (outcomes separable by p?)")
+    raise NotComputable("calibration regression did not converge (outcomes separated by p)")
 
 
 def calibration_slope(
@@ -303,6 +334,8 @@ def calibration_slope(
     """
     y = np.asarray(y, dtype=float)
     w = _w(len(y), weight)
+    if w[y == 1].sum() == 0 or w[y == 0].sum() == 0:
+        raise NotComputable("calibration needs at least one lapse and one non-lapse")
     z, clipped = logit(p, clip)
     (level,) = _newton_logistic(np.ones((len(z), 1)), y, w, z)
     if np.ptp(z) == 0:
