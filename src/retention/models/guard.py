@@ -17,14 +17,17 @@ open_test_session() refuses unless every check below holds, in this order:
   8. every cited run exists and carries the same config SHA-256;
   9. no test run exists (a crashed one may be repeated with a stated reason).
 Then it records the test run in MLflow and creates the TestUnlock, the only
-place in the code base that can. This catches accidental drift; the pushed
-commit history is the proof of order.
+place in the code base that can. dry_run() runs the same checks and reports
+them without recording or unlocking anything; before the freeze, the checks
+that need the choices file are reported as "needs choices". This catches
+accidental drift; the pushed commit history is the proof of order.
 """
 
 from __future__ import annotations
 
 import hashlib
 import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -109,84 +112,190 @@ def blob_sha256(repo: Path, commit: str, path: Path) -> str:
     return hashlib.sha256(out.stdout).hexdigest()
 
 
-def _refuse(check: int, message: str) -> None:
-    raise GuardRefusal(f"check {check}: {message}")
+@dataclass(frozen=True)
+class CheckResult:
+    check: int
+    name: str
+    status: str  # "passed", "failed", or "needs choices" (before the freeze)
+    message: str = ""
 
 
-def open_test_session(tr: Tracking, rerun_reason: str | None = None) -> tuple[TestUnlock, str]:
-    """Run every check; on success record the test run and return (unlock, run id)."""
-    repo, client = tr.repo, MlflowClient(tr.uri)
+@dataclass
+class Checks:
+    results: list[CheckResult] = field(default_factory=list)
+    text: str = ""
+    binding: str = ""
+    previous: list = field(default_factory=list)
 
-    if tree_dirty(repo):
-        _refuse(1, "a tracked file differs from HEAD; commit or discard it first")
+    def add(self, check: int, name: str, ok: bool, message: str) -> bool:
+        self.results.append(
+            CheckResult(check, name, "passed" if ok else "failed", "" if ok else message)
+        )
+        return ok
+
+    def pending(self, check: int, name: str, message: str) -> None:
+        self.results.append(CheckResult(check, name, "needs choices", message))
+
+    def first_problem(self) -> CheckResult | None:
+        return next((r for r in self.results if r.status != "passed"), None)
+
+
+def run_checks(tr: Tracking, rerun_reason: str | None = None) -> Checks:
+    """Every precondition of the test session, in order; never raises, never unlocks.
+
+    Before the freeze (no configs/choices.yaml), checks 2, 3 and 8 need the
+    choices file and are reported as such; the binding commit is then the last
+    commit that changed the config and the recorded hash is the working tree's.
+    """
+    repo, client, out = tr.repo, MlflowClient(tr.uri), Checks()
+    out.add(1, "clean tree", not tree_dirty(repo), "a tracked file differs from HEAD")
 
     path = repo / CHOICES
-    tracked = subprocess.run(
-        ["git", "-C", str(repo), "ls-files", "--error-unmatch", str(CHOICES)],
-        capture_output=True,
-    )
-    if not path.exists() or tracked.returncode:
-        _refuse(2, "configs/choices.yaml is not committed")
-    text = path.read_text()
-    doc = yaml.safe_load(text)
-    if doc.get("frozen") is not True:
-        _refuse(2, "configs/choices.yaml is not frozen")
-    missing = [
-        s for s in required_stages(repo) if doc.get("choices", {}).get(s) in (None, "", {}, [])
-    ]
-    if missing:
-        _refuse(2, f"configs/choices.yaml is incomplete: no choice for {missing}")
+    doc: dict[str, Any] | None = None
+    if not path.exists():
+        for n, name in ((2, "choices committed and complete"), (3, "choices not edited")):
+            out.pending(n, name, "configs/choices.yaml does not exist yet (before the freeze)")
+    else:
+        tracked = subprocess.run(
+            ["git", "-C", str(repo), "ls-files", "--error-unmatch", str(CHOICES)],
+            capture_output=True,
+        )
+        out.text = path.read_text()
+        doc = yaml.safe_load(out.text)
+        missing = [
+            s for s in required_stages(repo) if doc.get("choices", {}).get(s) in (None, "", {}, [])
+        ]
+        if tracked.returncode:
+            out.add(
+                2, "choices committed and complete", False, "configs/choices.yaml is not committed"
+            )
+        elif doc.get("frozen") is not True:
+            out.add(
+                2, "choices committed and complete", False, "configs/choices.yaml is not frozen"
+            )
+        else:
+            out.add(
+                2,
+                "choices committed and complete",
+                not missing,
+                f"configs/choices.yaml is incomplete: no choice for {missing}",
+            )
+        try:
+            tags = client.get_run(doc["freeze_run_id"]).data.tags
+            ok = tags.get("run_kind") == "freeze" and tags.get("choices_sha256") == sha256_text(
+                out.text
+            )
+            out.add(
+                3,
+                "choices not edited",
+                ok,
+                "configs/choices.yaml was edited after the freeze command wrote it",
+            )
+        except (MlflowException, KeyError):
+            out.add(
+                3,
+                "choices not edited",
+                False,
+                "the freeze run of configs/choices.yaml does not exist",
+            )
 
-    try:
-        freeze_run = client.get_run(doc["freeze_run_id"])
-    except (MlflowException, KeyError):
-        _refuse(3, "the freeze run of configs/choices.yaml does not exist")
-    if freeze_run.data.tags.get("run_kind") != "freeze" or freeze_run.data.tags.get(
-        "choices_sha256"
-    ) != sha256_text(text):
-        _refuse(3, "configs/choices.yaml was edited after the freeze command wrote it")
-
-    binding, recorded = doc["binding_commit"], doc["evaluation_config_sha256"]
+    if doc is not None and "binding_commit" in doc:
+        binding, recorded = doc["binding_commit"], doc["evaluation_config_sha256"]
+    else:
+        commits = config_commits(repo)
+        binding, recorded = (commits[-1] if commits else "HEAD"), sha256_file(repo / CONFIG)
+    out.binding = binding
     ancestor = subprocess.run(
         ["git", "-C", str(repo), "merge-base", "--is-ancestor", binding, "HEAD"],
         capture_output=True,
     )
-    if ancestor.returncode:
-        _refuse(4, f"the binding commit {binding} is not an ancestor of HEAD")
-    if blob_sha256(repo, binding, CONFIG) != recorded:
-        _refuse(5, f"configs/evaluation.yaml at {binding} does not have the recorded SHA-256")
-    if sha256_file(repo / CONFIG) != recorded:
-        _refuse(6, "the working-tree configs/evaluation.yaml does not have the recorded SHA-256")
-    if git(repo, "log", "--format=%h", f"{binding}..HEAD", "--", str(CONFIG)):
-        _refuse(7, f"configs/evaluation.yaml was changed after the binding commit {binding}")
+    is_ancestor = out.add(
+        4,
+        "binding commit is an ancestor",
+        not ancestor.returncode,
+        f"the binding commit {binding} is not an ancestor of HEAD",
+    )
+    out.add(
+        5,
+        "config at the binding commit",
+        is_ancestor and blob_sha256(repo, binding, CONFIG) == recorded,
+        f"configs/evaluation.yaml at {binding} does not have the recorded SHA-256",
+    )
+    out.add(
+        6,
+        "config in the working tree",
+        sha256_file(repo / CONFIG) == recorded,
+        "the working-tree configs/evaluation.yaml does not have the recorded SHA-256",
+    )
+    later = (
+        git(repo, "log", "--format=%h", f"{binding}..HEAD", "--", str(CONFIG))
+        if is_ancestor
+        else "?"
+    )
+    out.add(
+        7,
+        "no later config change",
+        not later,
+        f"configs/evaluation.yaml was changed after the binding commit {binding}",
+    )
 
-    for run_id in _run_ids(doc.get("run_ids", {})):
-        try:
-            cited = client.get_run(run_id)
-        except MlflowException:
-            _refuse(8, f"cited run {run_id} does not exist")
-        if cited.data.tags.get("config_sha256") != recorded:
-            _refuse(8, f"cited run {run_id} was made under a different config")
+    if doc is None:
+        out.pending(8, "cited runs", "the cited runs are listed in configs/choices.yaml")
+    else:
+        problem = ""
+        for run_id in _run_ids(doc.get("run_ids", {})):
+            try:
+                if client.get_run(run_id).data.tags.get("config_sha256") != recorded:
+                    problem = f"cited run {run_id} was made under a different config"
+                    break
+            except MlflowException:
+                problem = f"cited run {run_id} does not exist"
+                break
+        out.add(8, "cited runs", not problem, problem)
 
-    previous = client.search_runs(
+    out.previous = client.search_runs(
         [tr.experiment_id], filter_string="tags.run_kind = 'test'", max_results=1000
     )
-    if any(r.info.status in ("FINISHED", "RUNNING", "SCHEDULED") for r in previous):
-        _refuse(9, "a test run already exists; the test months are scored once")
-    if previous and not rerun_reason:
-        _refuse(9, "a crashed test run exists; repeat it only with a stated reason")
+    if any(r.info.status in ("FINISHED", "RUNNING", "SCHEDULED") for r in out.previous):
+        out.add(
+            9,
+            "no test run yet",
+            False,
+            "a test run already exists; the test months are scored once",
+        )
+    else:
+        out.add(
+            9,
+            "no test run yet",
+            not out.previous or bool(rerun_reason),
+            "a crashed test run exists; repeat it only with a stated reason",
+        )
+    return out
+
+
+def dry_run(tr: Tracking) -> list[CheckResult]:
+    """All precondition checks against the repository, without recording or unlocking anything."""
+    return run_checks(tr).results
+
+
+def open_test_session(tr: Tracking, rerun_reason: str | None = None) -> tuple[TestUnlock, str]:
+    """Run every check; on success record the test run and return (unlock, run id)."""
+    checks = run_checks(tr, rerun_reason)
+    problem = checks.first_problem()
+    if problem is not None:
+        raise GuardRefusal(f"check {problem.check}: {problem.message}")
 
     tags = base_tags(tr, "test", {}) | {
         "unlock_issued": "true",
-        "choices_sha256": sha256_text(text),
-        "binding_commit": binding,
+        "choices_sha256": sha256_text(checks.text),
+        "binding_commit": checks.binding,
     }
-    if previous:
+    if checks.previous:
         tags |= {
             "rerun_reason": rerun_reason,
-            "rerun_of": ",".join(r.info.run_id for r in previous),
+            "rerun_of": ",".join(r.info.run_id for r in checks.previous),
         }
     check_no_absolute_paths(tags)
-    run = client.create_run(tr.experiment_id, tags=tags, run_name="test")
+    run = MlflowClient(tr.uri).create_run(tr.experiment_id, tags=tags, run_name="test")
     unlock = TestUnlock()
     return unlock, run.info.run_id

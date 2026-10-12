@@ -6,7 +6,7 @@ import yaml
 from mlflow.tracking import MlflowClient
 
 from model_fixtures import commit, make_repo, sh, tracking_uri
-from retention.models.guard import CHOICES, GuardRefusal, freeze, open_test_session
+from retention.models.guard import CHOICES, GuardRefusal, dry_run, freeze, open_test_session
 from retention.models.protocol import TestUnlock, load_protocol
 from retention.models.tracking import CONFIG, setup, start
 
@@ -188,3 +188,44 @@ def test_a_crashed_test_run_may_be_repeated_only_with_a_reason(env):
     tags = client.get_run(run_id).data.tags
     assert tags["rerun_reason"] == "process killed by the OS"
     assert tags["rerun_of"] == crashed.info.run_id
+
+
+# --- later non-config commits and the dry run ------------------------------------------------
+
+
+def test_a_later_commit_that_changes_only_other_files_does_not_trip_check_7(env):
+    tr, runs = env
+    frozen(tr, runs)
+    workflow = tr.repo / ".github" / "workflows" / "ci.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text("name: ci\n")
+    commit(tr.repo, "Change CI only")
+    unlock, _ = open_test_session(tr)
+    assert isinstance(unlock, TestUnlock)
+
+
+def test_dry_run_before_the_freeze_passes_and_records_nothing(env):
+    tr, _ = env
+    results = dry_run(tr)
+    assert [r.check for r in results] == list(range(1, 10))
+    assert {r.check: r.status for r in results if r.status != "passed"} == {
+        2: "needs choices",
+        3: "needs choices",
+        8: "needs choices",
+    }
+    assert not MlflowClient(tr.uri).search_runs(
+        [tr.experiment_id], filter_string="tags.run_kind = 'test'"
+    )
+
+
+def test_dry_run_after_the_freeze_passes_every_check(env):
+    tr, runs = env
+    frozen(tr, runs)
+    assert {r.status for r in dry_run(tr)} == {"passed"}
+
+
+def test_dry_run_reports_a_failure_without_raising(env):
+    tr, _ = env
+    (tr.repo / "README.md").write_text("changed\n")
+    status = {r.check: r.status for r in dry_run(tr)}
+    assert status[1] == "failed" and status[4] == "passed"

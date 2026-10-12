@@ -1,4 +1,4 @@
-"""Command line entry: `python -m retention.models {protocol-check,label-check}`.
+"""Command line entry: `python -m retention.models {protocol-check,label-check,guard-dry-run}`.
 
 protocol-check loads configs/evaluation.yaml (which runs the purge-rule and
 locked-month checks), then counts snapshot membership for the fold, fit,
@@ -11,6 +11,10 @@ each 2016 snapshot and horizon in `label_as_of_check`, and the fit snapshots'
 survival labels at the test pipeline's as_of, and compares them with the final
 labels.parquet. Any differing row is reported and the command exits with an
 error. --first-only runs the first build alone, to measure its memory.
+
+guard-dry-run runs every precondition of the test session against this
+repository and prints each check's status; it records nothing and unlocks
+nothing.
 """
 
 from __future__ import annotations
@@ -146,7 +150,17 @@ def main() -> None:
     lc = sub.add_parser("label-check", help="labels as of each split date vs the final labels")
     lc.add_argument("--fraction", type=float, default=None)
     lc.add_argument("--first-only", action="store_true", help="run only the first build")
+    sub.add_parser("guard-dry-run", help="check the test-session preconditions; unlock nothing")
     args = parser.parse_args()
+
+    if args.command == "guard-dry-run":
+        from retention.models.guard import dry_run
+        from retention.models.tracking import setup
+
+        results = dry_run(setup(Path.cwd()))
+        for r in results:
+            print(f"check {r.check} {r.name:32s} {r.status:14s} {r.message}")
+        sys.exit(1 if any(r.status == "failed" for r in results) else 0)
 
     t0 = time.time()
     out_dir = processed_dir(args.fraction)
