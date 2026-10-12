@@ -25,8 +25,8 @@ from pathlib import Path
 import yaml
 
 from retention.data.sample import resolve_fraction, sample_dir
-from retention.models.data import labels_as_of, load_labels
-from retention.models.protocol import EVAL_CONFIG, Protocol, load_protocol, membership
+from retention.models.data import labels_as_of, load_labels, membership
+from retention.models.protocol import EVAL_CONFIG, Protocol, load_protocol
 from retention.models.resources import peak_rss_gb
 
 

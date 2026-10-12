@@ -14,6 +14,7 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from threadpoolctl import threadpool_info
 
 from retention.data.sample import bucket
+from retention.models.data import membership
 from retention.models.protocol import (
     GUARD_FUNCTION,
     GUARD_MODULE,
@@ -21,7 +22,6 @@ from retention.models.protocol import (
     TestUnlock,
     fully_observed,
     load_protocol,
-    membership,
     parse_protocol,
 )
 

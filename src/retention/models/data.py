@@ -20,6 +20,7 @@ from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
+import duckdb
 import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -29,12 +30,14 @@ import pyarrow.parquet as pq
 from retention.features.build import NULLABLE
 from retention.labels.config import LabelConfig, load_label_config
 from retention.labels.snapshots import build_labels
-from retention.models.protocol import Protocol, TestUnlock
+from retention.models.protocol import Protocol, TestUnlock, half_sql
 
 # The largest single read in the protocol names 3 snapshots (the survival
 # sensitivity fit, or the never-seen reference months).
 MAX_SNAPSHOTS_PER_READ = 4
 META_KEY = b"retention.labels_as_of"
+# Pre-T columns of labels.parquet that membership queries read.
+MEMBERSHIP_COLUMNS = ("msno", "snapshot_date", "in_exp30", "segment")
 
 # Every column of labels.parquet, by whether it is known at T.
 PRE_T_LABEL_COLUMNS = frozenset(
@@ -196,3 +199,24 @@ def require_as_of(labels: pd.DataFrame, split_as_of: date) -> None:
         raise ValueError("labels carry no as_of; fit and calibration labels must come from a build")
     if as_of > split_as_of:
         raise ValueError(f"labels built as of {as_of} are later than the split date {split_as_of}")
+
+
+# --- membership (pre-T columns only) ----------------------------------------------
+
+
+def membership(
+    labels_path: Path,
+    snapshots: list[date] | tuple[date, ...],
+    protocol: Protocol,
+    p2_main_only: bool = False,
+) -> pd.DataFrame:
+    """Customer, snapshot, in_exp30, segment and half for the given snapshots."""
+    _check_read(snapshots, list(MEMBERSHIP_COLUMNS))
+    dates = ", ".join(f"DATE '{d}'" for d in snapshots)
+    where = f"snapshot_date in ({dates})"
+    if p2_main_only:
+        segs = ", ".join(f"'{s}'" for s in protocol.main_segments)
+        where += f" and in_exp30 and segment in ({segs})"
+    cols = ", ".join(MEMBERSHIP_COLUMNS)
+    sql = f"select {cols}, {half_sql(protocol)} as half from read_parquet(?) where {where}"
+    return duckdb.execute(sql, [str(labels_path)]).df()

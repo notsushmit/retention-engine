@@ -9,8 +9,7 @@ A typed view of configs/evaluation.yaml, checked when it loads:
   test pipeline names those months, and it is handed out only against a
   TestUnlock, which the test guard issues after its checks pass.
 
-Membership queries read only pre-T columns of labels.parquet (customer,
-snapshot, in_exp30, segment), never an outcome.
+This module does no I/O beyond reading the config; data.py reads the tables.
 """
 
 from __future__ import annotations
@@ -23,16 +22,12 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-import duckdb
-import pandas as pd
 import yaml
 from threadpoolctl import threadpool_limits
 
 from retention.data.sample import bucket_sql
 
 EVAL_CONFIG = Path("configs/evaluation.yaml")
-# Pre-T columns of labels.parquet that membership queries may read.
-MEMBERSHIP_COLUMNS = ("msno", "snapshot_date", "in_exp30", "segment")
 PARITY = {"even": 0, "odd": 1}
 
 
@@ -258,29 +253,10 @@ def load_protocol(path: Path = EVAL_CONFIG) -> Protocol:
     return parse_protocol(yaml.safe_load(path.read_text()))
 
 
-# --- membership (pre-T columns only) ----------------------------------------------
+# --- customer halves -------------------------------------------------------------
 
 
 def half_sql(protocol: Protocol, column: str = "msno") -> str:
     """SQL expression naming a customer's half from the md5 bucket parity."""
     sel = protocol.halves["selection"]
     return f"case when {bucket_sql(column)} % 2 = {sel} then 'selection' else 'calibration' end"
-
-
-def membership(
-    labels_path: Path,
-    snapshots: list[date] | tuple[date, ...],
-    protocol: Protocol,
-    p2_main_only: bool = False,
-) -> pd.DataFrame:
-    """Customer, snapshot, in_exp30, segment and half for the given snapshots."""
-    if not snapshots:
-        raise ValueError("membership needs at least one snapshot")
-    dates = ", ".join(f"DATE '{d}'" for d in snapshots)
-    where = f"snapshot_date in ({dates})"
-    if p2_main_only:
-        segs = ", ".join(f"'{s}'" for s in protocol.main_segments)
-        where += f" and in_exp30 and segment in ({segs})"
-    cols = ", ".join(MEMBERSHIP_COLUMNS)
-    sql = f"select {cols}, {half_sql(protocol)} as half from read_parquet(?) where {where}"
-    return duckdb.execute(sql, [str(labels_path)]).df()
