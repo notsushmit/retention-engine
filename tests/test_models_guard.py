@@ -280,3 +280,15 @@ def test_the_guard_accepts_the_descriptive_breakdowns_key(env):
     assert {r.status for r in dry_run(tr)} == {"passed"}
     unlock, _ = open_test_session(tr)
     assert isinstance(unlock, TestUnlock)
+
+
+def test_the_guard_accepts_the_descriptive_models_key(env):
+    from retention.models.report import DESCRIPTIVE_MODELS
+
+    tr, runs = env
+    freeze(tr, {**CHOICES_DOC, "descriptive_models": DESCRIPTIVE_MODELS}, runs)
+    commit(tr.repo, "Freeze choices")
+    assert yaml.safe_load((tr.repo / CHOICES).read_text())["choices"]["descriptive_models"]["dt02"]
+    assert {r.status for r in dry_run(tr)} == {"passed"}
+    unlock, _ = open_test_session(tr)
+    assert isinstance(unlock, TestUnlock)

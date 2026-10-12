@@ -61,3 +61,11 @@ def test_last_row_breakdown_groups():
         "missing",
     ]
     assert b["decides"] == "nothing"
+
+
+def test_descriptive_models_decide_nothing_and_notes_exist():
+    from retention.models.report import DESCRIPTIVE_MODELS, REQUIRED_NOTES
+
+    assert DESCRIPTIVE_MODELS["dt02"]["decides"] == "nothing"
+    assert "after the fold results were seen" in DESCRIPTIVE_MODELS["dt02"]["added"]
+    assert any("cox02 and cox04" in n and "0.01" in n for n in REQUIRED_NOTES)

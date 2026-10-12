@@ -105,3 +105,31 @@ def breakdown_group(value: object, breakdown: dict[str, Any]) -> str:
         if value in values:
             return group
     return "missing"
+
+
+# Descriptive model cells, added after the fold results were seen; they change
+# no verdict and are never a phase-goal comparator.
+DESCRIPTIVE_MODELS = {
+    "dt02": {
+        "family": "discrete_time",
+        "candidate": "dt02",
+        "added": "after the fold results were seen",
+        "reason": (
+            "fold-mean AUC tied the classifier (+0.0003 [-0.0008, +0.0012]) and beat the "
+            "registered pick dt01 by +0.019, but it was lower on f30 by 0.0001, so the "
+            "registered rule kept dt01"
+        ),
+        "decides": "nothing",
+    }
+}
+
+# Statements the report must carry (checked by the report tests).
+REQUIRED_NOTES = [
+    "Cox candidates cox02 and cox04 (ridge penalty 0.01) failed to fit: the optimiser "
+    "diverged on customers whose last row is a trial, ending with a log-likelihood below "
+    "the model without inputs. They are excluded, so Cox has two usable candidates "
+    "(cox01 and cox03).",
+    "The proportional-hazards test ran on a fixed subsample of customers (md5 buckets 0-1 of "
+    "the sample), never on all fit rows, because its cost grows faster than quadratically "
+    "with rows; it is descriptive.",
+]
