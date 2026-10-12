@@ -1,0 +1,88 @@
+# Written by the freeze command after the fold stages; never edited by hand.
+# Its SHA-256 is stored in the freeze run, and the test guard checks it.
+frozen: true
+preregistration_commits:
+- 8b6562c
+- 4369ab0
+- 7b18e2b
+- a06e9c2
+binding_commit: a06e9c2
+evaluation_config_sha256: bb88fdcbf1877e038c292d5db8ce77ef9704cb367745ef3f863f7272fb629855
+freeze_run_id: c848df55ba4d47e5a43ced42569d7e5d
+choices:
+  feature_set: fs1
+  classifier_hyperparameters:
+    7: c01
+    30: c01
+    59: c01
+  survival_candidate:
+    cox: cox03
+    xgboost_aft: aft01
+    discrete_time: dt01
+  survival_family:
+    family: discrete_time
+    candidate: dt01
+  calibration_method:
+    7: platt
+    30: platt
+    59: platt
+    note: 'Platt at every horizon on test, as registered: isotonic fails the 1,000-event
+      floor at 7 days (976) and has no calibration fold at 30 or 59 days'
+  strongest_simple_baseline:
+    7: banded_logistic
+    30: banded_logistic
+    59: banded_logistic
+  descriptive_breakdowns:
+    last_row:
+      column: last_row_kind
+      groups:
+        paid:
+        - paid
+        zero-paid:
+        - trial
+        - promo
+        - discount100
+      statistics:
+      - rows
+      - share_of_rows
+      - lapses
+      - lapse_rate
+      - auc
+      - calibration_slope
+      - calibration_intercept
+      decides: nothing
+  descriptive_models:
+    dt02:
+      family: discrete_time
+      candidate: dt02
+      added: after the fold results were seen
+      reason: fold-mean AUC tied the classifier (+0.0003 [-0.0008, +0.0012]) and beat
+        the registered pick dt01 by +0.019, but it was lower on f30 by 0.0001, so
+        the registered rule kept dt01
+      decides: nothing
+run_ids:
+  feature_set:
+  - d45032871f4d4496a6e4a620a6ec56e7
+  - a51053f60ed44df680ebec11d051be3b
+  - ea55934d46bf48288d6f2b19ea9cee6a
+  - 9d19fc3ee61c4a7f9b1dfafd01536859
+  - 1cf450cb7da14b2d850160b23c008960
+  - cb4299a55f9b4479878a2905ed751326
+  - 269eca4c7e9345ff8ba1d7f6bec789f9
+  - c940564aa82d4d8d95882bf38dd6ef07
+  - 9aa73a9e44c54413880d95c6d7bf4d83
+  classifier_hyperparameters:
+  - 9cf54094caba4f7d9d7019e94b9c1716
+  - 2676449bf9e14a959d60850455e22ef0
+  survival_candidate:
+  - c46dca1307604d9187dc69fef005e202
+  survival_family:
+  - c46dca1307604d9187dc69fef005e202
+  calibration_method:
+  - 7b52a85d7995492fa0b29cd9302a63bc
+  - 9bca205ae00b4017a440d16057fa60e8
+  strongest_simple_baseline:
+  - 0c1907a0708c454599678c83e8fd0071
+  - 5789c22503bb47f9898908ddfdb0a312
+  descriptive_models:
+  - c46dca1307604d9187dc69fef005e202
