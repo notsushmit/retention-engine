@@ -29,7 +29,6 @@ import pyarrow.parquet as pq
 
 from retention.features.build import NULLABLE
 from retention.labels.config import LabelConfig, load_label_config
-from retention.labels.snapshots import build_labels
 from retention.models.protocol import Protocol, TestUnlock, half_sql
 
 # The largest single read in the protocol names 3 snapshots (the survival
@@ -147,7 +146,13 @@ def cache_path(cache_dir: Path, as_of: date, snapshots: tuple[date, ...]) -> Pat
 def build_labels_as_of(
     tx: pd.DataFrame, as_of: date, snapshots: tuple[date, ...], base: LabelConfig
 ) -> pd.DataFrame:
-    """Labels for exactly `snapshots`, from transactions dated on or before `as_of`."""
+    """Labels for exactly `snapshots`, from transactions dated on or before `as_of`.
+
+    The label-building code is imported here, not at module level, so a model
+    process (which only reads cached builds) never loads it.
+    """
+    from retention.labels.snapshots import build_labels
+
     cfg = replace(base, as_of=as_of, snapshots=tuple(sorted(snapshots))).validate()
     return build_labels(tx, cfg)
 
@@ -178,6 +183,17 @@ def labels_as_of(
     tmp = path.with_suffix(".parquet.tmp")
     pq.write_table(table, tmp, compression="zstd")
     tmp.replace(path)
+    return path
+
+
+def cached_labels(cache_dir: Path, as_of: date, snapshots: tuple[date, ...]) -> Path:
+    """The cached build for (as_of, snapshots); model code never builds labels itself."""
+    path = cache_path(cache_dir, as_of, snapshots)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"no label build as of {as_of} for {[str(t) for t in snapshots]}; "
+            "run `python -m retention.models build-labels` first"
+        )
     return path
 
 

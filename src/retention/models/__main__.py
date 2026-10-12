@@ -1,4 +1,6 @@
-"""Command line entry: `python -m retention.models {protocol-check,label-check,guard-dry-run}`.
+"""Command line entry: `python -m retention.models <command>`.
+
+Commands: protocol-check, label-check, guard-dry-run, build-labels, baselines.
 
 protocol-check loads configs/evaluation.yaml (which runs the purge-rule and
 locked-month checks), then counts snapshot membership for the fold, fit,
@@ -11,6 +13,13 @@ each 2016 snapshot and horizon in `label_as_of_check`, and the fit snapshots'
 survival labels at the test pipeline's as_of, and compares them with the final
 labels.parquet. Any differing row is reported and the command exits with an
 error. --first-only runs the first build alone, to measure its memory.
+
+build-labels builds one cached label set (labels as of a split date for the
+snapshots that split's fit and calibration roles need). It is the only command
+that loads the label-building code; model commands read the cache and refuse
+to build.
+
+baselines runs the simple baselines on the folds (a model process).
 
 guard-dry-run runs every precondition of the test session against this
 repository and prints each check's status; it records nothing and unlocks
@@ -151,7 +160,58 @@ def main() -> None:
     lc.add_argument("--fraction", type=float, default=None)
     lc.add_argument("--first-only", action="store_true", help="run only the first build")
     sub.add_parser("guard-dry-run", help="check the test-session preconditions; unlock nothing")
+    bl = sub.add_parser("build-labels", help="build one cached label set in this process")
+    bl.add_argument("--split", required=True, help="a fold name (for example f7a) or 'test'")
+    bl.add_argument("--fraction", type=float, default=None)
+    bs = sub.add_parser("baselines", help="simple baselines on the folds")
+    bs.add_argument("--fraction", type=float, default=None)
+    bs.add_argument("--replicates", type=int, default=None)
     args = parser.parse_args()
+
+    if args.command == "build-labels":
+        from retention.models.data import fit_label_requests
+
+        t0 = time.time()
+        protocol = load_protocol()
+        ((name, as_of, snaps),) = [r for r in fit_label_requests(protocol) if r[0] == args.split]
+        path = labels_as_of(
+            processed_dir(args.fraction),
+            interim_dir(args.fraction) / "labels_asof",
+            as_of,
+            snaps,
+            protocol,
+        )
+        print(
+            json.dumps(
+                {
+                    "split": name,
+                    "as_of": str(as_of),
+                    "snapshots": [str(t) for t in snaps],
+                    "file": path.name,
+                    "seconds": round(time.time() - t0, 1),
+                    "peak_rss_gb": peak_rss_gb(),
+                }
+            )
+        )
+        return
+
+    if args.command == "baselines":
+        from retention.models.stages import baseline_stage
+        from retention.models.tracking import setup
+
+        t0 = time.time()
+        protocol = load_protocol()
+        raw = yaml.safe_load(EVAL_CONFIG.read_text())
+        reps = args.replicates or raw["bootstrap"]["replicates"]
+        out_dir = processed_dir(args.fraction)
+        report = baseline_stage(
+            protocol, out_dir, interim_dir(args.fraction) / "labels_asof", setup(Path.cwd()), reps
+        )
+        report["seconds"] = round(time.time() - t0, 1)
+        report["peak_rss_gb"] = peak_rss_gb()
+        (out_dir / "baselines_folds.json").write_text(json.dumps(report, indent=2) + "\n")
+        print(json.dumps({k: report[k] for k in ("seconds", "peak_rss_gb")}))
+        return
 
     if args.command == "guard-dry-run":
         from retention.models.guard import dry_run
