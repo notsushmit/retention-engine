@@ -292,3 +292,30 @@ def test_the_guard_accepts_the_descriptive_models_key(env):
     assert {r.status for r in dry_run(tr)} == {"passed"}
     unlock, _ = open_test_session(tr)
     assert isinstance(unlock, TestUnlock)
+
+
+def test_dry_run_marks_written_but_uncommitted_choices_as_needs_commit(env):
+    tr, runs = env
+    freeze(tr, CHOICES_DOC, runs)
+    status = {r.check: r.status for r in dry_run(tr)}
+    assert status[2] == "needs commit"
+    assert {s for c, s in status.items() if c != 2} == {"passed"}
+    refused(tr, 2)  # the session still refuses until it is committed
+
+
+def test_freeze_assembly_cites_exactly_one_valid_run_per_name(env):
+    from mlflow.tracking import MlflowClient
+
+    from retention.models.freeze_choices import find_run
+
+    tr, _ = env
+    first = fold_run(tr, "fold-x-baseline-strongest-h7-baseline_inputs")
+    MlflowClient(tr.uri).set_tag(first, "invalid", "superseded")
+    second = fold_run(tr, "fold-x-baseline-strongest-h7-baseline_inputs")
+    client = MlflowClient(tr.uri)
+    assert (
+        find_run(client, tr, "fold-x-baseline-strongest-h7-baseline_inputs").info.run_id == second
+    )
+    fold_run(tr, "fold-x-baseline-strongest-h7-baseline_inputs")
+    with pytest.raises(ValueError, match="expected exactly 1"):
+        find_run(client, tr, "fold-x-baseline-strongest-h7-baseline_inputs")

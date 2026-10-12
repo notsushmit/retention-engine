@@ -1,7 +1,7 @@
 """Command line entry: `python -m retention.models <command>`.
 
 Commands: protocol-check, label-check, guard-dry-run, build-labels, baselines, classifier,
-survival, calibration,
+survival, calibration, freeze,
 check-month (descriptive analysis of 2016-11; decides nothing).
 
 protocol-check loads configs/evaluation.yaml (which runs the purge-rule and
@@ -177,7 +177,29 @@ def main() -> None:
     cm = sub.add_parser("check-month", help="descriptive analysis of the check month 2016-11")
     cm.add_argument("--fraction", type=float, default=None)
     cm.add_argument("--replicates", type=int, default=None)
+    fz = sub.add_parser("freeze", help="write configs/choices.yaml from the MLflow runs")
+    fz.add_argument(
+        "--preview", action="store_true", help="print the file and checks; write nothing"
+    )
     args = parser.parse_args()
+
+    if args.command == "freeze":
+        from retention.models.freeze_choices import assemble, preview
+        from retention.models.guard import CHOICES, freeze
+        from retention.models.tracking import setup
+
+        tr = setup(Path.cwd())
+        choices, run_ids, checks = assemble(tr)
+        for name, ok, detail in checks:
+            print(f"{'PASS' if ok else 'FAIL'}  {name}" + ("" if ok else f"  ({detail})"))
+        if not all(ok for _, ok, _ in checks):
+            sys.exit(1)
+        if args.preview:
+            print(preview(tr, choices, run_ids))
+            return
+        run_id = freeze(tr, choices, run_ids)
+        print(f"wrote {CHOICES} (freeze run {run_id}); commit it alone")
+        return
 
     if args.command == "check-month":
         import mlflow

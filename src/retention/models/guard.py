@@ -116,7 +116,7 @@ def blob_sha256(repo: Path, commit: str, path: Path) -> str:
 class CheckResult:
     check: int
     name: str
-    status: str  # "passed", "failed", or "needs choices" (before the freeze)
+    status: str  # "passed", "failed", "needs choices" (before the freeze), "needs commit"
     message: str = ""
 
 
@@ -166,8 +166,13 @@ def run_checks(tr: Tracking, rerun_reason: str | None = None) -> Checks:
             s for s in required_stages(repo) if doc.get("choices", {}).get(s) in (None, "", {}, [])
         ]
         if tracked.returncode:
-            out.add(
-                2, "choices committed and complete", False, "configs/choices.yaml is not committed"
+            out.results.append(
+                CheckResult(
+                    2,
+                    "choices committed and complete",
+                    "needs commit",
+                    "configs/choices.yaml is written but not committed",
+                )
             )
         elif doc.get("frozen") is not True:
             out.add(
