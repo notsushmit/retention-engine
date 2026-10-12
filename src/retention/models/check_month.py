@@ -274,4 +274,118 @@ def check_month(
         "verdict": "customer-mix effect" if close else "unexplained",
     }
     tables["model"] = model_checks(protocol, processed, cache, replicates)
+    tables["crosstab_by_last_row_kind"] = crosstab(protocol, processed)
+    tables["zero_paid_model"] = zero_paid_model(protocol, processed, cache, replicates)
     return tables
+
+
+# --- added after step 6: the zero-paid-last-row group, by last_row_kind ------------------
+
+ZERO_PAID = ("trial", "promo", "discount100")
+
+
+def crosstab(protocol: Protocol, processed: Path) -> dict[str, Any]:
+    """Never seen x last row (paid / zero-paid by last_row_kind), 2016-08 to 2016-11, P2 main."""
+    out = {}
+    for m in MONTHS:
+        df = month_rows(protocol, processed, m)
+        kind = load_features(processed / "features.parquet", [m], ["last_row_kind"])
+        df = df.merge(kind[["msno", "last_row_kind"]], on="msno", how="left", validate="one_to_one")
+        df = df[df.main]
+        zero = df.last_row_kind.isin(ZERO_PAID)
+        cells = {}
+        for seen_name, seen in (("never seen", df.never_seen), ("returning", ~df.never_seen)):
+            for row_name, rmask in (("zero-paid last row", zero), ("paid last row", ~zero)):
+                g = df[seen & rmask]
+                rate, lo, hi = wilson(int(g.churned_7.sum()), len(g))
+                cells[f"{seen_name}, {row_name}"] = {
+                    "rows": len(g),
+                    "lapses": int(g.churned_7.sum()),
+                    "rate": rate,
+                    "lo": lo,
+                    "hi": hi,
+                }
+        lapses = df.churned_7.astype(bool)
+        both = int((lapses & zero & df.never_seen).sum())
+        out[str(m)] = {
+            "cells": cells,
+            "lapses_never_seen": int((lapses & df.never_seen).sum()),
+            "lapses_zero_paid": int((lapses & zero).sum()),
+            "lapses_in_both": both,
+            "share_of_zero_paid_lapses_never_seen": both / max(int((lapses & zero).sum()), 1),
+            "share_of_never_seen_lapses_zero_paid": both
+            / max(int((lapses & df.never_seen).sum()), 1),
+        }
+    return out
+
+
+def zero_paid_model(
+    protocol: Protocol, processed: Path, cache: Path, replicates: int
+) -> dict[str, Any]:
+    """The chosen 7-day classifier inside the zero-paid-last-row group, and its share of the gap.
+
+    Out of time: f7a's model (fit 2016-08, as of 2016-10-01) on the 2016-10
+    selection half, and f7b's model (fit 2016-08/09, as of 2016-11-01) on
+    2016-11. In sample (optimistic): f7b's model on its own fit rows 2016-08
+    and 2016-09, the only model scores for those months. Gap = observed minus
+    expected lapses (the sum of raw scores); positive means under-predicted.
+    """
+    raw = yaml.safe_load(EVAL_CONFIG.read_text())
+    cols = feature_set_columns(raw["selection"]["feature_sets"]["fs1"]["drop"])
+    out = {}
+    for fold_name in ("f7a", "f7b"):
+        fold = protocol.fold(fold_name)
+        fit = fit_rows(protocol, processed, cache, fold.as_of, fold.fit, cols, 7)
+        scored = score_rows(protocol, processed, fold.score, cols, 7)
+        model = Classifier(
+            cols,
+            raw["classifier"]["categorical"],
+            candidate_params(raw["classifier"]["candidates"]["c01"]),
+            raw["classifier"]["fixed_params"],
+            protocol.threads,
+            protocol.seed,
+        ).fit(fit)
+        sets = [
+            (
+                str(fold.score.snapshot) + (" selection half" if fold.score.half else ""),
+                "out of time",
+                scored,
+            )
+        ]
+        if fold_name == "f7b":
+            for t in fold.fit:
+                sets.append((str(t), "in sample (optimistic)", fit[fit.snapshot_date.dt.date == t]))
+        for label, kind, rows in sets:
+            p = model.predict(rows)[0]
+            y = rows.y.to_numpy()
+            zero = rows.last_row_kind.astype("object").isin(ZERO_PAID).to_numpy()
+            cust = rows.msno.to_numpy()
+            sz = SortedScores(p[zero])
+
+            def auc_stat(w, sz=sz, y=y, zero=zero):
+                return sz.auc(y[zero], None if w is None else w[zero])
+
+            def cal(key, p=p, y=y, zero=zero):
+                return lambda w: calibration_slope(
+                    y[zero], p[zero], None if w is None else w[zero]
+                )[key]
+
+            gap_all, gap_zero = float(y.sum() - p.sum()), float(y[zero].sum() - p[zero].sum())
+            out[label] = {
+                "model": fold_name,
+                "kind": kind,
+                "rows": len(y),
+                "zero_paid_rows": int(zero.sum()),
+                "zero_paid_lapses": int(y[zero].sum()),
+                "zero_paid_rate": float(y[zero].mean()),
+                "zero_paid_mean_score": float(p[zero].mean()),
+                "zero_paid_auc": _metric_interval(cust, auc_stat, replicates, protocol.seed),
+                "zero_paid_slope": _metric_interval(cust, cal("slope"), replicates, protocol.seed),
+                "zero_paid_intercept": _metric_interval(
+                    cust, cal("intercept"), replicates, protocol.seed
+                ),
+                "observed_minus_expected_all": gap_all,
+                "observed_minus_expected_zero_paid": gap_zero,
+                "share_of_gap_in_zero_paid": gap_zero / gap_all if gap_all else float("nan"),
+            }
+    return out
