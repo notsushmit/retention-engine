@@ -175,11 +175,17 @@ def test_label_builds_carry_their_as_of_and_later_ones_are_refused(clean_tx, tmp
 
 def test_no_split_uses_labels_built_with_a_later_as_of():
     requests = fit_label_requests(P)
-    assert {name for name, _, _ in requests} == {*P.folds, "test"}
+    assert {name for name, _, _ in requests} == {*P.folds, "test", "test_sensitivity"}
     for name, as_of, snaps in requests:
-        split = P.test_fit if name == "test" else P.fold(name)
+        split = P.test_fit if name.startswith("test") else P.fold(name)
         assert as_of == split.as_of
-        horizons = P.horizons if name == "test" else (P.fold(name).horizon,)
+        horizons = (
+            P.horizons
+            if name == "test"
+            else (7,)
+            if name == "test_sensitivity"
+            else (P.fold(name).horizon,)
+        )
         for t in snaps:
             assert t < P.locked_from
             assert all(fully_observed(t, h, as_of, P.purge_days) for h in horizons)

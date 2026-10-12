@@ -48,7 +48,16 @@ def _join(
     snapshots: list[date],
     feature_cols: list[str],
     protocol: Protocol,
+    population: str = "p2",
+    buckets: int | None = None,
 ) -> pd.DataFrame:
+    """Join features and labels; keep the main segments, P2 (in_exp30) or P1 rows.
+
+    `buckets` keeps only customers whose sample md5 bucket is below it (a fixed
+    subset for quick integration tests); None keeps everyone.
+    """
+    if population not in ("p1", "p2", "p2_all"):
+        raise ValueError(f"population must be p1, p2 or p2_all, not {population!r}")
     feats = load_features(features, snapshots, feature_cols)
     # segment (and paid_state) are copied unchanged from labels into features in
     # Phase 2, whose build stops if they differ; keep the features' copy.
@@ -58,7 +67,13 @@ def _join(
     labels = labels.assign(snapshot_date=labels.snapshot_date.astype("datetime64[ns]"))
     feats = feats.assign(snapshot_date=feats.snapshot_date.astype("datetime64[ns]"))
     df = feats.merge(labels, on=KEYS, how="inner", validate="one_to_one")
-    keep = df.in_exp30.astype(bool) & df.segment.isin(protocol.main_segments)
+    keep = np.ones(len(df), bool)
+    if population != "p2_all":  # p2_all keeps trial-only and promo-only rows too
+        keep &= df.segment.isin(protocol.main_segments).to_numpy()
+    if population in ("p2", "p2_all"):
+        keep &= df.in_exp30.astype(bool).to_numpy()
+    if buckets is not None:
+        keep &= np.array([bucket(m) < buckets for m in df.msno])
     return df[keep].reset_index(drop=True)
 
 
@@ -75,13 +90,23 @@ def fit_rows(
     snapshots: tuple[date, ...],
     feature_cols: list[str],
     horizon: int,
+    population: str = "p2",
+    buckets: int | None = None,
 ) -> pd.DataFrame:
     path = cached_labels(cache, as_of, tuple(sorted(snapshots)))
     labels = load_labels(
         path, list(snapshots), ["in_exp30", "segment", *target_columns(horizon)], protocol
     )
     require_as_of(labels, as_of)
-    df = _join(processed / "features.parquet", labels, list(snapshots), feature_cols, protocol)
+    df = _join(
+        processed / "features.parquet",
+        labels,
+        list(snapshots),
+        feature_cols,
+        protocol,
+        population,
+        buckets,
+    )
     return add_target(df, horizon)
 
 
@@ -92,13 +117,23 @@ def survival_fit_rows(
     as_of: date,
     snapshots: tuple[date, ...],
     feature_cols: list[str],
+    population: str = "p2",
+    buckets: int | None = None,
 ) -> pd.DataFrame:
     """Fit rows for a survival model: `time` (days to the lapse or the stop day) and `event`."""
     path = cached_labels(cache, as_of, tuple(sorted(snapshots)))
     cols = ["in_exp30", "segment", "event_observed", "days_to_event"]
     labels = load_labels(path, list(snapshots), cols, protocol)
     require_as_of(labels, as_of)
-    df = _join(processed / "features.parquet", labels, list(snapshots), feature_cols, protocol)
+    df = _join(
+        processed / "features.parquet",
+        labels,
+        list(snapshots),
+        feature_cols,
+        protocol,
+        population,
+        buckets,
+    )
     return df.assign(
         time=df.days_to_event.astype(int).to_numpy(), event=df.event_observed.astype(int).to_numpy()
     )
@@ -122,3 +157,33 @@ def score_rows(
     if where.half is not None:
         df = df[half_mask(df.msno, where.half, protocol)].reset_index(drop=True)
     return add_target(df, horizon)
+
+
+OUTCOMES = ["churned_7", "churned_30", "event_observed", "days_to_event"]
+
+
+def scored_month_rows(
+    protocol: Protocol,
+    processed: Path,
+    month: date,
+    feature_cols: list[str],
+    population: str = "p2",
+    unlock=None,
+    buckets: int | None = None,
+) -> pd.DataFrame:
+    """A scored month with every outcome column, read once through the outcome lock.
+
+    `unlock` is passed to the loader: a month on or after the locked date can
+    only be read with the TestUnlock from the test session.
+    """
+    labels = load_labels(
+        processed / "labels.parquet", [month], ["in_exp30", "segment", *OUTCOMES], protocol, unlock
+    )
+    return _join(
+        processed / "features.parquet", labels, [month], feature_cols, protocol, population, buckets
+    )
+
+
+def horizon_target(rows: pd.DataFrame, horizon: int) -> np.ndarray:
+    """Lapse within `horizon` days for scored rows (raises if any row's status is unknown)."""
+    return add_target(rows, horizon).y.to_numpy()

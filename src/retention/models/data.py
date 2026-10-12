@@ -205,6 +205,10 @@ def fit_label_requests(protocol: Protocol) -> list[tuple[str, date, tuple[date, 
         out.append((f.name, f.as_of, tuple(sorted(snaps))))
     tf = protocol.test_fit
     out.append(("test", tf.as_of, tuple(sorted({*tf.fit, tf.calibration.snapshot}))))
+    # Registered sensitivity: the survival model also fitted on the check month
+    # (2016-11-01), partly observed as of the test pipeline's date.
+    snaps = tuple(sorted({*tf.fit, tf.calibration.snapshot, protocol.check_month}))
+    out.append(("test_sensitivity", tf.as_of, snaps))
     return out
 
 

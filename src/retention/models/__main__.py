@@ -1,7 +1,7 @@
 """Command line entry: `python -m retention.models <command>`.
 
 Commands: protocol-check, label-check, guard-dry-run, build-labels, baselines, classifier,
-survival, calibration, freeze,
+survival, calibration, freeze, score-test,
 check-month (descriptive analysis of 2016-11; decides nothing).
 
 protocol-check loads configs/evaluation.yaml (which runs the purge-rule and
@@ -153,6 +153,121 @@ def protocol_check(labels_path: Path, protocol: Protocol) -> dict:
     }
 
 
+def _plain(obj):
+    """JSON-ready copy: numpy scalars to Python, dates and other objects to strings."""
+    return json.loads(json.dumps(obj, default=lambda o: o.item() if hasattr(o, "item") else str(o)))
+
+
+def _headline_metrics(results: dict) -> dict[str, float]:
+    out = {}
+    for cid, data in results.get("primary", {}).items():
+        if data.get("status") != "ok":
+            continue
+        tag = cid.replace(" days, ", "d.")
+        for comp, v in data["comparisons"].items():
+            if v["status"] == "ok":
+                key = comp.replace(" minus ", "_vs_")
+                out |= {
+                    f"{tag}.{key}.d": v["point"],
+                    f"{tag}.{key}.lo": v["lo"],
+                    f"{tag}.{key}.hi": v["hi"],
+                }
+        sm = data["models"]["survival_dt01"]
+        for k in ("slope", "intercept"):
+            if sm[k]["status"] == "ok":
+                out[f"{tag}.survival_dt01.{k}"] = sm[k]["point"]
+    return out
+
+
+def score_test(args) -> None:
+    from retention.models.bootstrap import use_workers
+    from retention.models.resources import peak_rss_children_gb
+    from retention.models.stages import assert_no_label_building_code
+    from retention.models.test_stage import run_test_stage
+
+    t0 = time.time()
+    protocol = load_protocol()
+    use_workers(protocol.threads.n)
+    raw = yaml.safe_load(EVAL_CONFIG.read_text())
+    reps = args.replicates or raw["bootstrap"]["replicates"]
+    out_dir = processed_dir(args.fraction)
+    cache = interim_dir(args.fraction) / "labels_asof"
+
+    if args.rehearsal:
+        results = run_test_stage(
+            protocol, out_dir, cache, reps, rehearsal=True, buckets=args.buckets
+        )
+        assert_no_label_building_code()
+        results["peak_rss_gb"] = peak_rss_gb()
+        results["peak_rss_workers_gb"] = peak_rss_children_gb()
+        name = "rehearsal.json" if args.buckets is None else f"rehearsal_buckets{args.buckets}.json"
+        (out_dir / name).write_text(json.dumps(_plain(results), indent=2) + "\n")
+        print("REHEARSAL (2016 stand-in months; no unlock; nothing logged to MLflow)")
+        print("stand-in months:", results["rehearsal_months"])
+        for c in results["cells"]:
+            print(f"  {c['section']:28s} {c['cell']:26s} {c['status']:18s} {c['reason']}")
+        print("goal cells:")
+        for c in results["goal_cells"]:
+            computed = c["status"] != "missing"
+            print(
+                f"  {c['kind']:14s} {c['horizon']:>2} days {c['month']}  {c['against']:26s}", end=""
+            )
+            print(f" computed: {computed}")
+        print("what the rehearsal cannot show:")
+        for line in results["rehearsal_limits"]:
+            print("  -", line)
+        print(
+            json.dumps(
+                {
+                    "seconds": round(time.time() - t0, 1),
+                    "peak_rss_gb": results["peak_rss_gb"],
+                    "peak_rss_workers_gb": results["peak_rss_workers_gb"],
+                    "limit_gb": 6,
+                }
+            )
+        )
+        return
+
+    from mlflow.tracking import MlflowClient
+
+    from retention.models.guard import open_test_session
+    from retention.models.tracking import setup
+
+    tr = setup(Path.cwd())
+    unlock, run_id = open_test_session(tr, args.rerun_reason)
+    client = MlflowClient(tr.uri)
+    try:
+        results = run_test_stage(protocol, out_dir, cache, reps, unlock=unlock)
+        assert_no_label_building_code()
+        results["peak_rss_gb"] = peak_rss_gb()
+        results["peak_rss_workers_gb"] = peak_rss_children_gb()
+        results["seconds"] = round(time.time() - t0, 1)
+        plain = _plain(results)
+        client.log_dict(run_id, plain, "test_results.json")
+        from mlflow.entities import Metric
+
+        now = int(time.time() * 1000)
+        metrics = [Metric(k, float(v), now, 0) for k, v in _headline_metrics(plain).items()]
+        for i in range(0, len(metrics), 500):
+            client.log_batch(run_id, metrics=metrics[i : i + 500])
+        client.set_tag(run_id, "timing.seconds", str(results["seconds"]))
+        client.set_tag(run_id, "timing.peak_rss_gb", str(results["peak_rss_gb"]))
+        client.set_terminated(run_id, "FINISHED")
+    except BaseException:
+        client.set_terminated(run_id, "FAILED")
+        raise
+    print(
+        json.dumps(
+            {
+                "test_run": run_id,
+                "seconds": results["seconds"],
+                "peak_rss_gb": results["peak_rss_gb"],
+                "peak_rss_workers_gb": results["peak_rss_workers_gb"],
+            }
+        )
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m retention.models")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -177,11 +292,21 @@ def main() -> None:
     cm = sub.add_parser("check-month", help="descriptive analysis of the check month 2016-11")
     cm.add_argument("--fraction", type=float, default=None)
     cm.add_argument("--replicates", type=int, default=None)
+    st = sub.add_parser("score-test", help="the test stage (guarded), or its 2016 rehearsal")
+    st.add_argument("--rehearsal", action="store_true", help="2016 stand-in months; no unlock")
+    st.add_argument("--buckets", type=int, default=None, help="rehearsal on a customer subset")
+    st.add_argument("--replicates", type=int, default=None)
+    st.add_argument("--rerun-reason", default=None, help="only to repeat a crashed test run")
+    st.add_argument("--fraction", type=float, default=None)
     fz = sub.add_parser("freeze", help="write configs/choices.yaml from the MLflow runs")
     fz.add_argument(
         "--preview", action="store_true", help="print the file and checks; write nothing"
     )
     args = parser.parse_args()
+
+    if args.command == "score-test":
+        score_test(args)
+        return
 
     if args.command == "freeze":
         from retention.models.freeze_choices import assemble, preview
