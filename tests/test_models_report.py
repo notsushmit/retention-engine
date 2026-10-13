@@ -1,5 +1,7 @@
 from datetime import date
+from pathlib import Path
 
+import pytest
 import yaml
 
 from retention.models.report import cell_rows, registered_cells, summarize
@@ -70,3 +72,112 @@ def test_descriptive_models_decide_nothing_and_notes_exist():
     assert "after the fold results were seen" in DESCRIPTIVE_MODELS["dt02"]["added"]
     assert any("cox02 and cox04" in n and "0.01" in n for n in REQUIRED_NOTES)
     assert any("its own regression" in n and "borderline" in n for n in REQUIRED_NOTES)
+
+
+# --- the comparison report ---------------------------------------------------------------
+
+NOTE = (
+    "This interval covers which customers happened to be in that month, not month-to-month change."
+)
+
+
+def test_the_interval_note_is_the_registered_sentence():
+    import yaml
+
+    assert yaml.safe_load(open("configs/evaluation.yaml"))["interval_note"] == NOTE
+
+
+def test_report_check_finds_a_missing_interval_sentence_and_forbidden_text():
+    from retention.models.comparison_report import check_report
+
+    good = f"AUC 0.9054 [0.8971, 0.9136]\n\n{NOTE}\n"
+    assert check_report(good, NOTE) == []
+    assert check_report("AUC 0.9054 [0.8971, 0.9136]\n\nNext.\n", NOTE)
+    assert check_report(f"{NOTE}\n\nsee D-999\n", NOTE) == ["a decision ID"]
+    assert check_report(f"{NOTE}\n\nfrom /Users/me/x\n", NOTE) == ["an absolute path"]
+
+
+def test_verdict_wording_is_the_registered_wording():
+    import yaml
+
+    from retention.models.comparison_report import verdict_text
+
+    raw = yaml.safe_load(open("configs/evaluation.yaml"))["discrimination"]["verdicts"]
+    registered = {k: v.split(": ", 1)[1] for k, v in raw.items()}
+    assert verdict_text("win", "X", 7, "2017-01-01") == registered["win"].replace(
+        "h days", "7 days"
+    ).replace("month M", "2017-01")
+    for k in ("below_threshold", "no_difference"):
+        assert verdict_text(k, "X", 7, "2017-01-01") == registered[k]
+    assert verdict_text("loss", "X", 7, "2017-01-01") == registered["loss"]
+    assert verdict_text("mixed", "X", 7, "both") == "mixed: not shown at 7 days"
+
+
+def test_the_preregistered_intercept_statement_is_quoted_exactly():
+    import re
+
+    from retention.models.comparison_report import PREREGISTERED_INTERCEPT
+
+    comments = " ".join(
+        line.strip().lstrip("#").strip()
+        for line in open("configs/evaluation.yaml")
+        if line.strip().startswith("#")
+    )
+    assert PREREGISTERED_INTERCEPT in re.sub(r"\s+", " ", comments)
+
+
+def test_the_report_of_the_logged_test_run_keeps_the_rules():
+    """Skipped where the tracking store has no finished test run (for example in CI)."""
+    import json
+    import sqlite3
+
+    import yaml
+
+    from retention.models.comparison_report import check_report, render_report
+
+    db = Path("mlruns/mlflow.db")
+    if not db.exists():
+        pytest.skip("no tracking store")
+    row = (
+        sqlite3.connect(db)
+        .execute(
+            "select r.run_uuid from runs r join tags t on t.run_uuid = r.run_uuid "
+            "where t.key = 'run_kind' and t.value = 'test' and r.status = 'FINISHED'"
+        )
+        .fetchone()
+    )
+    if row is None:
+        pytest.skip("no finished test run")
+    run_id = row[0]
+    art = Path("mlruns/artifacts") / run_id / "artifacts" / "test_results.json"
+    results = json.loads(art.read_text())
+    raw = yaml.safe_load(open("configs/evaluation.yaml"))
+    tags = dict(
+        sqlite3.connect(db).execute("select key, value from tags where run_uuid = ?", (run_id,))
+    )
+    frozen = yaml.safe_load(open("configs/choices.yaml"))
+    meta = {
+        "run_id": run_id,
+        "tags": tags,
+        "config": raw,
+        "interval_note": raw["interval_note"],
+        "replicates": raw["bootstrap"]["replicates"],
+        "choices": frozen["choices"],
+        "history": ["a commit"],
+    }
+    text = render_report(results, meta)
+    assert check_report(text, raw["interval_note"]) == []
+    assert "macOS arm64" in text and "59-day demonstration" in text
+    assert "Added after the fold results were seen" in text
+    from retention.models.comparison_report import EXPLORATORY_LIMITS
+
+    assert all(n in text for n in EXPLORATORY_LIMITS)
+    assert all(n.startswith("Exploratory, post hoc") for n in EXPLORATORY_LIMITS[1:])
+    assert text == Path("reports/model_comparison.md").read_text().replace(
+        "\n".join(f"- {h}" for h in _history(Path("reports/model_comparison.md"))), "- a commit"
+    )
+
+
+def _history(report: Path) -> list[str]:
+    lines = report.read_text().split("### History of commits\n\n", 1)[1].strip().splitlines()
+    return [line[2:] for line in lines]

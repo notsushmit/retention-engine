@@ -280,6 +280,54 @@ def score_test(args) -> None:
     )
 
 
+def write_report(args) -> None:
+    """reports/model_comparison.md from the logged test run only."""
+    import subprocess
+
+    from mlflow.tracking import MlflowClient
+
+    from retention.models.comparison_report import render_report
+    from retention.models.tracking import setup
+
+    tr = setup(Path.cwd())
+    client = MlflowClient(tr.uri)
+    run = client.get_run(args.run)
+    if run.data.tags.get("run_kind") != "test" or run.info.status != "FINISHED":
+        raise SystemExit("the report is built only from a finished test run")
+    results = json.loads(Path(client.download_artifacts(args.run, "test_results.json")).read_text())
+    raw = yaml.safe_load(EVAL_CONFIG.read_text())
+    frozen = yaml.safe_load(Path("configs/choices.yaml").read_text())
+
+    def git(*a: str) -> str:
+        return subprocess.run(["git", *a], capture_output=True, text=True, check=True).stdout
+
+    freeze = git("log", "-1", "--format=%h %s", "--", "configs/choices.yaml").strip()
+    after = git(
+        "log", "--reverse", "--format=%h %s", f"{freeze.split()[0]}..{run.data.tags['git_commit']}"
+    ).splitlines()
+    commits = frozen["preregistration_commits"]
+    history = [
+        "Pre-registration of configs/evaluation.yaml: "
+        + ", ".join(commits[:-1])
+        + f", then {frozen['binding_commit']} (binding).",
+        f"Freeze of the model choices (configs/choices.yaml alone): {freeze}.",
+        *[f"After the freeze (code only; both configuration files unchanged): {c}." for c in after],
+        f"Test run {args.run}, scored once at commit {run.data.tags['git_commit']}.",
+    ]
+    meta = {
+        "run_id": args.run,
+        "tags": run.data.tags,
+        "config": raw,
+        "interval_note": raw["interval_note"],
+        "replicates": raw["bootstrap"]["replicates"],
+        "choices": frozen["choices"],
+        "history": history,
+    }
+    out = Path("reports/model_comparison.md")
+    out.write_text(render_report(results, meta))
+    print(f"wrote {out}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m retention.models")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -310,6 +358,8 @@ def main() -> None:
     st.add_argument("--replicates", type=int, default=None)
     st.add_argument("--rerun-reason", default=None, help="only to repeat a crashed test run")
     st.add_argument("--fraction", type=float, default=None)
+    rp = sub.add_parser("report", help="reports/model_comparison.md from the logged test run")
+    rp.add_argument("--run", required=True, help="the test run id")
     fz = sub.add_parser("freeze", help="write configs/choices.yaml from the MLflow runs")
     fz.add_argument(
         "--preview", action="store_true", help="print the file and checks; write nothing"
@@ -318,6 +368,8 @@ def main() -> None:
 
     if args.command == "score-test":
         score_test(args)
+    if args.command == "report":
+        write_report(args)
         return
 
     if args.command == "freeze":
