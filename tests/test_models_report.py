@@ -69,3 +69,4 @@ def test_descriptive_models_decide_nothing_and_notes_exist():
     assert DESCRIPTIVE_MODELS["dt02"]["decides"] == "nothing"
     assert "after the fold results were seen" in DESCRIPTIVE_MODELS["dt02"]["added"]
     assert any("cox02 and cox04" in n and "0.01" in n for n in REQUIRED_NOTES)
+    assert any("its own regression" in n and "borderline" in n for n in REQUIRED_NOTES)

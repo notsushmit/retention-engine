@@ -132,4 +132,8 @@ REQUIRED_NOTES = [
     "The proportional-hazards test ran on a fixed subsample of customers (md5 buckets 0-1 of "
     "the sample), never on all fit rows, because its cost grows faster than quadratically "
     "with rows; it is descriptive.",
+    "Each calibration interval is labelled not computable only when its own regression "
+    "fails on the original data or on a replicate: the slope interval uses the two-parameter "
+    "fit, the intercept interval the fit with the slope fixed at 1. The calibration verdict "
+    "uses point estimates; an interval only marks a pass or fail as borderline.",
 ]

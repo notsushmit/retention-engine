@@ -183,7 +183,7 @@ def score_test(args) -> None:
     from retention.models.bootstrap import use_workers
     from retention.models.resources import peak_rss_children_gb
     from retention.models.stages import assert_no_label_building_code
-    from retention.models.test_stage import run_test_stage
+    from retention.models.test_stage import MEMORY_CEILING_GB, run_test_stage
 
     t0 = time.time()
     protocol = load_protocol()
@@ -194,14 +194,25 @@ def score_test(args) -> None:
     cache = interim_dir(args.fraction) / "labels_asof"
 
     if args.rehearsal:
+        suffix = "" if args.buckets is None else f"_buckets{args.buckets}"
+        # Completed cells, so a stopped rehearsal resumes; never printed or logged.
+        checkpoint = interim_dir(args.fraction) / f"rehearsal_checkpoint{suffix}.json"
         results = run_test_stage(
-            protocol, out_dir, cache, reps, rehearsal=True, buckets=args.buckets
+            protocol,
+            out_dir,
+            cache,
+            reps,
+            rehearsal=True,
+            buckets=args.buckets,
+            checkpoint=checkpoint,
         )
         assert_no_label_building_code()
         results["peak_rss_gb"] = peak_rss_gb()
         results["peak_rss_workers_gb"] = peak_rss_children_gb()
-        name = "rehearsal.json" if args.buckets is None else f"rehearsal_buckets{args.buckets}.json"
-        (out_dir / name).write_text(json.dumps(_plain(results), indent=2) + "\n")
+        (out_dir / f"rehearsal{suffix}.json").write_text(
+            json.dumps(_plain(results), indent=2) + "\n"
+        )
+        checkpoint.unlink(missing_ok=True)
         print("REHEARSAL (2016 stand-in months; no unlock; nothing logged to MLflow)")
         print("stand-in months:", results["rehearsal_months"])
         for c in results["cells"]:
@@ -222,7 +233,8 @@ def score_test(args) -> None:
                     "seconds": round(time.time() - t0, 1),
                     "peak_rss_gb": results["peak_rss_gb"],
                     "peak_rss_workers_gb": results["peak_rss_workers_gb"],
-                    "limit_gb": 6,
+                    "ceiling_gb": MEMORY_CEILING_GB,
+                    "registered_limit_gb": 6,
                 }
             )
         )
