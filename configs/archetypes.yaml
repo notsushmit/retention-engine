@@ -1,0 +1,204 @@
+# Churn archetypes: how they are built and what "holds up" means.
+# Committed alone, before any clustering code runs. Every pass mark below is a
+# registered choice made before any archetype exists; none comes from a paper.
+# A change after results are seen is a logged amendment, and the original
+# results are reported alongside.
+
+# --- input -------------------------------------------------------------------------
+input:
+  horizon: 30  # archetypes come from the 30-day model only
+  population: P2 main  # in_exp30 and segment in (paid, discount100_only)
+  snapshots: [2016-10-01, 2016-11-01, 2017-01-01, 2017-02-01]
+  # 2016-12-01 is not explained (not usable at 7 or 30 days). The share series
+  # carries a row for it marked "not explained" with no shares; never interpolated.
+  not_explained: [2016-12-01]
+  # One dimension per group: the group's summed SHAP value at 30 days times the
+  # 30-day Platt slope (calibrated log-odds). No facts, no standardisation.
+  groups:
+    - renewal_timing
+    - listening_amount
+    - listening_trend
+    - listening_recency
+    - newcomer
+    - songs_finished
+    - plan_kind_and_price
+    - plan_length
+    - payment_setup
+    - cancellation
+    - tenure  # set to 0 when tenure_days is missing
+  excluded: [hidden]  # registered_via never enters the representation
+
+# --- rule-defined archetype --------------------------------------------------------
+# Defined by rule, not found by clustering. Taken out before clustering; gets a
+# full profile; its shares and profile are reported but criteria 1 to 7 do not
+# judge it.
+rule_archetypes:
+  zero_paid_last_row:
+    rule: last_row_kind in (trial, promo, discount100)
+    label: zero-paid last row (defined by rule, not found by clustering)
+
+# --- overlay -------------------------------------------------------------------------
+# Never seen = no row of any segment in the three monthly snapshots before the
+# month (segment column only; known at T). Not a model input, so not an
+# archetype: every profile shows its share, and churn rates are split by it.
+overlays: [never_seen]
+
+# --- seeds ---------------------------------------------------------------------------
+# base = the protocol seed in configs/evaluation.yaml (20161001).
+seeds:
+  fit_sample: 0           # base + 0
+  evaluation_set: 100     # base + 100
+  resamples: [1, 20]      # base + 1 to base + 20
+  month_fit_2016_10: 201
+  month_fit_2016_11: 202
+  fit_2017: 301
+  evaluation_set_2017: 302
+  expiry_diagnostic: 401
+
+# --- b. clustering method and parameters ----------------------------------------------
+clustering:
+  method: hdbscan  # scikit-learn; no UMAP; no other method is tried
+  metric: euclidean
+  cluster_selection_method: eom
+  min_samples: 25
+  min_cluster_size_grid: [200, 400, 800]  # 0.5%, 1%, 2% of the fit sample
+  fit_sample:
+    rows: 40000
+    per_snapshot: {2016-10-01: 20000, 2016-11-01: 20000}
+    from: P2 main rows outside the rule-defined archetype
+  # Every row not in the fit sample (including 2017) gets the majority label of
+  # its 10 nearest fit-sample rows (noise counts as a label); a tie goes to the
+  # nearest row's label.
+  assignment: {method: nearest_neighbours_vote, k: 10}
+  # Selection among the grid uses no outcome. A setting qualifies if its
+  # reference fit gives 3 to 12 archetypes and at most 20% unassigned on the
+  # evaluation set E. Among qualifying settings, pick the highest median
+  # adjusted Rand index (each resample against the reference, on E, noise as a
+  # label). Ties go to the larger min_cluster_size. If none qualifies, that is
+  # reported as a failure and nothing else is tried.
+  selection:
+    min_archetypes: 3
+    max_archetypes: 12
+    max_unassigned_share: 0.20
+    statistic: median_adjusted_rand_index_over_resamples
+    tie_break: larger_min_cluster_size
+
+# --- c. noise --------------------------------------------------------------------------
+# Rows labelled noise by HDBSCAN, or voted into noise, are "unassigned": stored
+# as such and counted in the share series.
+noise:
+  label: unassigned
+
+# --- matching between two clusterings ---------------------------------------------------
+# One-to-one (Hungarian assignment maximising Jaccard overlap on the same rows).
+# No two archetypes may match the same cluster; noise is never matched. An
+# archetype left without a partner has Jaccard 0.
+matching:
+  method: hungarian
+  similarity: jaccard
+  one_to_one: true
+
+# --- f. stability criteria ---------------------------------------------------------------
+evaluation_sets:
+  E:
+    rows: 20000
+    per_snapshot: {2016-10-01: 10000, 2016-11-01: 10000}
+    disjoint_from: fit_sample
+  E_2017:
+    rows: 20000
+    per_snapshot: {2017-01-01: 10000, 2017-02-01: 10000}
+    disjoint_from: fit_2017
+
+criteria:
+  1_resamples:
+    # 20 fit samples drawn like the reference (seeds base+1 to base+20), each
+    # fitted and assigned to E, matched one-to-one to the reference.
+    resamples: 20
+    min_median_jaccard: 0.75
+  2_two_2016_months:
+    # Separate fits on 2016-10 only and on 2016-11 only (40,000 rows each),
+    # assigned to E and matched to the reference.
+    min_jaccard_each_month: 0.60
+  3_shap_profile:
+    # Reference profile: the archetype's mean 11-group vector over its rows in
+    # the reference fit sample, computed once at the reference fit, stored, and
+    # never recomputed from any later month. Month profile: the mean over the
+    # rows assigned to the archetype in that month.
+    months: [2016-10-01, 2016-11-01, 2017-01-01, 2017-02-01]
+    min_cosine: 0.90
+    same_largest_absolute_group: true
+    # Cosine is unstable for a vector near zero. If the reference profile's
+    # Euclidean norm is below 0.182 (the slight cutoff), the test is instead a
+    # Euclidean distance of at most 0.182 between month and reference profiles.
+    near_zero_norm: 0.182
+    near_zero_max_distance: 0.182
+  4_shares:
+    # Reference share: the archetype's share of all P2 main rows of 2016-10 and
+    # 2016-11 pooled, fixed once. Month share: its share of all P2 main rows of
+    # that month. Both limits are required; either failing is a failure.
+    months: [2016-10-01, 2016-11-01, 2017-01-01, 2017-02-01]
+    max_absolute_difference_points: 5.0
+    ratio_band: [0.5, 2.0]
+    min_share_every_month: 0.005
+    # Lunar New Year (2017-01-28) falls inside the 28-day listening window of
+    # 2017-02-01. A listening-based archetype may shift there for a calendar
+    # reason. Such a shift is reported as a failure with the likely reason; the
+    # limits are never loosened for it.
+    caveat_2017_02: lunar_new_year
+  5_refound_in_2017:
+    # Independent fit on 2017-01 and 2017-02 features only (40,000 rows, 20,000
+    # each, the chosen setting), matched on E_2017 to the 2016 archetypes as
+    # assigned there.
+    min_jaccard: 0.60
+  6_unassigned:
+    # Share of non-rule rows unassigned, in every explained month.
+    max_share_every_month: 0.20
+  7_count:
+    # Archetypes found by clustering (the rule-defined one and noise excluded).
+    min: 3
+    max: 12
+
+# Churn rates are descriptive and decide nothing: Wilson 95% intervals, per
+# archetype (rule-defined included), split by never seen and returning.
+# 7-day from 2016-10 and 2016-11; 30-day from 2016-10 only. No 2017 outcome.
+descriptive_churn_rates:
+  7: [2016-10-01, 2016-11-01]
+  30: [2016-10-01]
+  interval: wilson_95
+
+# --- g. what "holds up" means, and failure --------------------------------------------
+# One archetype holds up if it passes criteria 1 to 5. The archetype set holds
+# up if every archetype holds up and criteria 6 and 7 pass.
+# If it fails: each failing archetype is reported with its numbers, is not
+# named, and its rows count as unassigned in the share series. If criterion 6
+# or 7 then fails, "archetypes hold up" is not met and that is the reported
+# outcome. No tuning beyond the registered grid.
+holds_up:
+  per_archetype: [1_resamples, 2_two_2016_months, 3_shap_profile, 4_shares, 5_refound_in_2017]
+  set: [all_archetypes_hold_up, 6_unassigned, 7_count]
+  on_failure: report_numbers_do_not_name_count_as_unassigned
+
+# --- h. days_until_expiry diagnostic -----------------------------------------------------
+# No outcome. Runs after this file is committed, on 2016-10 only, and decides
+# nothing beyond the two registered branches.
+# Statistic: adjusted mutual information between cluster labels and
+# days_until_expiry, its 31 day values used as categories, on a fixed sample of
+# 20,000 non-rule P2 main rows of 2016-10.
+# - AMI_30_reference: the reference archetypes, as assigned.
+# - AMI_30 vs AMI_7: clusterings fitted the same way on 2016-10 only (the
+#   criterion-2 fit for 30 days; a 7-day fit on the 7-day vectors with the
+#   chosen setting, never stored as archetypes).
+expiry_diagnostic:
+  snapshot: 2016-10-01
+  rows: 20000
+  statistic: adjusted_mutual_information
+  branches:
+    # The archetypes mostly restate the expiry date: cluster again on the 10
+    # groups without renewal_timing (renewal timing shown only as a profile
+    # column), apply every criterion to it, report both; the 10-group version
+    # becomes the archetypes if it holds up.
+    restates_expiry: {when: AMI_30_reference >= 0.5, then: recluster_without_renewal_timing}
+    # The assumption behind choosing 30 days is not supported: the choice
+    # stays, resting only on "the whole P2 window is at risk", and is recorded.
+    assumption_unsupported: {when: AMI_7 < AMI_30 + 0.10, then: record_only}
+    # Otherwise the assumption is supported and nothing changes.
