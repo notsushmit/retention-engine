@@ -309,8 +309,15 @@ def logit(p: np.ndarray, clip: float = CLIP) -> tuple[np.ndarray, int]:
     return np.log(q / (1 - q)), clipped
 
 
-def _newton_logistic(x: np.ndarray, y: np.ndarray, w: np.ndarray, offset: np.ndarray) -> np.ndarray:
-    beta = np.zeros(x.shape[1])
+def _newton_logistic(
+    x: np.ndarray,
+    y: np.ndarray,
+    w: np.ndarray,
+    offset: np.ndarray,
+    start: np.ndarray | None = None,
+) -> np.ndarray:
+    """Weighted logistic regression by Newton's method, from zeros or from `start`."""
+    beta = np.zeros(x.shape[1]) if start is None else np.array(start, dtype=float)
     for _ in range(100):
         mu = expit(x @ beta + offset)
         grad = x.T @ (w * (y - mu))
@@ -344,20 +351,83 @@ def calibration_slope(
     """
     y = np.asarray(y, dtype=float)
     w = _w(len(y), weight)
-    if w[y == 1].sum() == 0 or w[y == 0].sum() == 0:
-        raise NotComputable("calibration needs at least one lapse and one non-lapse")
     z, clipped = logit(p, clip)
-    (level,) = _newton_logistic(np.ones((len(z), 1)), y, w, z)
-    if np.ptp(z) == 0:
-        a = b = float("nan")
-    else:
-        a, b = _newton_logistic(np.c_[np.ones_like(z), z], y, w, np.zeros_like(z))
+    level = intercept_fit(y, z, w)
+    a, b = slope_fit(y, z, w)
     return {
-        "slope": float(b),
-        "slope_model_intercept": float(a),
-        "intercept": float(level),
+        "slope": b,
+        "slope_model_intercept": a,
+        "intercept": level,
         "clipped": clipped,
     }
+
+
+def _both_outcomes(y: np.ndarray, w: np.ndarray) -> None:
+    if w[y == 1].sum() == 0 or w[y == 0].sum() == 0:
+        raise NotComputable("calibration needs at least one lapse and one non-lapse")
+
+
+def intercept_fit(
+    y: np.ndarray, z: np.ndarray, w: np.ndarray, start: np.ndarray | None = None
+) -> float:
+    """Calibration in the large: a in y ~ a + 1 * z, with z = logit(p)."""
+    _both_outcomes(y, w)
+    (level,) = _newton_logistic(np.ones((len(z), 1)), y, w, z, start)
+    return float(level)
+
+
+def slope_fit(
+    y: np.ndarray, z: np.ndarray, w: np.ndarray, start: np.ndarray | None = None
+) -> tuple[float, float]:
+    """(a, b) in y ~ a + b z; both NaN when every z is equal."""
+    _both_outcomes(y, w)
+    if np.ptp(z) == 0:
+        return float("nan"), float("nan")
+    a, b = _newton_logistic(np.c_[np.ones_like(z), z], y, w, np.zeros_like(z), start)
+    return float(a), float(b)
+
+
+class CalibrationStatistic:
+    """The slope or the intercept of one cell under bootstrap weights.
+
+    Runs only the regression it reports. The logit is computed once. With
+    `warm`, each weighted fit starts from the full-sample estimate (same
+    stopping rule); the full-sample fit itself always starts from zeros.
+    """
+
+    def __init__(self, y: np.ndarray, p: np.ndarray, key: str, warm: bool = False) -> None:
+        if key not in ("slope", "intercept"):
+            raise ValueError("key must be 'slope' or 'intercept'")
+        self.y = np.asarray(y, dtype=float)
+        self.z, _ = logit(p)
+        self.key, self.warm = key, warm
+        self._full: tuple[float, ...] | NotComputable | None = None
+
+    def _fit(self, w: np.ndarray, start: tuple[float, ...] | None) -> tuple[float, ...]:
+        s = None if start is None else np.array(start)
+        if self.key == "slope":
+            return slope_fit(self.y, self.z, w, s)
+        return (intercept_fit(self.y, self.z, w, s),)
+
+    def full(self) -> tuple[float, ...]:
+        if self._full is None:
+            try:
+                self._full = self._fit(_w(len(self.y), None), None)
+            except NotComputable as err:
+                self._full = err
+        if isinstance(self._full, NotComputable):
+            raise self._full
+        return self._full
+
+    def __call__(self, weight: np.ndarray | None = None) -> float:
+        if weight is None:
+            return self.full()[-1]
+        start = None
+        if self.warm:
+            start = self.full()
+            if not np.isfinite(start).all():  # a constant score: the slope is undefined
+                start = None
+        return self._fit(np.asarray(weight, dtype=float), start)[-1]
 
 
 def ece(y: np.ndarray, p: np.ndarray, bins: int = 10, weight: np.ndarray | None = None) -> float:
@@ -366,19 +436,29 @@ def ece(y: np.ndarray, p: np.ndarray, bins: int = 10, weight: np.ndarray | None 
     Rows sorted by p are cut into `bins` groups of equal total weight; ECE is the
     weight-share-weighted mean of |mean p - event rate| per bin.
     """
-    y, p = np.asarray(y, dtype=float), np.asarray(p, dtype=float)
-    w = _w(len(y), weight)
-    order = np.argsort(p, kind="stable")
-    y, p, w = y[order], p[order], w[order]
-    before = np.cumsum(w) - w
-    b = np.minimum((before / w.sum() * bins).astype(int), bins - 1)
-    out = 0.0
-    for k in range(bins):
-        m = b == k
-        if w[m].sum() > 0:
-            out += (
-                w[m].sum()
-                / w.sum()
-                * abs(np.average(p[m], weights=w[m]) - np.average(y[m], weights=w[m]))
-            )
-    return float(out)
+    return SortedProbabilities(y, p, bins).ece(weight)
+
+
+class SortedProbabilities:
+    """Outcomes and probabilities sorted by p once, so the ECE of many weightings skips the sort."""
+
+    def __init__(self, y: np.ndarray, p: np.ndarray, bins: int = 10) -> None:
+        y, p = np.asarray(y, dtype=float), np.asarray(p, dtype=float)
+        self.order = np.argsort(p, kind="stable")
+        self.y, self.p, self.bins = y[self.order], p[self.order], bins
+
+    def ece(self, weight: np.ndarray | None = None) -> float:
+        y, p, bins = self.y, self.p, self.bins
+        w = _w(len(y), weight)[self.order]
+        before = np.cumsum(w) - w
+        b = np.minimum((before / w.sum() * bins).astype(int), bins - 1)
+        out = 0.0
+        for k in range(bins):
+            m = b == k
+            if w[m].sum() > 0:
+                out += (
+                    w[m].sum()
+                    / w.sum()
+                    * abs(np.average(p[m], weights=w[m]) - np.average(y[m], weights=w[m]))
+                )
+        return float(out)

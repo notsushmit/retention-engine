@@ -289,3 +289,157 @@ def test_a_singular_hessian_is_not_computable_on_every_platform(monkeypatch):
     assert (
         m.cell(m.calibration_slope, [0, 1, 0, 1], [0.2, 0.6, 0.3, 0.7]).status == m.NOT_COMPUTABLE
     )
+
+
+# --- calibration statistics for the bootstrap -------------------------------------------
+
+
+def _cal_case(n=4000, seed=3, rate=0.05):
+    rng = np.random.default_rng(seed)
+    p = np.clip(rng.beta(1, 1 / rate, n), 1e-4, 0.9)
+    y = (rng.random(n) < np.clip(1.2 * p, 0, 1)).astype(float)
+    return y, p, rng.poisson(1.0, n).astype(float)
+
+
+def test_the_separate_fits_equal_the_combined_call_exactly():
+    y, p, w = _cal_case()
+    for weight in (None, w):
+        both = m.calibration_slope(y, p, weight)
+        assert m.CalibrationStatistic(y, p, "slope")(weight) == both["slope"]
+        assert m.CalibrationStatistic(y, p, "intercept")(weight) == both["intercept"]
+
+
+def test_each_calibration_statistic_runs_only_its_own_regression(monkeypatch):
+    y, p, w = _cal_case()
+    calls = []
+    real = m._newton_logistic
+
+    def spy(x, *args, **kwargs):
+        calls.append(x.shape[1])
+        return real(x, *args, **kwargs)
+
+    monkeypatch.setattr(m, "_newton_logistic", spy)
+    m.CalibrationStatistic(y, p, "slope")(w)
+    assert calls == [2]
+    calls.clear()
+    m.CalibrationStatistic(y, p, "intercept")(w)
+    assert calls == [1]
+
+
+def test_calibration_statistic_labels_a_cell_without_lapses():
+    stat = m.CalibrationStatistic([0, 0, 0, 0], [0.1, 0.2, 0.3, 0.4], "intercept")
+    with pytest.raises(m.NotComputable, match="lapse"):
+        stat()
+
+
+def test_calibration_slope_and_intercept_match_independent_fits():
+    # scikit-learn (no penalty) for the two-parameter fit; the intercept with the
+    # slope fixed at 1 solves its score equation sum w (y - expit(a + z)) = 0.
+    from scipy.optimize import brentq
+    from scipy.special import expit
+    from sklearn.linear_model import LogisticRegression
+
+    y, p, w = _cal_case(n=20000)
+    z, _ = m.logit(p)
+    for weight in (np.ones(len(y)), w):
+        ref = LogisticRegression(C=np.inf, solver="newton-cholesky", tol=1e-12, max_iter=1000)
+        ref.fit(z[:, None], y, sample_weight=weight)
+        level = brentq(lambda a, w=weight: (w * (y - expit(a + z))).sum(), -10, 10, xtol=1e-14)
+        out = m.calibration_slope(y, p, weight)
+        assert out["slope"] == pytest.approx(ref.coef_[0][0], abs=1e-6)
+        assert out["slope_model_intercept"] == pytest.approx(ref.intercept_[0], abs=1e-6)
+        assert out["intercept"] == pytest.approx(level, abs=1e-6)
+
+
+def _intervals(y, p, key, customers, replicates=1000, seed=7):
+    from retention.models.bootstrap import bootstrap
+
+    out = []
+    for warm in (False, True):
+        stat = m.CalibrationStatistic(y, p, key, warm=warm)
+        out.append(bootstrap([customers], lambda f, w, s=stat: s(w), replicates, seed))
+    return out
+
+
+def _assert_warm_equals_cold(y, p, customers):
+    for key in ("slope", "intercept"):
+        cold, warm = _intervals(y, p, key, customers)
+        assert (cold.status, cold.reason) == (warm.status, warm.reason)
+        a, b = cold.replicates, warm.replicates
+        assert (np.isnan(a) == np.isnan(b)).all()  # the same replicates are not computable
+        ok = ~np.isnan(a)
+        assert np.abs(a[ok] - b[ok]).max(initial=0) <= 1e-8
+        assert cold.point == warm.point  # the full-sample fit always starts from zeros
+        for x, z in ((cold.lo, warm.lo), (cold.hi, warm.hi)):
+            assert (math.isnan(x) and math.isnan(z)) or abs(x - z) <= 1e-8
+
+
+def test_warm_starts_equal_cold_starts_on_a_hand_made_case():
+    y = np.array([1, 0, 0, 0, 0, 1, 1, 1, 0, 0] * 3, dtype=float)
+    p = np.array([0.1] * 5 + [0.3] * 5 + [0.2] * 5 + [0.6] * 5 + [0.05] * 5 + [0.4] * 5)
+    _assert_warm_equals_cold(y, p, np.arange(len(y)) // 2)
+
+
+def test_warm_starts_equal_cold_starts_on_a_thin_cell():
+    rng = np.random.default_rng(0)
+    n = 10_000
+    p = np.clip(rng.beta(0.5, 50, n), 1e-5, 0.5)
+    y = (rng.random(n) < p).astype(float)
+    assert 80 <= y.sum() <= 120  # about 100 events
+    _assert_warm_equals_cold(y, p, np.arange(n))
+
+
+def test_warm_starts_equal_cold_starts_on_nearly_separated_replicates():
+    # One overlapping pair: about 60% of replicates separate, so the slope has no
+    # finite value there; the same replicates fail warm and cold, and the
+    # intercept (slope fixed at 1) stays computable on every replicate.
+    p = np.r_[np.linspace(0.01, 0.4, 40), [0.45, 0.5], np.linspace(0.55, 0.9, 10)]
+    y = np.r_[np.zeros(40), [1, 0], np.ones(10)]
+    _assert_warm_equals_cold(y, p, np.arange(len(y)))
+    cold, _ = _intervals(y, p, "slope", np.arange(len(y)))
+    assert 0 < np.isnan(cold.replicates).sum() < 1000
+    cold, _ = _intervals(y, p, "intercept", np.arange(len(y)))
+    assert cold.status == "ok" and not np.isnan(cold.replicates).any()
+
+
+def _ece_resorting(y, p, bins, w):
+    """The ECE as first written: sorts on every call (the slow path)."""
+    y, p = np.asarray(y, dtype=float), np.asarray(p, dtype=float)
+    order = np.argsort(p, kind="stable")
+    y, p, w = y[order], p[order], np.asarray(w, dtype=float)[order]
+    before = np.cumsum(w) - w
+    b = np.minimum((before / w.sum() * bins).astype(int), bins - 1)
+    out = 0.0
+    for k in range(bins):
+        mk = b == k
+        if w[mk].sum() > 0:
+            out += (
+                w[mk].sum()
+                / w.sum()
+                * abs(np.average(p[mk], weights=w[mk]) - np.average(y[mk], weights=w[mk]))
+            )
+    return float(out)
+
+
+def test_ece_sorted_once_is_bit_identical_to_sorting_every_time():
+    rng = np.random.default_rng(1)
+    n = 5000
+    p = np.round(rng.beta(1, 20, n), 3)  # many ties
+    y = (rng.random(n) < p).astype(float)
+    s = m.SortedProbabilities(y, p, 10)
+    assert s.ece() == _ece_resorting(y, p, 10, np.ones(n))
+    for _ in range(50):
+        w = rng.poisson(1.0, n).astype(float)
+        assert s.ece(w) == _ece_resorting(y, p, 10, w)
+        assert m.ece(y, p, 10, w) == _ece_resorting(y, p, 10, w)
+
+
+def test_auc_sorted_once_is_bit_identical_to_sorting_every_time():
+    rng = np.random.default_rng(2)
+    n = 5000
+    score = np.round(rng.random(n), 2)  # many ties
+    y = (rng.random(n) < score / 2).astype(float)
+    s = m.SortedScores(score)
+    for _ in range(50):
+        w = rng.poisson(1.0, n).astype(float)
+        assert s.auc(y, w) == m.SortedScores(score).auc(y, w)
