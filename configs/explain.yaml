@@ -1,0 +1,161 @@
+# Reasons: which model is explained, how contributions are grouped, and how a
+# reason is chosen and labelled. Committed alone, before any SHAP value is
+# computed. A change after results are seen is a logged amendment, and the
+# original results are reported alongside.
+
+# --- model ---------------------------------------------------------------------------
+# The frozen classifier (configs/choices.yaml: fs1, c01), refit once per horizon
+# exactly as the test stage fits it: P2 main rows of 2016-08-01 and 2016-09-01,
+# labels as of 2017-01-01, protocol seed, 4 threads; Platt on the calibration
+# half of 2016-10-01. The 59-day model is not refit and not explained.
+model:
+  horizons: [7, 30]
+  # Reproduction check against the 2016 rehearsal (data/processed/.../rehearsal.json,
+  # written at the same commit and from the same inputs as the test run). The
+  # test run's own result file is never opened. Pass: every listed summary of
+  # the refit's raw scores on the same P2 main rows equals the logged one
+  # exactly (mean, nine deciles, min, max as floats after the JSON round trip;
+  # count of distinct values as an integer).
+  reproduction:
+    source: rehearsal.json
+    cells:
+      - {horizon: 7, snapshot: 2016-11-01, path: [primary, "7 days, 2016-11-01", models, classifier, score_summary_raw]}
+      - {horizon: 7, snapshot: 2016-12-01, path: [primary, "7 days, 2016-12-01", models, classifier, score_summary_raw]}
+      - {horizon: 30, snapshot: 2016-11-01, path: [primary, "30 days, 2016-11-01", models, classifier, score_summary_raw]}
+    # 2016-12-01 is read here as features only, for this check, and nowhere else.
+  # The booster is saved as text with its SHA-256; later steps load it, never refit.
+  # Platt: two refits must give identical parameters, and the slope b must be > 0.
+  # If b is outside [0.9, 1.1] for either horizon, stop and report before this
+  # file's thresholds are relied on.
+  # Refit at 6b49305 (before this file was committed; reproduction passed):
+  # b = 0.9988291492427049 at 7 days and 1.00148552562023 at 30 days, both
+  # inside the band, identical across two refits.
+  platt_slope_review_band: [0.9, 1.1]
+
+# --- rows explained -------------------------------------------------------------------
+rows:
+  population: P2 main  # in_exp30 and segment in (paid, discount100_only)
+  snapshots: [2016-10-01, 2016-11-01, 2017-01-01, 2017-02-01]
+  not_explained: [2016-12-01]  # not usable at 7 or 30 days
+  # Only these labels.parquet columns are read, all known at T. No outcome
+  # column of any 2017 snapshot is ever requested.
+  label_columns: [in_exp30, segment]
+
+# --- contributions ----------------------------------------------------------------------
+# LightGBM pred_contrib (path-dependent TreeSHAP), computed per snapshot.
+# Pass marks for the real run (a failure stops it; the largest values are reported):
+contributions:
+  max_additivity_error: 1.0e-6     # |sum of contributions + base value - raw score|, every row
+  max_base_value_error: 1.0e-9     # base value vs mean raw score of the refit's fit rows
+  memory_ceiling_gb: 10.0          # peak RSS of the main process is reported
+  # Both the 40 individual values and the group sums are stored.
+
+# --- groups --------------------------------------------------------------------------------
+# Fixed from the feature definitions and a features-only correlation survey of
+# the fit rows, before any SHAP value existed. A group's contribution is the sum
+# of its members' values. Order = tie-break order.
+groups:
+  renewal_timing: [days_until_expiry, days_until_paid_expiry, days_since_last_txn, days_since_last_payment]
+  listening_amount: [active_days_last7, active_days_base21, active_days_28, secs_per_day_last7, secs_per_day_base21, secs_per_day_28, secs_per_active_day_28, plays_last7, plays_28, unq_last7, unq_28]
+  listening_trend: [ratio_secs_7_vs_base, ratio_secs_vs_cohort, ratio_active_7_vs_base, slope_secs_4w, rel_slope_secs_4w, slope_active_4w, rel_slope_active_4w]
+  listening_recency: [days_since_last_listen, has_any_log_before_T]
+  newcomer: [first_log_in_window]
+  songs_finished: [complete_share_last7, complete_share_28]
+  plan_kind_and_price: [segment, paid_state, last_row_kind, last_list_price, last_amount_paid, last_discount_ratio]
+  plan_length: [last_plan_days, last_plan_days_missing]
+  payment_setup: [last_is_auto_renew, last_payment_method_id]
+  cancellation: [last_row_is_cancel]
+  tenure: [tenure_days]
+  hidden: [registered_via]
+
+# Never named, never a lever; summed into "other factors".
+hidden_groups: [hidden]
+# tenure is shown only when tenure_days is known; when missing, its value goes
+# into "other factors".
+shown_only_when_known: {tenure: tenure_days}
+
+# Fact columns per group (only from inside the group). configs/reason_phrases.yaml
+# must have exactly these fact keys.
+facts:
+  renewal_timing: [days_until_expiry, days_since_last_payment]
+  listening_amount: [active_days_28, secs_per_day_28]
+  listening_trend: [ratio_secs_7_vs_base, ratio_active_7_vs_base]
+  listening_recency: [days_since_last_listen, has_any_log_before_T]
+  newcomer: [first_log_in_window]
+  songs_finished: [complete_share_28]
+  plan_kind_and_price: [last_row_kind, last_amount_paid]
+  plan_length: [last_plan_days]
+  payment_setup: [last_is_auto_renew]
+  cancellation: [last_row_is_cancel]
+  tenure: [tenure_days]  # shown as years and months
+
+# --- strength and selection ---------------------------------------------------------------
+# Measured on the calibrated log-odds scale: c = Platt slope b (per horizon) x
+# group contribution. Cutoffs are odds multipliers; the code uses ln(multiplier).
+strength:
+  strong: 2.0     # |c| >= ln 2   (0.693)
+  moderate: 1.5   # |c| >= ln 1.5 (0.405)
+  slight: 1.2     # |c| >= ln 1.2 (0.182); below this a group is not listed
+selection:
+  top_raising: 3
+  top_lowering: 2
+  order: absolute_contribution_then_group_order
+
+# --- tiny-contribution rule and position -----------------------------------------------------
+# d = b x (raw score - base value). Position: higher if d >= ln 1.2, lower if
+# d <= -ln 1.2, close otherwise. A direction with no listed group shows
+# "nothing notable" (or "many small" when the position points that way); both
+# empty and close shows "none stand out". "Other factors" is always shown: the
+# net of everything not listed (hidden group, missing tenure, groups below the
+# cut or beyond the top 3 / top 2); listed reasons plus other factors equal d.
+position_cutoff: 1.2
+other_factors: {always_shown: true, small_below: 1.2}
+
+# --- caveats ------------------------------------------------------------------------------
+caveats:
+  october_2016_calibration_half: {snapshot: 2016-10-01, half: calibration}
+  months_used_for_settings: [{snapshot: 2016-10-01, half: selection}, {snapshot: 2016-11-01}]
+  february_2017_gap: {snapshot: 2017-02-01}
+
+# --- descriptive counts (decide nothing) --------------------------------------------------
+# Per horizon and month: share of rows with a listed raising reason, strength
+# label mix, share close to average, share "higher or lower but no group
+# qualifies". A large last share is reported; no threshold changes without a
+# logged amendment.
+
+# --- hand check ---------------------------------------------------------------------------------
+# 20 customer-snapshot rows, random within each stratum; both horizons shown
+# for each, with the raw row. The draw is made once with the seed below.
+# 16 rows come from 2016-10 and 2016-11 through the behaviour strata (assigned
+# in this order, first match wins); 4 rows come from 2017: 2 from 2017-01-01
+# and 2 from 2017-02-01, any P2 main row of that month. Each row carries a note
+# saying whether its 28-day listening window (T-28 to T-1) includes 2017-01-28
+# (Lunar New Year): every 2017-02-01 row does (window 2017-01-04 to 2017-01-31),
+# no 2017-01-01 row does (window 2016-12-04 to 2016-12-31), no 2016 row does.
+hand_check:
+  seed: 20161001
+  behaviour_strata_snapshots: [2016-10-01, 2016-11-01]
+  strata:
+    - {name: zero_paid_last_row, rule: "last_row_kind in (trial, promo, discount100)", n: 3}
+    - {name: never_seen, rule: "never seen and paid last row", n: 2}
+    # Raw score only (no Platt, no SHAP): the 30-day raw score is in the top
+    # tenth of the 30-day raw scores of all P2 main rows of the same snapshot.
+    - {name: auto_renew_high_risk, rule: "last_is_auto_renew and 30-day raw score in the top decile of its snapshot", n: 3}
+    - {name: manual_payer, rule: "not last_is_auto_renew", n: 2}
+    - {name: last_row_cancel, rule: last_row_is_cancel, n: 2}
+    - {name: close_to_average, rule: "|30-day d| < ln 1.2", n: 2}
+    - {name: no_listening_before_t, rule: "not has_any_log_before_T", n: 1}
+    - {name: any_other, rule: "any remaining row", n: 1}
+  month_rows:
+    - {snapshot: 2017-01-01, n: 2, lunar_new_year_in_window: false}
+    - {snapshot: 2017-02-01, n: 2, lunar_new_year_in_window: true}
+  # Reads correctly when, for every row and horizon: each fact matches the raw
+  # row; no hidden feature or missing tenure is named; listed reasons plus other
+  # factors equal d; direction and strength match the stored contributions;
+  # every applicable caveat is present; and the text reads as a correct
+  # statement of what the model uses (judged by hand). Pass: all 20.
+  # On any failure, the failure and its cause are recorded, the cause is fixed,
+  # and a new draw of 20 is made with seed + 1 (the same 20 are also rechecked);
+  # the check passes only when a full draw passes.
+  pass: all_rows
+  redraw_seed_step: 1
