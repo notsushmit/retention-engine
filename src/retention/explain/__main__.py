@@ -19,8 +19,9 @@ sorting by key.
 
 hand-check: the 20-row hand check (configs/explain.yaml, hand_check): each row
 rendered at 7 and 30 days next to its raw rows, with the automatic checks;
-written to data/processed/<sample>/explain/hand_check.md (and .json). Exits with
-an error if any row fails.
+written to data/processed/<sample>/explain/hand_check_<seed>.md (and .json).
+--seed redraws with another seed (the configured seed + k after a failure). Exits
+with an error if any row fails.
 
 refit, contributions and hand-check refuse to run when a tracked file differs from HEAD, so
 the reports and the saved models tie to a commit.
@@ -100,19 +101,32 @@ def refit(args) -> int:
 
 
 def audit_label_reads(log: list[dict]) -> None:
-    """Record every labels.parquet read of the explain code; an outcome column raises."""
-    real = explain_model.load_labels
+    """Record every labels.parquet read of the explain code; an outcome column raises.
 
-    def audited(path, snapshots, columns, protocol, unlock=None):
-        if unlock is not None:
-            raise PermissionError("the explain code never passes an unlock")
-        outcome = [c for c in columns if column_kind(c) != "pre_t"]
-        if outcome:
-            raise PermissionError(f"outcome columns requested: {outcome}")
-        log.append({"snapshots": [str(t) for t in snapshots], "columns": list(columns)})
-        return real(path, snapshots, columns, protocol)
+    Wraps the reader in every explain module that reads labels (the model rows and
+    the hand check).
+    """
+    from retention.explain import hand_check as hand_check_module
 
-    explain_model.load_labels = audited
+    for module in (explain_model, hand_check_module):
+        real = module.load_labels
+
+        def audited(path, snapshots, columns, protocol, unlock=None, _real=real):
+            if unlock is not None:
+                raise PermissionError("the explain code never passes an unlock")
+            outcome = [c for c in columns if column_kind(c) != "pre_t"]
+            if outcome:
+                raise PermissionError(f"outcome columns requested: {outcome}")
+            log.append({"snapshots": [str(t) for t in snapshots], "columns": list(columns)})
+            return _real(path, snapshots, columns, protocol)
+
+        module.load_labels = audited
+
+
+def require_label_reads(log: list[dict]) -> None:
+    """A run that read rows must have recorded its labels reads; none means the audit missed."""
+    if not log:
+        raise RuntimeError("the labels-read audit recorded nothing: a read bypassed it")
 
 
 def contributions(args) -> int:
@@ -133,6 +147,7 @@ def contributions(args) -> int:
     report, results = run_contributions(
         protocol, processed, model_dir, refit_report, out_dir, cfg, settings, rehearsal=rehearsal
     )
+    require_label_reads(reads)
     assert_no_label_building_code()
     report |= {
         "label_reads": reads,
@@ -169,7 +184,10 @@ def hand_check(args) -> int:
     processed = processed_dir(args.fraction)
     reads: list[dict] = []
     audit_label_reads(reads)
-    out = processed / "explain" / "hand_check.md"
+    from retention.explain.hand_check import load_hand_check_config
+
+    seed = args.seed if args.seed is not None else int(load_hand_check_config()["seed"])
+    out = processed / "explain" / f"hand_check_{seed}.md"
     report = run_hand_check(
         protocol,
         processed,
@@ -179,13 +197,17 @@ def hand_check(args) -> int:
         cfg,
         Renderer.from_files(cfg),
         out,
+        seed,
     )
+    require_label_reads(reads)
     assert_no_label_building_code()
     print(out.read_text())
     summary = {
+        "seed": seed,
         "rows": report["rows"],
         "passed": report["passed"],
         "label_reads": sorted({c for r in reads for c in r["columns"]}),
+        "label_read_count": len(reads),
         "git_head": head_commit(repo),
         "seconds": round(time.time() - t0, 1),
         "peak_rss_gb": peak_rss_gb(),
@@ -212,6 +234,7 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--output-dir", default=None)
     hc = sub.add_parser("hand-check", help="the 20-row hand check of the reasons")
     hc.add_argument("--fraction", type=float, default=None)
+    hc.add_argument("--seed", type=int, default=None, help="redraw seed (configured seed + k)")
     k = sub.add_parser("compare-contributions", help="compare two contribution runs")
     k.add_argument("a")
     k.add_argument("b")

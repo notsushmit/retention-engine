@@ -240,6 +240,11 @@ def plural(n: int, unit: str) -> str:
     return f"{n} {unit}" if n == 1 else f"{n} {unit}s"
 
 
+def whole_minutes(seconds: float) -> int:
+    """Seconds as whole minutes, rounded half up (30 s -> 1, 89 s -> 1, 90 s -> 2)."""
+    return int(math.floor(seconds / 60 + 0.5))
+
+
 def tenure_words(days: int) -> str:
     """Whole years and months from a day count: 213 -> '7 months', 825 -> '2 years and 3 months'."""
     total = int(days) * 12 // 365
@@ -267,7 +272,7 @@ def render_fact(spec: Any, value: Any, missing_text: str, column: str = "") -> s
         return spec["when_missing"] if "when_missing" in spec else missing_text
     if value == 0 and "when_zero" in spec:
         return spec["when_zero"]
-    minutes = int(round(float(value) / 60))
+    minutes = whole_minutes(float(value))
     if "when_tiny" in spec and value > 0 and minutes == 0:
         return spec["when_tiny"]
     names = {n for n, _ in placeholders(spec["format"])}
@@ -275,7 +280,7 @@ def render_fact(spec: Any, value: Any, missing_text: str, column: str = "") -> s
     if "days" in names:
         fields["days"] = plural(int(value), "day")
     if "minutes" in names:
-        fields["minutes"] = minutes
+        fields["minutes"] = plural(minutes, "minute")
     if "tenure" in names:
         fields["tenure"] = tenure_words(int(value))
     return spec["format"].format(**fields)

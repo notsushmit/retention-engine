@@ -166,10 +166,17 @@ def test_tenure_in_years_and_months():
     assert fact("tenure", "tenure_days", 825) == "member for 2 years and 3 months"
 
 
-def test_minutes_tiny_and_zero():
-    assert fact("listening_amount", "secs_per_day_28", 600.0) == "about 10 minutes a day"
-    assert fact("listening_amount", "secs_per_day_28", 20.0) == "a few seconds a day"
-    assert fact("listening_amount", "secs_per_day_28", 0.0) is None  # null: left out
+def test_minutes_round_half_up_with_their_unit_tiny_and_zero():
+    def m(v):
+        return fact("listening_amount", "secs_per_day_28", v)
+
+    assert m(600.0) == "about 10 minutes a day"
+    assert m(60.0) == "about 1 minute a day"
+    assert m(30.0) == "about 1 minute a day"  # half up, not half to even
+    assert m(90.0) == "about 2 minutes a day"
+    assert m(29.99) == "under half a minute a day"
+    assert m(20.0) == "under half a minute a day"
+    assert m(0.0) is None  # null: left out
 
 
 def test_value_format_specs():
@@ -185,7 +192,7 @@ def test_value_format_specs():
 
 def test_missing_values():
     assert fact("listening_trend", "ratio_secs_7_vs_base", None) == (
-        "no listening in the three weeks before to compare with"
+        "too little listening in the three weeks before to compare with"
     )
     assert fact("renewal_timing", "days_until_expiry", None) == "not available"
     assert fact("listening_trend", "ratio_active_7_vs_base", pd.NA) is None  # null: left out

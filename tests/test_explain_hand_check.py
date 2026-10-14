@@ -6,8 +6,11 @@ from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
+import pytest
+import yaml
 
 from retention.explain.hand_check import (
+    CLAIMS,
     LUNAR_NEW_YEAR,
     RawCustomer,
     assign_strata,
@@ -175,16 +178,73 @@ def test_tenure_is_masked_without_listening_and_newcomer_flag():
     assert raw_facts(T, raw2)["first_log_in_window"] == 1
 
 
-def test_missing_ratio_claim_is_checked_against_the_base_days():
-    import yaml
+PHRASE_FACTS = yaml.safe_load(PHRASES.read_text())["groups"]
 
-    spec = yaml.safe_load(PHRASES.read_text())["groups"]["listening_trend"]["facts"][
-        "ratio_secs_7_vs_base"
-    ]
+
+def test_missing_ratio_claim_accepts_fewer_than_three_base_days():
+    spec = PHRASE_FACTS["listening_trend"]["facts"]["ratio_secs_7_vs_base"]
     text = spec["when_missing"]
-    ok, why = claim_holds("ratio_secs_7_vs_base", text, spec, {"_active_days_base21": 2})
-    assert not ok and "2" in why
-    assert claim_holds("ratio_secs_7_vs_base", text, spec, {"_active_days_base21": 0})[0]
+    for days, ok in ((0, True), (1, True), (2, True), (3, False)):
+        got, why = claim_holds("ratio_secs_7_vs_base", text, spec, {"_active_days_base21": days})
+        assert got is ok and str(days) in why
+
+
+def test_every_none_missing_zero_or_tiny_text_has_a_claim_rule():
+    for group in PHRASE_FACTS.values():
+        for col, spec in group["facts"].items():
+            if not isinstance(spec, dict):
+                continue
+            for slot in ("when_zero", "when_missing", "when_tiny"):
+                if spec.get(slot):
+                    assert (col, slot) in CLAIMS, (col, slot)
+
+
+def test_no_paid_plan_claim_ignores_cancel_rows_with_an_amount():
+    trans = tx(
+        [
+            (0, date(2016, 10, 3), "discount100", 30, 149, 0, 0, 38, None, date(2016, 11, 2), 0),
+            (1, date(2016, 10, 9), "paid", 30, 149, 149, 0, 38, None, date(2016, 11, 2), 1),
+        ]
+    )
+    raw = raw_facts(
+        T,
+        RawCustomer(
+            trans, pd.DataFrame(columns=["day", "secs", "plays", "full"]), None, date(2016, 11, 2)
+        ),
+    )
+    assert raw["days_since_last_payment"] is None and raw["_paid_rows"] == 0
+    spec = PHRASE_FACTS["renewal_timing"]["facts"]["days_since_last_payment"]
+    assert claim_holds("days_since_last_payment", spec["when_missing"], spec, raw)[0]
+
+
+def test_hand_check_label_reads_are_audited(tmp_path, monkeypatch):
+    from retention.explain import hand_check as hc
+    from retention.explain import model as em
+    from retention.explain.__main__ import audit_label_reads, require_label_reads
+
+    monkeypatch.setattr(hc, "load_labels", hc.load_labels)  # restored after the test
+    monkeypatch.setattr(em, "load_labels", em.load_labels)
+    labels = pd.DataFrame(
+        {
+            "msno": ["a", "b"],
+            "snapshot_date": [T, T],
+            "segment": ["paid", "paid"],
+            "expiry_date": [date(2016, 11, 5), date(2016, 11, 20)],
+            "churned_7": [0, 1],
+        }
+    )
+    (tmp_path / "labels.parquet").write_bytes(b"")
+    labels.to_parquet(tmp_path / "labels.parquet", index=False)
+    reads: list[dict] = []
+    with pytest.raises(RuntimeError):
+        require_label_reads(reads)
+    audit_label_reads(reads)
+    assert hc.known_expiry(tmp_path, T, P) == {"a": date(2016, 11, 5), "b": date(2016, 11, 20)}
+    assert hc.seen_customers(tmp_path, [T], P) == {"a", "b"}
+    assert [r["columns"] for r in reads] == [["expiry_date"], ["segment"]]
+    require_label_reads(reads)
+    with pytest.raises(PermissionError):
+        hc.load_labels(tmp_path / "labels.parquet", [T], ["churned_7"], P)
 
 
 def test_same_and_caveats():

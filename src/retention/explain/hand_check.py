@@ -171,6 +171,7 @@ def raw_facts(t: date, raw: RawCustomer) -> dict[str, Any]:
             out[c] = None
     paid = nc[nc.actual_amount_paid > 0]
     out["days_since_last_payment"] = (t - paid.d.max()).days if len(paid) else None
+    out["_paid_rows"] = len(paid)
     out["last_row_is_cancel"] = int(tx.sort_values("seq").iloc[-1].is_cancel) if len(tx) else None
 
     daily = raw.daily
@@ -196,25 +197,72 @@ def raw_facts(t: date, raw: RawCustomer) -> dict[str, Any]:
     reg = raw.member.get("registration_init_time") if raw.member else None
     out["tenure_days"] = (t - reg).days if has_log and reg is not None and reg < t else None
     out["_active_days_base21"] = a21
+    out["_active_days_last7"] = a7
     out["_plays_28"] = plays28
     return out
 
 
+# What each "none / missing / zero / tiny" text may claim, as a rule on the raw values.
+# A test checks that every such text in configs/reason_phrases.yaml has a rule here.
+CLAIMS: dict[tuple[str, str], Any] = {
+    ("days_until_expiry", "when_zero"): lambda r: (
+        r["days_until_expiry"] == 0,
+        f"days until expiry: {r['days_until_expiry']}",
+    ),
+    ("days_since_last_payment", "when_missing"): lambda r: (
+        r["_paid_rows"] == 0,
+        f"non-cancel paid rows before T: {r['_paid_rows']}",
+    ),
+    ("active_days_28", "when_zero"): lambda r: (
+        r["active_days_28"] == 0,
+        f"listening days in 28: {r['active_days_28']}",
+    ),
+    ("secs_per_day_28", "when_tiny"): lambda r: (
+        0 < r["secs_per_day_28"] < 30,
+        f"seconds a day: {r['secs_per_day_28']:.2f}",
+    ),
+    ("ratio_secs_7_vs_base", "when_zero"): lambda r: (
+        r["_active_days_last7"] == 0,
+        f"listening days in the last 7: {r['_active_days_last7']}",
+    ),
+    ("ratio_secs_7_vs_base", "when_missing"): lambda r: (
+        r["_active_days_base21"] < BASELINE_MIN_ACTIVE_DAYS,
+        f"listening days in the three weeks before: {r['_active_days_base21']}",
+    ),
+    ("has_any_log_before_T", "when_false"): lambda r: (
+        r["has_any_log_before_T"] == 0,
+        f"any listening before T: {r['has_any_log_before_T']}",
+    ),
+    ("first_log_in_window", "when_true"): lambda r: (
+        r["first_log_in_window"] == 1,
+        f"first listening day in the window: {r['first_log_in_window']}",
+    ),
+    ("first_log_in_window", "when_false"): lambda r: (
+        r["first_log_in_window"] == 0,
+        f"first listening day in the window: {r['first_log_in_window']}",
+    ),
+    ("complete_share_28", "when_missing"): lambda r: (
+        r["_plays_28"] == 0,
+        f"plays in 28 days: {r['_plays_28']}",
+    ),
+    ("last_plan_days", "when_zero"): lambda r: (
+        r["last_plan_days"] == 0,
+        f"plan days: {r['last_plan_days']}",
+    ),
+}
+CLAIM_SLOTS = ("when_zero", "when_missing", "when_tiny", "when_true", "when_false")
+
+
 def claim_holds(col: str, text: str | None, spec: Any, raw: dict[str, Any]) -> tuple[bool, str]:
-    """Whether a 'none / missing' text states something true about the raw rows."""
+    """Whether a when_* text states only what the raw rows support (formats pass through)."""
     if not isinstance(spec, dict) or text is None:
         return True, ""
-    if text == spec.get("when_missing"):
-        if col == "ratio_secs_7_vs_base":
-            ok = raw["_active_days_base21"] == 0
-            return ok, f"listening days in the three weeks before: {raw['_active_days_base21']}"
-        if col == "days_since_last_payment":
-            return raw[col] is None, "no paid row before T" if raw[
-                col
-            ] is None else "a paid row exists"
-        if col == "complete_share_28":
-            return raw["_plays_28"] == 0, f"plays in 28 days: {raw['_plays_28']}"
-    return True, ""
+    slot = next((k for k in CLAIM_SLOTS if spec.get(k) == text), None)
+    rule = CLAIMS.get((col, slot)) if slot else None
+    if rule is None:
+        return True, ""
+    ok, why = rule(raw)
+    return bool(ok), why
 
 
 def same(a: Any, b: Any) -> bool:
@@ -363,6 +411,21 @@ def _plain(v: Any) -> Any:
 # --- the run ----------------------------------------------------------------------------------
 
 
+def seen_customers(processed: Path, snapshots: list[date], protocol: Protocol) -> set[str]:
+    """Customers with a row of any segment in the given snapshots (segment is known at T)."""
+    return set(load_labels(processed / "labels.parquet", snapshots, ["segment"], protocol).msno)
+
+
+def known_expiry(processed: Path, t: date, protocol: Protocol) -> dict[str, date]:
+    """Effective expiry known at T per customer (expiry_date is known at T)."""
+    exp = load_labels(processed / "labels.parquet", [t], ["expiry_date"], protocol)
+    return {
+        m: pd.Timestamp(e).date()
+        for m, e in zip(exp.msno, exp.expiry_date, strict=True)
+        if not pd.isna(e)
+    }
+
+
 def candidate_rows(
     protocol: Protocol, processed: Path, contrib_dir: Path, cfg: ExplainConfig
 ) -> pd.DataFrame:
@@ -386,8 +449,7 @@ def candidate_rows(
         prior = [
             date(t.year + (t.month - k - 1) // 12, (t.month - k - 1) % 12 + 1, 1) for k in (1, 2, 3)
         ]
-        seen = set(load_labels(processed / "labels.parquet", prior, ["segment"], protocol).msno)
-        df["never_seen"] = ~df.msno.isin(seen)
+        df["never_seen"] = ~df.msno.isin(seen_customers(processed, prior, protocol))
         df["top_decile_30"] = df.raw_30 >= df.raw_30.quantile(0.9)
         frames.append(df)
     return pd.concat(frames, ignore_index=True)
@@ -418,8 +480,7 @@ def load_raw(
     ).df()
     out = {}
     for t, g in sample.groupby(sample.snapshot_date.dt.date):
-        exp = load_labels(processed / "labels.parquet", [t], ["expiry_date"], protocol)
-        exp = dict(zip(exp.msno, exp.expiry_date, strict=True))
+        exp = known_expiry(processed, t, protocol)
         for m in g.msno:
             ctx = tx[(tx.msno == m)].assign(
                 d=lambda x: pd.to_datetime(x.d).dt.date,
@@ -458,7 +519,7 @@ def load_raw(
                 if len(lg)
                 else pd.DataFrame(columns=["day", "secs", "plays", "full"]),
                 member,
-                pd.Timestamp(e).date() if e is not None else None,
+                e,
             )
     return out
 
@@ -564,8 +625,12 @@ def run_hand_check(
     cfg: ExplainConfig,
     renderer: Renderer,
     out_path: Path,
+    seed: int | None = None,
 ) -> dict[str, Any]:
+    """The hand check with the configured seed, or `seed` for a redraw (configured seed + k)."""
     hcfg = load_hand_check_config()
+    if seed is not None:
+        hcfg["seed"] = seed
     rows = candidate_rows(protocol, processed, contrib_dir, cfg)
     rows["stratum"] = assign_strata(rows, hcfg["strata"], cfg.position_cutoff)
     sample = draw(rows, hcfg, int(hcfg["seed"]))
