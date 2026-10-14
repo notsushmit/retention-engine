@@ -8,8 +8,17 @@ refit --save --expect-sha 7=<hex> --expect-sha 30=<hex>: the same refit and
 checks in a new process; the boosters and Platt parameters are saved only if
 every check passes and each booster's SHA-256 equals the expected one.
 
-Both refuse to run when a tracked file differs from HEAD, so the report and the
-saved models tie to a commit.
+contributions [--output-dir DIR]: SHAP contributions of the saved boosters for
+the explained snapshots, with every pass mark checked per chunk; writes the
+parts and the descriptive reports (tables B and C, illustrative rows) to DIR
+(default data/processed/<sample>/explain/contributions). Every read of
+labels.parquet is audited: an outcome column stops the run.
+
+compare-contributions A B: whether two runs' outputs are identical after
+sorting by key.
+
+refit and contributions refuse to run when a tracked file differs from HEAD, so
+the reports and the saved models tie to a commit.
 """
 
 from __future__ import annotations
@@ -20,8 +29,19 @@ import sys
 import time
 from pathlib import Path
 
+from retention.explain import model as explain_model
+from retention.explain.config import load_explain_config
+from retention.explain.contributions import run_contributions, same_outputs
+from retention.explain.describe import (
+    facts_check,
+    facts_reference_by_snapshot,
+    illustrative_rows,
+    table_b_groups,
+    table_b_month,
+)
 from retention.explain.model import load_settings, run_check, save_models
 from retention.models.__main__ import interim_dir, processed_dir
+from retention.models.data import column_kind
 from retention.models.protocol import load_protocol
 from retention.models.resources import peak_rss_gb
 from retention.models.stages import assert_no_label_building_code
@@ -73,6 +93,69 @@ def refit(args) -> int:
     return 0
 
 
+def audit_label_reads(log: list[dict]) -> None:
+    """Record every labels.parquet read of the explain code; an outcome column raises."""
+    real = explain_model.load_labels
+
+    def audited(path, snapshots, columns, protocol, unlock=None):
+        if unlock is not None:
+            raise PermissionError("the explain code never passes an unlock")
+        outcome = [c for c in columns if column_kind(c) != "pre_t"]
+        if outcome:
+            raise PermissionError(f"outcome columns requested: {outcome}")
+        log.append({"snapshots": [str(t) for t in snapshots], "columns": list(columns)})
+        return real(path, snapshots, columns, protocol)
+
+    explain_model.load_labels = audited
+
+
+def contributions(args) -> int:
+    repo = Path.cwd()
+    if tree_dirty(repo):
+        raise SystemExit("a tracked file differs from HEAD; commit first so the run ties to code")
+    t0 = time.time()
+    protocol = load_protocol()
+    settings = load_settings()
+    cfg = load_explain_config(settings.columns)
+    processed = processed_dir(args.fraction)
+    model_dir = explain_dir(args.fraction) / "model"
+    refit_report = json.loads((explain_dir(args.fraction) / "refit_report_save.json").read_text())
+    rehearsal = json.loads((processed / "rehearsal.json").read_text())
+    out_dir = Path(args.output_dir) if args.output_dir else processed / "explain" / "contributions"
+    reads: list[dict] = []
+    audit_label_reads(reads)
+    report, results = run_contributions(
+        protocol, processed, model_dir, refit_report, out_dir, cfg, settings, rehearsal=rehearsal
+    )
+    assert_no_label_building_code()
+    report |= {
+        "label_reads": reads,
+        "git_head": head_commit(repo),
+        "tree_clean": True,
+        "seconds": round(time.time() - t0, 1),
+        "peak_rss_gb": peak_rss_gb(),
+        "library_versions": explain_model.library_versions(),
+    }
+    outputs = {
+        "contributions_report.json": report,
+        "table_b_months.json": [table_b_month(cfg, r) for r in results],
+        "table_b_groups.json": table_b_groups(cfg, results),
+        "facts_check.json": facts_check(cfg, results),
+        "facts_reference_by_snapshot.json": facts_reference_by_snapshot(cfg, results),
+        "illustrative_rows.json": illustrative_rows(cfg, results),
+    }
+    for name, data in outputs.items():
+        (out_dir / name).write_text(json.dumps(data, indent=2, default=str) + "\n")
+    print(json.dumps({k: report[k] for k in ("passed", "seconds", "peak_rss_gb", "git_head")}))
+    return 0
+
+
+def compare(args) -> int:
+    result = same_outputs(Path(args.a), Path(args.b))
+    print(json.dumps(result))
+    return 0 if result["identical"] else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m retention.explain")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -80,7 +163,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--fraction", type=float, default=None)
     p.add_argument("--save", action="store_true")
     p.add_argument("--expect-sha", action="append", default=[], metavar="HORIZON=SHA256")
+    c = sub.add_parser("contributions", help="SHAP contributions of the saved boosters")
+    c.add_argument("--fraction", type=float, default=None)
+    c.add_argument("--output-dir", default=None)
+    k = sub.add_parser("compare-contributions", help="compare two contribution runs")
+    k.add_argument("a")
+    k.add_argument("b")
     args = parser.parse_args(argv)
+    if args.command == "contributions":
+        return contributions(args)
+    if args.command == "compare-contributions":
+        return compare(args)
     if args.save and not args.expect_sha:
         parser.error("--save needs --expect-sha for every horizon")
     return refit(args)
