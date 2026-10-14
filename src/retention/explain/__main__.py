@@ -17,7 +17,12 @@ labels.parquet is audited: an outcome column stops the run.
 compare-contributions A B: whether two runs' outputs are identical after
 sorting by key.
 
-refit and contributions refuse to run when a tracked file differs from HEAD, so
+hand-check: the 20-row hand check (configs/explain.yaml, hand_check): each row
+rendered at 7 and 30 days next to its raw rows, with the automatic checks;
+written to data/processed/<sample>/explain/hand_check.md (and .json). Exits with
+an error if any row fails.
+
+refit, contributions and hand-check refuse to run when a tracked file differs from HEAD, so
 the reports and the saved models tie to a commit.
 """
 
@@ -39,6 +44,7 @@ from retention.explain.describe import (
     table_b_groups,
     table_b_month,
 )
+from retention.explain.hand_check import run_hand_check
 from retention.explain.model import load_settings, run_check, save_models
 from retention.models.__main__ import interim_dir, processed_dir
 from retention.models.data import column_kind
@@ -150,6 +156,44 @@ def contributions(args) -> int:
     return 0
 
 
+def hand_check(args) -> int:
+    repo = Path.cwd()
+    if tree_dirty(repo):
+        raise SystemExit("a tracked file differs from HEAD; commit first so the run ties to code")
+    t0 = time.time()
+    from retention.explain.reasons import Renderer
+
+    protocol = load_protocol()
+    settings = load_settings()
+    cfg = load_explain_config(settings.columns)
+    processed = processed_dir(args.fraction)
+    reads: list[dict] = []
+    audit_label_reads(reads)
+    out = processed / "explain" / "hand_check.md"
+    report = run_hand_check(
+        protocol,
+        processed,
+        interim_dir(args.fraction),
+        processed / "explain" / "contributions",
+        explain_dir(args.fraction) / "model",
+        cfg,
+        Renderer.from_files(cfg),
+        out,
+    )
+    assert_no_label_building_code()
+    print(out.read_text())
+    summary = {
+        "rows": report["rows"],
+        "passed": report["passed"],
+        "label_reads": sorted({c for r in reads for c in r["columns"]}),
+        "git_head": head_commit(repo),
+        "seconds": round(time.time() - t0, 1),
+        "peak_rss_gb": peak_rss_gb(),
+    }
+    print(json.dumps(summary))
+    return 0 if report["passed"] == report["rows"] else 1
+
+
 def compare(args) -> int:
     result = same_outputs(Path(args.a), Path(args.b))
     print(json.dumps(result))
@@ -166,6 +210,8 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("contributions", help="SHAP contributions of the saved boosters")
     c.add_argument("--fraction", type=float, default=None)
     c.add_argument("--output-dir", default=None)
+    hc = sub.add_parser("hand-check", help="the 20-row hand check of the reasons")
+    hc.add_argument("--fraction", type=float, default=None)
     k = sub.add_parser("compare-contributions", help="compare two contribution runs")
     k.add_argument("a")
     k.add_argument("b")
@@ -174,6 +220,8 @@ def main(argv: list[str] | None = None) -> int:
         return contributions(args)
     if args.command == "compare-contributions":
         return compare(args)
+    if args.command == "hand-check":
+        return hand_check(args)
     if args.save and not args.expect_sha:
         parser.error("--save needs --expect-sha for every horizon")
     return refit(args)
