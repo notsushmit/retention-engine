@@ -23,7 +23,13 @@ written to data/processed/<sample>/explain/hand_check_<seed>.md (and .json).
 --seed redraws with another seed (the configured seed + k after a failure). Exits
 with an error if any row fails.
 
-refit, contributions and hand-check refuse to run when a tracked file differs from HEAD, so
+reasons [--output PATH]: reasons.parquet (one row per customer, snapshot and
+horizon) from the stored contributions, the features and the saved Platt
+parameters; no labels are read (a guard makes any labels read fail the run).
+
+compare-reasons A B: whether two reasons files are identical after sorting by key.
+
+refit, contributions, hand-check and reasons refuse to run when a tracked file differs from HEAD, so
 the reports and the saved models tie to a commit.
 """
 
@@ -216,6 +222,72 @@ def hand_check(args) -> int:
     return 0 if report["passed"] == report["rows"] else 1
 
 
+def forbid_label_reads() -> None:
+    """Make every labels reader the explain code can reach fail (for a no-labels run)."""
+    from retention.explain import hand_check as hand_check_module
+    from retention.models import data as data_module
+    from retention.models import frames as frames_module
+
+    def refuse(*args, **kwargs):
+        raise PermissionError("this run reads no labels")
+
+    for module in (explain_model, hand_check_module, data_module, frames_module):
+        module.load_labels = refuse
+
+
+def reasons(args) -> int:
+    from retention.explain.build_reasons import committed_sha256, run_reasons, sha256_file
+    from retention.explain.contributions import EXPECTED_SHA256
+    from retention.explain.reasons import PHRASES, Renderer
+
+    repo = Path.cwd()
+    if tree_dirty(repo):
+        raise SystemExit("a tracked file differs from HEAD; commit first so the run ties to code")
+    t0 = time.time()
+    protocol = load_protocol()
+    settings = load_settings()
+    cfg = load_explain_config(settings.columns)
+    renderer = Renderer.from_files(cfg)
+    if committed_sha256(repo, PHRASES) != sha256_file(PHRASES):
+        raise SystemExit("the phrases file differs from the committed one")
+    processed = processed_dir(args.fraction)
+    out = Path(args.output) if args.output else processed / "explain" / "reasons.parquet"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    forbid_label_reads()
+    meta = {
+        "git_head": head_commit(repo),
+        "explain_yaml_sha256": sha256_file(Path("configs/explain.yaml")),
+        "booster_sha256": json.dumps({str(h): v for h, v in EXPECTED_SHA256.items()}),
+    }
+    report = run_reasons(
+        protocol,
+        processed,
+        processed / "explain" / "contributions",
+        explain_dir(args.fraction) / "model",
+        cfg,
+        renderer,
+        out,
+        metadata=meta,
+    )
+    assert_no_label_building_code()
+    report |= meta | {
+        "seconds": round(time.time() - t0, 1),
+        "peak_rss_gb": peak_rss_gb(),
+        "output": str(out),
+    }
+    out.with_name(out.stem + "_report.json").write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps({k: report[k] for k in ("passed", "seconds", "peak_rss_gb", "git_head")}))
+    return 0
+
+
+def compare_reasons(args) -> int:
+    from retention.explain.build_reasons import same_reasons
+
+    result = same_reasons(Path(args.a), Path(args.b))
+    print(json.dumps(result))
+    return 0 if result["identical"] else 1
+
+
 def compare(args) -> int:
     result = same_outputs(Path(args.a), Path(args.b))
     print(json.dumps(result))
@@ -235,6 +307,12 @@ def main(argv: list[str] | None = None) -> int:
     hc = sub.add_parser("hand-check", help="the 20-row hand check of the reasons")
     hc.add_argument("--fraction", type=float, default=None)
     hc.add_argument("--seed", type=int, default=None, help="redraw seed (configured seed + k)")
+    rs = sub.add_parser("reasons", help="reasons.parquet for every explained row")
+    rs.add_argument("--fraction", type=float, default=None)
+    rs.add_argument("--output", default=None)
+    cr = sub.add_parser("compare-reasons", help="compare two reasons files")
+    cr.add_argument("a")
+    cr.add_argument("b")
     k = sub.add_parser("compare-contributions", help="compare two contribution runs")
     k.add_argument("a")
     k.add_argument("b")
@@ -245,6 +323,10 @@ def main(argv: list[str] | None = None) -> int:
         return compare(args)
     if args.command == "hand-check":
         return hand_check(args)
+    if args.command == "reasons":
+        return reasons(args)
+    if args.command == "compare-reasons":
+        return compare_reasons(args)
     if args.save and not args.expect_sha:
         parser.error("--save needs --expect-sha for every horizon")
     return refit(args)

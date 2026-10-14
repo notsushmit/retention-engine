@@ -373,16 +373,19 @@ class Renderer:
             lines.append(p["position"][key].format(strength=STRENGTHS[s - 1]))
         listed: list[tuple[str, int, float]] = []
         nn = p["nothing_notable"]
-        if sel.none_stand_out()[i]:
+        # Row values only: the Selection's whole-array helpers would cost a pass over
+        # every row for each rendered row.
+        n_up, n_dn = int((sel.raising[i] >= 0).sum()), int((sel.lowering[i] >= 0).sum())
+        if pos == 0 and n_up == 0 and n_dn == 0:
             lines.append(nn["none_stand_out"])
         else:
             for idx, strengths, direction, many, nothing in (
-                (sel.raising, sel.raising_strength, "raises", sel.many_small_raising(), "raising"),
+                (sel.raising, sel.raising_strength, "raises", pos == 1 and n_up == 0, "raising"),
                 (
                     sel.lowering,
                     sel.lowering_strength,
                     "lowers",
-                    sel.many_small_lowering(),
+                    pos == -1 and n_dn == 0,
                     "lowering",
                 ),
             ):
@@ -393,7 +396,7 @@ class Renderer:
                     lines.append(self.reason_line(names[j], direction, s, facts))
                     listed.append((names[j], s, float(sel.c[i, j])))
                 if not slots:
-                    lines.append(nn[f"many_small_{nothing}"] if many[i] else nn[nothing])
+                    lines.append(nn[f"many_small_{nothing}"] if many else nn[nothing])
         if listed:
             o, os_ = float(sel.other[i]), int(sel.other_strength[i])
             if os_ == 0:
@@ -425,6 +428,7 @@ def partly_cancel_shown(sel: Selection, i: int, cfg: ExplainConfig) -> bool:
     c_up = float(sel.c[i, sel.raising[i, 0]]) if sel.raising[i, 0] >= 0 else 0.0
     c_dn = float(-sel.c[i, sel.lowering[i, 0]]) if sel.lowering[i, 0] >= 0 else 0.0
     strongest = 1 if c_up >= c_dn else -1
-    listed_other_way = sel.n_lowering[i] > 0 if strongest == 1 else sel.n_raising[i] > 0
+    other_side = sel.lowering[i] if strongest == 1 else sel.raising[i]
+    listed_other_way = bool((other_side >= 0).any())
     other_other_way = bool(sel.other_strength[i] > 0 and np.sign(sel.other[i]) == -strongest)
     return bool(listed_other_way or other_other_way)
