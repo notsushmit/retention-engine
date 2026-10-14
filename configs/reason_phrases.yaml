@@ -131,14 +131,17 @@ caveats:
 #   format:       used for a known value;
 #   when_zero:    used when the value is 0;
 #   when_missing: used when the value is missing (otherwise missing_value);
-#   when_tiny:    (minutes only) used when the value rounds to 0 minutes.
+#   when_tiny:    (minutes only) used when the value rounds to 0 minutes, that
+#                 is, under 30 seconds a day on average.
 # A null when_* leaves the fact out of the line, so the same thing is not said
 # twice. Boolean facts: when_true / when_false. Category facts: one string per
 # level.
 # Placeholders: {value} (with an optional format spec, e.g. {value:.1f});
 # {days}: the value with "day" or "days"; {minutes}: seconds per day as whole
-# minutes; {tenure}: years and months in words, e.g. "2 years and 3 months",
-# "7 months".
+# minutes, rounded half up, with "minute" or "minutes"; {tenure}: years and
+# months in words, e.g. "2 years and 3 months", "7 months".
+# Every when_* text states only what its rule guarantees (a missing or zero
+# value is checked against the raw rows in the hand check).
 # Each group's comment says what the facts looked like in the run named at the
 # top. "Listed" means the group was among the top three pushing up or top two
 # pulling down, at slight or above.
@@ -159,7 +162,9 @@ groups:
         when_zero: "expires today"
       days_since_last_payment:
         format: "last paid {days} ago"
-        when_missing: "no payment on record"
+        # Missing when no non-cancel row before T has an amount paid above 0
+        # (cancel rows can carry an amount; they are not a paid plan).
+        when_missing: "no paid plan on record"
 
   # How much they listen (listening_amount). "Risk up" is mostly customers who
   # did not listen at all in the last 28 days (84.3% at 7 days, 62,335 of
@@ -174,15 +179,16 @@ groups:
         format: "listened on {days} of the last 28"
         when_zero: "no listening in the last 28 days"
       secs_per_day_28:
-        format: "about {minutes} minutes a day"
-        when_tiny: "a few seconds a day"
+        format: "about {minutes} a day"
+        when_tiny: "under half a minute a day"
         when_zero: null  # already said by the line above
 
   # Listening trend. "Risk up" does not mean listening fell. At 30 days, of
   # listed rows with a comparison, only 32.5% listened less in the last 7 days
-  # than in the three weeks before (3,374 of 10,371), and 73.7% had no listening
-  # in those three weeks to compare with (29,043 of 39,414). At 7 days, 62.1%
-  # listened less (6,981 of 11,246) and 14.3% had nothing to compare with.
+  # than in the three weeks before (3,374 of 10,371), and 73.7% had no ratio
+  # (29,043 of 39,414): fewer than 3 listening days in those three weeks (none
+  # for 25,664, one or two for 3,379). At 7 days, 62.1% listened less (6,981 of
+  # 11,246) and 14.3% had no ratio (none for 854, one or two days for 1,025).
   listening_trend:
     raises: "Their listening trend is pushing risk up"
     lowers: "Their listening trend is pulling risk down"
@@ -193,7 +199,9 @@ groups:
       ratio_secs_7_vs_base:
         format: "listening in the last 7 days was about {value:.0%} of the usual (the three weeks before)"
         when_zero: "no listening in the last 7 days"
-        when_missing: "no listening in the three weeks before to compare with"
+        # Missing when there are fewer than 3 listening days in the three weeks
+        # before (the minimum the feature needs for a baseline), not only none.
+        when_missing: "too little listening in the three weeks before to compare with"
       ratio_active_7_vs_base:
         format: "listening days about {value:.0%} of the usual"
         when_zero: null  # already said by the line above
@@ -219,9 +227,11 @@ groups:
     raises: "Being a new listener is pushing risk up"
     lowers: "Being a new listener is pulling risk down"
     facts:
+      # The first listening day on record (the data starts on 2015-01-01); 0 also
+      # covers customers with no listening at all.
       first_log_in_window:
-        when_true: "first listened within the last 28 days"
-        when_false: "has been listening since before the last 28 days"
+        when_true: "first listening day on record is within the last 28 days"
+        when_false: "listening did not start within the last 28 days"
 
   # Songs played to the end (songs_finished). "Risk up" does not mean they skip
   # songs: at 7 days the median share played to the end is 99.3% on listed rows
