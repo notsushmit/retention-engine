@@ -214,8 +214,11 @@ def run_contributions(
     tmp_parts: list[tuple[Path, Path]] = []
     report: dict[str, Any] = {"chunks": [], "tie_to_reproduction": []}
     results: list[ChunkResult] = []
-    fact_cols = sorted({c for cols in cfg.facts.values() for c in cols})
-    known_cols = sorted(set(cfg.shown_only_when_known.values()))
+    # A column can be both a fact and the "shown only when known" column (tenure_days):
+    # keep each column once.
+    kept_cols = sorted(
+        {c for cols in cfg.facts.values() for c in cols} | set(cfg.shown_only_when_known.values())
+    )
     try:
         for h in cfg.horizons:
             saved = load_saved_model(model_dir, h, settings, protocol, expected_sha[h])
@@ -271,7 +274,7 @@ def run_contributions(
                 )
                 pq.write_table(table, tmp, compression="zstd")
                 tmp_parts.append((tmp, final))
-                keep = rows[["msno", "snapshot_date", *fact_cols, *known_cols]].copy()
+                keep = rows[["msno", "snapshot_date", *kept_cols]].copy()
                 results.append(ChunkResult(h, t, keep, sel))
                 del raw, contrib, gsum, table
     except BaseException:

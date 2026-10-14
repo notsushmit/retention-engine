@@ -394,6 +394,21 @@ def test_run_writes_parts_only_after_every_chunk_passes(run_setup, tmp_path):
     assert same_outputs(out, out2)["identical"]
 
 
+def test_a_column_that_is_a_fact_and_shown_only_when_known_is_kept_once(run_setup, tmp_path):
+    # As tenure_days in configs/explain.yaml: a fact of its group and the column that
+    # must be known for the group to be shown.
+    processed, model_dir, rep, _, settings, sha, rows = run_setup
+    cfg = parse_explain_config(_raw_config({"g": ["x"]}, {"g": ["x"]}, known={"g": "x"}), ["x"])
+    _, results = run_contributions(
+        P, processed, model_dir, rep, tmp_path / "o", cfg, settings, lambda m: None, sha, rows
+    )
+    assert all(r.rows.columns.is_unique for r in results)
+    assert table_b_month(cfg, results[0])["rows"] == 14
+    assert "missing_g_alone_reaches_slight" in table_b_month(cfg, results[0])
+    facts_check(cfg, results)
+    illustrative_rows(cfg, results)
+
+
 def test_a_failed_check_leaves_no_output(run_setup, tmp_path):
     processed, model_dir, rep, cfg, settings, sha, rows = run_setup
     out = tmp_path / "out"
