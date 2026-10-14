@@ -29,6 +29,14 @@ parameters; no labels are read (a guard makes any labels read fail the run).
 
 compare-reasons A B: whether two reasons files are identical after sorting by key.
 
+archetypes --stage timing|select|diagnostic: the archetype stages of
+configs/archetypes.yaml, one at a time, each writing its JSON to
+data/processed/<sample>/explain/archetypes/. No outcome and no labels are read.
+timing fits HDBSCAN once on the real fit sample and votes every other row
+(stops if the fit exceeds 5 minutes); select runs the registered grid; diagnostic
+runs the expiry diagnostic for the chosen setting (refitted, and checked against
+the labels recorded by select).
+
 refit, contributions, hand-check and reasons refuse to run when a tracked file differs from HEAD, so
 the reports and the saved models tie to a commit.
 """
@@ -280,6 +288,81 @@ def reasons(args) -> int:
     return 0
 
 
+FIT_TIME_LIMIT_SECONDS = 300
+
+
+def archetypes(args) -> int:
+    from retention.explain import archetypes as A
+
+    repo = Path.cwd()
+    if tree_dirty(repo):
+        raise SystemExit("a tracked file differs from HEAD; commit first so the run ties to code")
+    t0 = time.time()
+    forbid_label_reads()
+    protocol = load_protocol()
+    settings = load_settings()
+    cfg = load_explain_config(settings.columns)
+    acfg = A.load_archetypes_config()
+    processed = processed_dir(args.fraction)
+    out_dir = processed / "explain" / "archetypes"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rows = A.load_rows(
+        processed,
+        processed / "explain" / "contributions",
+        cfg,
+        acfg["input"]["groups"],
+        with_7_days=args.stage == "diagnostic",
+    )
+    samples = A.draw_samples(rows, acfg)
+    threads = protocol.threads.n
+    report: dict = {
+        "stage": args.stage,
+        "git_head": head_commit(repo),
+        "groups": rows.groups,
+        "rows": int(len(rows.msno)),
+        "rule_rows": int(rows.rule.sum()),
+        "sample_sizes": {
+            "fit": len(samples.fit),
+            "evaluation": len(samples.evaluation),
+            "resamples": [len(r) for r in samples.resamples],
+            "fit_2017": len(samples.fit_2017),
+            "evaluation_2017": len(samples.evaluation_2017),
+            "diagnostic": len(samples.diagnostic),
+        },
+        "fit_sample_sha256": A.labels_sha256(samples.fit),
+    }
+    code = 0
+    if args.stage == "timing":
+        size = int(acfg["clustering"]["min_cluster_size_grid"][0])
+        report |= A.one_fit_timing(rows, samples, acfg, size, threads)
+        if report["fit_seconds"] > FIT_TIME_LIMIT_SECONDS:
+            report["stopped"] = f"one fit took over {FIT_TIME_LIMIT_SECONDS} s"
+            code = 1
+    elif args.stage == "select":
+        chosen, settings_ = A.select_setting(rows.x, samples, acfg, threads)
+        report["settings"] = [s.summary() for s in settings_]
+        report["chosen"] = None if chosen is None else chosen.min_cluster_size
+        if chosen is not None:
+            report["reference_labels_sha256"] = A.labels_sha256(chosen.reference.labels)
+            report["reference_archetypes"] = chosen.reference.n_clusters
+        else:
+            report["stopped"] = "no setting qualifies: reported as a failure"
+            code = 1
+    elif args.stage == "diagnostic":
+        sel = json.loads((out_dir / "select.json").read_text())
+        if sel.get("chosen") is None:
+            raise SystemExit("no chosen setting")
+        chosen = A.evaluate_setting(rows.x, samples, acfg, int(sel["chosen"]), threads)
+        if A.labels_sha256(chosen.reference.labels) != sel["reference_labels_sha256"]:
+            raise SystemExit("the refitted reference differs from the one select recorded")
+        report["chosen"] = sel["chosen"]
+        report |= A.expiry_diagnostic(rows, samples, acfg, chosen, threads)
+    report |= {"seconds": round(time.time() - t0, 1), "peak_rss_gb": peak_rss_gb()}
+    (out_dir / f"{args.stage}.json").write_text(json.dumps(report, indent=2, default=str) + "\n")
+    print(json.dumps(report, indent=2, default=str))
+    return code
+
+
 def compare_reasons(args) -> int:
     from retention.explain.build_reasons import same_reasons
 
@@ -310,6 +393,9 @@ def main(argv: list[str] | None = None) -> int:
     rs = sub.add_parser("reasons", help="reasons.parquet for every explained row")
     rs.add_argument("--fraction", type=float, default=None)
     rs.add_argument("--output", default=None)
+    ar = sub.add_parser("archetypes", help="one archetype stage (configs/archetypes.yaml)")
+    ar.add_argument("--fraction", type=float, default=None)
+    ar.add_argument("--stage", required=True, choices=["timing", "select", "diagnostic"])
     cr = sub.add_parser("compare-reasons", help="compare two reasons files")
     cr.add_argument("a")
     cr.add_argument("b")
@@ -327,6 +413,8 @@ def main(argv: list[str] | None = None) -> int:
         return reasons(args)
     if args.command == "compare-reasons":
         return compare_reasons(args)
+    if args.command == "archetypes":
+        return archetypes(args)
     if args.save and not args.expect_sha:
         parser.error("--save needs --expect-sha for every horizon")
     return refit(args)
