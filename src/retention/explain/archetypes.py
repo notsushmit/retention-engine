@@ -12,7 +12,9 @@ Stages, each a function so it can be run and inspected on its own:
   2. select_setting: the registered grid, chosen by resample stability (ARI);
   3. expiry_diagnostic: adjusted mutual information with days_until_expiry on
      2016-10, and the registered branches;
-  4. judge: the seven criteria, "holds up", the share series and profiles.
+  4. judge: the seven criteria, "holds up", the share series and profiles;
+  5. judge_versions: the expiry-branch decision table (the 11-group version and,
+     when the archetypes restate the expiry date, the 10-group one; which is kept).
 
 Every sample is drawn with a seed fixed in advance (base + offset, see SEEDS)
 from rows sorted by customer within each snapshot, snapshot by snapshot. Labels
@@ -58,6 +60,10 @@ SEEDS = {
 }
 NOISE = -1
 RULE = -2  # the rule-defined zero-paid archetype
+# The two registered expiry branches (configs/archetypes.yaml, expiry_diagnostic).
+RESTATES_EXPIRY_MIN_AMI = 0.5
+UNSUPPORTED_MARGIN = 0.10
+RENEWAL_TIMING = "renewal_timing"
 ZERO_PAID_KINDS = ("trial", "promo", "discount100")
 OCT16, NOV16, JAN17, FEB17 = (
     date(2016, 10, 1),
@@ -337,6 +343,8 @@ class Setting:
     aris: list[float]
     qualifies: bool
     reasons: list[str] = field(default_factory=list)
+    labels: np.ndarray | None = None  # every row: RULE, HDBSCAN label (fit rows) or the vote
+    shares: dict[str, Any] | None = None  # unassigned shares with denominators
 
     @property
     def median_ari(self) -> float:
@@ -347,6 +355,7 @@ class Setting:
             "min_cluster_size": self.min_cluster_size,
             "archetypes": self.reference.n_clusters,
             "unassigned_share_on_E": float((self.e_labels == NOISE).mean()),
+            "unassigned": self.shares,
             "median_ari": self.median_ari,
             "ari": self.aris,
             "qualifies": self.qualifies,
@@ -354,8 +363,66 @@ class Setting:
         }
 
 
+def all_labels(ref: Fit, x: np.ndarray, rule: np.ndarray) -> np.ndarray:
+    """A label for every row: RULE for the rule-defined rows, the HDBSCAN label for rows in the
+    reference fit sample, the 10-neighbour vote for every other row."""
+    labels = np.full(len(x), RULE, int)
+    non_rule = np.flatnonzero(~rule)
+    labels[non_rule] = assign(ref, x, non_rule)
+    return labels
+
+
+def unassigned_shares(ref: Fit, labels: np.ndarray, e_labels: np.ndarray) -> dict[str, Any]:
+    """Unassigned shares, each with its denominator. Only the share on E decides qualification;
+    the other three are reported only."""
+    in_fit = np.zeros(len(labels), bool)
+    in_fit[ref.sample] = True
+    non_rule = labels != RULE
+
+    def part(lab: np.ndarray, denominator: str) -> dict[str, Any]:
+        n, u = len(lab), int((lab == NOISE).sum())
+        share = u / n if n else None
+        return {"share": share, "unassigned": u, "rows": n, "denominator": denominator}
+
+    return {
+        "on_E": part(e_labels, "evaluation set E, voted (decides qualification)"),
+        "fit_sample": part(
+            labels[in_fit], "reference fit-sample rows, HDBSCAN noise (reported only)"
+        ),
+        "voted": part(
+            labels[non_rule & ~in_fit],
+            "non-rule rows outside the fit sample, voted (reported only)",
+        ),
+        "overall": part(
+            labels,
+            "all P2 main rows of the explained snapshots; rule-defined zero-paid rows "
+            "count as assigned (reported only)",
+        ),
+    }
+
+
+def qualification(n_clusters: int, e_labels: np.ndarray, sel: dict[str, Any]) -> list[str]:
+    """Why a setting does not qualify (empty: it qualifies). Reads the archetype count and the
+    unassigned share on E only, as registered."""
+    reasons = []
+    if not sel["min_archetypes"] <= n_clusters <= sel["max_archetypes"]:
+        reasons.append(
+            f"{n_clusters} archetypes, outside {sel['min_archetypes']} to {sel['max_archetypes']}"
+        )
+    if (e_labels == NOISE).mean() > sel["max_unassigned_share"]:
+        reasons.append(
+            f"unassigned on E {(e_labels == NOISE).mean():.3f} above {sel['max_unassigned_share']}"
+        )
+    return reasons
+
+
 def evaluate_setting(
-    x: np.ndarray, samples: Samples, acfg: dict[str, Any], size: int, threads: int = 4
+    x: np.ndarray,
+    rule: np.ndarray,
+    samples: Samples,
+    acfg: dict[str, Any],
+    size: int,
+    threads: int = 4,
 ) -> Setting:
     sel = acfg["clustering"]["selection"]
     ref = fit_hdbscan(x, samples.fit, acfg, size, threads)
@@ -365,17 +432,11 @@ def evaluate_setting(
         for s in samples.resamples
     ]
     aris = [ari(e, r) for r in res]
-    reasons = []
-    if not sel["min_archetypes"] <= ref.n_clusters <= sel["max_archetypes"]:
-        reasons.append(
-            f"{ref.n_clusters} archetypes, outside {sel['min_archetypes']} to "
-            f"{sel['max_archetypes']}"
-        )
-    if (e == NOISE).mean() > sel["max_unassigned_share"]:
-        reasons.append(
-            f"unassigned on E {(e == NOISE).mean():.3f} above {sel['max_unassigned_share']}"
-        )
-    return Setting(size, ref, e, res, aris, not reasons, reasons)
+    reasons = qualification(ref.n_clusters, e, sel)
+    labels = all_labels(ref, x, rule)
+    return Setting(
+        size, ref, e, res, aris, not reasons, reasons, labels, unassigned_shares(ref, labels, e)
+    )
 
 
 def choose(settings: list[Setting]) -> Setting | None:
@@ -387,13 +448,63 @@ def choose(settings: list[Setting]) -> Setting | None:
 
 
 def select_setting(
-    x: np.ndarray, samples: Samples, acfg: dict[str, Any], threads: int = 4
+    x: np.ndarray, rule: np.ndarray, samples: Samples, acfg: dict[str, Any], threads: int = 4
 ) -> tuple[Setting | None, list[Setting]]:
     settings = [
-        evaluate_setting(x, samples, acfg, int(m), threads)
+        evaluate_setting(x, rule, samples, acfg, int(m), threads)
         for m in acfg["clustering"]["min_cluster_size_grid"]
     ]
     return choose(settings), settings
+
+
+def selection_frame(
+    msno: np.ndarray, snapshot: np.ndarray, settings: list[Setting]
+) -> pd.DataFrame:
+    """Every row's label under every grid setting, keyed by setting, snapshot and customer."""
+    parts = []
+    for s in settings:
+        in_fit = np.zeros(len(msno), bool)
+        in_fit[s.reference.sample] = True
+        parts.append(
+            pd.DataFrame(
+                {
+                    "min_cluster_size": s.min_cluster_size,
+                    "snapshot": snapshot,
+                    "msno": msno,
+                    "in_fit_sample": in_fit,
+                    "label": s.labels,
+                }
+            )
+        )
+    return pd.concat(parts, ignore_index=True)
+
+
+SELECTION_KEY = ["min_cluster_size", "snapshot", "msno"]
+RUN_ONLY_FIELDS = ("seconds", "peak_rss_gb")
+
+
+def same_selection(
+    report_a: dict[str, Any],
+    frame_a: pd.DataFrame,
+    report_b: dict[str, Any],
+    frame_b: pd.DataFrame,
+) -> dict[str, Any]:
+    """Whether two grid runs are identical: the reports exactly (time and memory left out), and
+    the label tables after sorting by key."""
+
+    def norm(f: pd.DataFrame) -> pd.DataFrame:
+        return f.sort_values(SELECTION_KEY, kind="stable").reset_index(drop=True)
+
+    ra = {k: v for k, v in report_a.items() if k not in RUN_ONLY_FIELDS}
+    rb = {k: v for k, v in report_b.items() if k not in RUN_ONLY_FIELDS}
+    fa, fb = norm(frame_a), norm(frame_b)
+    same_frame = bool(list(fa.columns) == list(fb.columns) and fa.equals(fb))
+    return {
+        "rows": len(fa),
+        "report_identical": ra == rb,
+        "labels_identical": same_frame,
+        "identical": ra == rb and same_frame,
+    }
 
 
 # --- stage 3: the expiry diagnostic -----------------------------------------------------------
@@ -402,6 +513,11 @@ def select_setting(
 def ami_with_expiry(labels: np.ndarray, days: np.ndarray) -> float:
     """Adjusted mutual information between labels (noise as a label) and expiry day categories."""
     return float(adjusted_mutual_info_score(days.astype(int), labels))
+
+
+def restates_expiry(ami_30_reference: float) -> bool:
+    """The registered branch: the archetypes mostly restate the expiry date."""
+    return ami_30_reference >= RESTATES_EXPIRY_MIN_AMI
 
 
 def expiry_diagnostic(
@@ -424,8 +540,8 @@ def expiry_diagnostic(
         "clusters_7_oct_fit": fit7.n_clusters,
     }
     b = acfg["expiry_diagnostic"]["branches"]
-    out["restates_expiry"] = out["AMI_30_reference"] >= 0.5
-    out["assumption_unsupported"] = out["AMI_7"] < out["AMI_30"] + 0.10
+    out["restates_expiry"] = restates_expiry(out["AMI_30_reference"])
+    out["assumption_unsupported"] = out["AMI_7"] < out["AMI_30"] + UNSUPPORTED_MARGIN
     out["branches"] = {k: v for k, v in b.items()}
     return out
 
@@ -506,9 +622,7 @@ def judge(
             if k != "passed"
         )
     # labels for every row of every explained month
-    labels = np.full(len(rows.msno), RULE, int)
-    non_rule = np.flatnonzero(~rows.rule)
-    labels[non_rule] = assign(ref, rows.x, non_rule)
+    labels = chosen.labels if chosen.labels is not None else all_labels(ref, rows.x, rows.rule)
     ref_profile = profile(ref.x, ref.labels, arche)
     months = sorted(set(rows.snapshot.tolist()))
     # 3. profiles
@@ -595,24 +709,135 @@ def judge(
     return out
 
 
-def apply_failure_rule(judgement: dict[str, Any], rows: Rows) -> dict[str, Any]:
+def apply_failure_rule(
+    judgement: dict[str, Any], rows: Rows, crit: dict[str, Any]
+) -> dict[str, Any]:
     """As registered: an archetype that does not hold up is not named and its rows count as
-    unassigned in the share series; then criteria 6 and 7 are read again."""
+    unassigned in the share series; then criteria 6 and 7 are read again. Reported only: the
+    result never makes a version hold up (see version_holds_up)."""
     labels = judgement["_labels"].copy()
     failed = [a for a, ok in judgement["holds_up"].items() if not ok]
     labels[np.isin(labels, failed)] = NOISE
     months = sorted(set(rows.snapshot.tolist()))
     kept = [a for a, ok in judgement["holds_up"].items() if ok]
+    unassigned = {
+        t.isoformat(): float((labels[(rows.snapshot == t) & ~rows.rule] == NOISE).mean())
+        for t in months
+    }
     return {
         "failed_archetypes": failed,
         "kept_archetypes": kept,
-        "unassigned_after": {
-            t.isoformat(): float((labels[(rows.snapshot == t) & ~rows.rule] == NOISE).mean())
-            for t in months
-        },
+        "unassigned_after": unassigned,
+        "6_after_passed": all(
+            v <= crit["6_unassigned"]["max_share_every_month"] for v in unassigned.values()
+        ),
         "count_after": len(kept),
+        "7_after_passed": crit["7_count"]["min"] <= len(kept) <= crit["7_count"]["max"],
         "_labels": labels,
     }
+
+
+# --- stage 5: the expiry-branch decision table ------------------------------------------------
+
+ELEVEN, TEN = "11_groups", "10_groups"
+SUBSET_LABEL = "stable subset of a set that did not hold up"
+
+
+def version_holds_up(judgement: dict[str, Any] | None) -> bool:
+    """Strict reading of "the archetype set holds up": every archetype passes criteria 1 to 5,
+    and criteria 6 and 7 pass. None (no grid setting qualified) does not hold up. The reduced
+    set left by the failure rule never counts, whatever its criteria 6 and 7 say."""
+    if judgement is None:
+        return False
+    return (
+        bool(judgement["holds_up"])
+        and all(judgement["holds_up"].values())
+        and all(v["passed"] for v in judgement["6_unassigned"].values())
+        and bool(judgement["7_count"]["passed"])
+    )
+
+
+def decide_version(
+    ami_30_reference: float, holds_11: bool, holds_10: bool | None
+) -> dict[str, Any]:
+    """The decision table. AMI below 0.5: only the 11-group version is judged (holds_10 must be
+    None). AMI at least 0.5: both are judged; both hold up -> the 10-group version, with the
+    11-group result reported beside it; one holds up -> that one; neither -> both failed."""
+    if not restates_expiry(ami_30_reference):
+        if holds_10 is not None:
+            raise ValueError("below the AMI branch the 10-group version is never judged")
+        chosen = ELEVEN if holds_11 else None
+        return {
+            "branch": "11 groups only (AMI_30_reference below 0.5)",
+            "archetype_set": chosen,
+            "reported_beside": None,
+            "failed_versions": [] if holds_11 else [ELEVEN],
+            "done_when_met": chosen is not None,
+        }
+    if holds_10 is None:
+        raise ValueError("at or above the AMI branch both versions are judged")
+    if holds_11 and holds_10:
+        chosen, beside, failed = TEN, ELEVEN, []
+    elif holds_10:
+        chosen, beside, failed = TEN, None, [ELEVEN]
+    elif holds_11:
+        chosen, beside, failed = ELEVEN, None, [TEN]
+    else:
+        chosen, beside, failed = None, None, [ELEVEN, TEN]
+    return {
+        "branch": "restates expiry (AMI_30_reference at least 0.5): 11 and 10 groups judged",
+        "archetype_set": chosen,
+        "reported_beside": beside,
+        "failed_versions": failed,
+        "done_when_met": chosen is not None,
+    }
+
+
+def judge_version(
+    rows: Rows, samples: Samples, acfg: dict[str, Any], chosen: Setting | None, threads: int
+) -> dict[str, Any]:
+    """One version's judgement, its strict verdict, and the failure rule's reduced set
+    (reported only)."""
+    if chosen is None:
+        return {"groups": rows.groups, "chosen": None, "holds_up": False, "judgement": None}
+    j = judge(rows, samples, acfg, chosen, threads)
+    reduced = apply_failure_rule(j, rows, acfg["criteria"])
+    return {
+        "groups": rows.groups,
+        "chosen": chosen.min_cluster_size,
+        "holds_up": version_holds_up(j),
+        "judgement": j,
+        "reduced_set_reported_only": {
+            **{k: v for k, v in reduced.items() if not k.startswith("_")},
+            "note": "reported only: never used to choose a version and never meets the "
+            f"Done-when; a kept archetype may be named only as a '{SUBSET_LABEL}'",
+        },
+    }
+
+
+def judge_versions(
+    rows: Rows,
+    samples: Samples,
+    acfg: dict[str, Any],
+    chosen_11: Setting | None,
+    ami_30_reference: float,
+    threads: int = 4,
+) -> dict[str, Any]:
+    """Judge the 11-group version and, only when the archetypes restate the expiry date, the
+    10-group version (renewal timing removed; grid selection and every criterion rerun exactly
+    as registered, on the same samples and seeds); then apply the decision table."""
+    v11 = judge_version(rows, samples, acfg, chosen_11, threads)
+    out: dict[str, Any] = {"AMI_30_reference": ami_30_reference, ELEVEN: v11}
+    holds_10 = None
+    if restates_expiry(ami_30_reference):
+        rows10 = without_group(rows, RENEWAL_TIMING)
+        chosen_10, settings_10 = select_setting(rows10.x, rows10.rule, samples, acfg, threads)
+        v10 = judge_version(rows10, samples, acfg, chosen_10, threads)
+        v10["settings"] = [s.summary() for s in settings_10]
+        out[TEN] = v10
+        holds_10 = v10["holds_up"]
+    out["decision"] = decide_version(ami_30_reference, v11["holds_up"], holds_10)
+    return out
 
 
 def without_group(rows: Rows, group: str) -> Rows:

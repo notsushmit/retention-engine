@@ -33,9 +33,13 @@ archetypes --stage timing|select|diagnostic: the archetype stages of
 configs/archetypes.yaml, one at a time, each writing its JSON to
 data/processed/<sample>/explain/archetypes/. No outcome and no labels are read.
 timing fits HDBSCAN once on the real fit sample and votes every other row
-(stops if the fit exceeds 5 minutes); select runs the registered grid; diagnostic
+(stops if the fit exceeds 5 minutes); select runs the registered grid and also
+writes select_labels.parquet (every row's label under every setting); diagnostic
 runs the expiry diagnostic for the chosen setting (refitted, and checked against
-the labels recorded by select).
+the labels recorded by select). --output-dir writes elsewhere (for a second run).
+
+compare-archetype-select A B: whether two select runs (folders) are identical: the
+reports without time and memory, and the label tables after sorting by key.
 
 refit, contributions, hand-check and reasons refuse to run when a tracked file differs from HEAD, so
 the reports and the saved models tie to a commit.
@@ -304,7 +308,7 @@ def archetypes(args) -> int:
     cfg = load_explain_config(settings.columns)
     acfg = A.load_archetypes_config()
     processed = processed_dir(args.fraction)
-    out_dir = processed / "explain" / "archetypes"
+    out_dir = Path(args.output_dir) if args.output_dir else processed / "explain" / "archetypes"
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = A.load_rows(
         processed,
@@ -339,8 +343,10 @@ def archetypes(args) -> int:
             report["stopped"] = f"one fit took over {FIT_TIME_LIMIT_SECONDS} s"
             code = 1
     elif args.stage == "select":
-        chosen, settings_ = A.select_setting(rows.x, samples, acfg, threads)
+        chosen, settings_ = A.select_setting(rows.x, rows.rule, samples, acfg, threads)
         report["settings"] = [s.summary() for s in settings_]
+        frame = A.selection_frame(rows.msno, rows.snapshot, settings_)
+        frame.to_parquet(out_dir / "select_labels.parquet", index=False)
         report["chosen"] = None if chosen is None else chosen.min_cluster_size
         if chosen is not None:
             report["reference_labels_sha256"] = A.labels_sha256(chosen.reference.labels)
@@ -352,7 +358,7 @@ def archetypes(args) -> int:
         sel = json.loads((out_dir / "select.json").read_text())
         if sel.get("chosen") is None:
             raise SystemExit("no chosen setting")
-        chosen = A.evaluate_setting(rows.x, samples, acfg, int(sel["chosen"]), threads)
+        chosen = A.evaluate_setting(rows.x, rows.rule, samples, acfg, int(sel["chosen"]), threads)
         if A.labels_sha256(chosen.reference.labels) != sel["reference_labels_sha256"]:
             raise SystemExit("the refitted reference differs from the one select recorded")
         report["chosen"] = sel["chosen"]
@@ -361,6 +367,22 @@ def archetypes(args) -> int:
     (out_dir / f"{args.stage}.json").write_text(json.dumps(report, indent=2, default=str) + "\n")
     print(json.dumps(report, indent=2, default=str))
     return code
+
+
+def compare_archetype_select(args) -> int:
+    import pandas as pd
+
+    from retention.explain.archetypes import same_selection
+
+    a, b = Path(args.a), Path(args.b)
+    result = same_selection(
+        json.loads((a / "select.json").read_text()),
+        pd.read_parquet(a / "select_labels.parquet"),
+        json.loads((b / "select.json").read_text()),
+        pd.read_parquet(b / "select_labels.parquet"),
+    )
+    print(json.dumps(result))
+    return 0 if result["identical"] else 1
 
 
 def compare_reasons(args) -> int:
@@ -396,6 +418,10 @@ def main(argv: list[str] | None = None) -> int:
     ar = sub.add_parser("archetypes", help="one archetype stage (configs/archetypes.yaml)")
     ar.add_argument("--fraction", type=float, default=None)
     ar.add_argument("--stage", required=True, choices=["timing", "select", "diagnostic"])
+    ar.add_argument("--output-dir", default=None)
+    cs = sub.add_parser("compare-archetype-select", help="compare two archetype select runs")
+    cs.add_argument("a")
+    cs.add_argument("b")
     cr = sub.add_parser("compare-reasons", help="compare two reasons files")
     cr.add_argument("a")
     cr.add_argument("b")
@@ -415,6 +441,8 @@ def main(argv: list[str] | None = None) -> int:
         return compare_reasons(args)
     if args.command == "archetypes":
         return archetypes(args)
+    if args.command == "compare-archetype-select":
+        return compare_archetype_select(args)
     if args.save and not args.expect_sha:
         parser.error("--save needs --expect-sha for every horizon")
     return refit(args)
