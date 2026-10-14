@@ -1,0 +1,301 @@
+# How the reasons beside each customer's churn risk are worded.
+#
+# A reason is a group of things the model looks at, whose combined pull moves
+# this customer's 7-day or 30-day score up or down compared with a typical
+# customer in the training months (customers expiring within 30 days, August and
+# September 2016). Reasons describe what the model is picking up on. They are
+# not causes, and they never claim a fact: a group can push risk up even when
+# listening went up. The facts line after each reason says what is true.
+#
+# Rules (the structure test enforces them on every value below):
+#   - Group phrases (groups.*.raises / lowers) have one shape:
+#     "<name> is pushing risk up" and "<name> is pulling risk down"; they
+#     contain no digit and no comparison word (more, less, higher, lower,
+#     than, below, above, over, under, fewer).
+#   - Position, nothing-notable, other-factors and partly-cancel lines contain
+#     no digit. Only the position and partly-cancel lines may say "higher
+#     than" or "lower than", because they name the typical customer.
+#   - No line uses a causal word (causes, because, due to, leads to, drives,
+#     results in) or an advice or lever word (should, turn on, switch,
+#     increase, improve, reduce, try, consider).
+#   - No line names or hints at anything hidden.
+#   - Fact formats and caveats may contain digits: they state the customer's
+#     own data or a data caveat. No log-odds value is ever shown.
+#
+# Strength words are fixed: strong, moderate, slight. Their cutoffs are on the
+# odds: slight when a push multiplies or divides the odds by at least 1.2,
+# moderate from 1.5, strong from 2.
+#
+# The counts in the comments come from the contributions run at commit 931e1a1
+# (python -m retention.explain contributions): the four explained snapshots
+# (2016-10-01, 2016-11-01, 2017-01-01, 2017-02-01) pooled, 645,753 customer
+# rows per horizon, features and model scores only.
+
+# --- how a reason line is put together ---------------------------------------------
+# {phrase}: the group's phrase; {strength}: strong, moderate or slight;
+# {facts}: the group's facts joined with facts_separator. The renderer
+# capitalises the first letter of the facts and ends them with a full stop.
+# Example shape: "<phrase> (<strength>). <Fact>, <fact>."
+reason_line: "{phrase} ({strength}). {facts}"
+facts_separator: ", "
+# Shown for a missing fact, unless the fact has its own when_missing.
+missing_value: "not available"
+
+# --- where the customer sits overall -------------------------------------------------
+# "Typical" because the base value is the average of the model's raw log-odds
+# over its training customers. Averaging log-odds lands near a typical
+# customer's score, not the average probability (about 0.20% at 7 days and 1.88%
+# at 30 days as probabilities, computed when the model was refit for these
+# explanations). No baseline number is shown.
+#
+# {strength}: the position's own strength, from the size of the whole push,
+# with the same cutoffs as the reasons. "Close" has no strength: the whole push
+# changes the odds by less than a factor of 1.2.
+# Why a strength and not "a bit": of the rows in the "higher" position, the
+# odds are at least double a typical customer's for 60.8% at 7 days (136,169 of
+# 223,957) and 75.5% at 30 days (131,422 of 174,091), and at least four times
+# for 39.7% and 50.7%.
+# Of the "lower" rows, the odds are at most half for 56.9% (172,385 of 302,780)
+# and 53.9% (219,720 of 407,570).
+# The position can be weaker than the strongest reason, because pushes up and
+# pulls down offset each other: weaker on 34.0% of rows at 7 days (219,678 of
+# 645,753) and 26.4% at 30 days (170,596 of 645,753); its direction is even
+# opposite to the strongest reason on 52,057 rows at 7 days and 72,976 at 30
+# days. So a close position can sit next to a strong reason.
+position:
+  higher: "Risk is higher than a typical customer in the training months ({strength})."
+  lower: "Risk is lower than a typical customer in the training months ({strength})."
+  close: "Risk is close to a typical customer in the training months."
+
+# --- when nothing stands out --------------------------------------------------------
+nothing_notable:
+  raising: "Nothing in particular is pushing risk up."
+  lowering: "Nothing in particular is pulling risk down."
+  # Position "higher", but no single group reaches the slight cutoff.
+  many_small_raising: "No single thing stands out; many smaller things together push risk up."
+  # Position "lower", but no single group reaches the slight cutoff.
+  many_small_lowering: "No single thing stands out; many smaller things together pull risk down."
+  # Position "close" and nothing listed either way: replaces both lines.
+  none_stand_out: "Nothing in particular stands out either way."
+
+# --- everything not listed --------------------------------------------------------
+# The net of everything not listed: anything hidden, a missing tenure, groups
+# below the cut, and groups beyond the top three up or top two down. Never
+# called "smaller": a group beyond the cap can be sizeable. Never names what it
+# contains. Shown only when at least one reason is listed: when none is, it
+# equals the whole push, which the position and nothing-notable lines already
+# say.
+other_factors:
+  raises: "Other factors that did not make the list together push risk up ({strength})."
+  lowers: "Other factors that did not make the list together pull risk down ({strength})."
+  small: "Other factors that did not make the list roughly cancel out."
+
+# --- when the pushes partly cancel ----------------------------------------------------
+# Shown exactly when both hold, and never otherwise:
+#   1. the position's strength is below the strongest listed reason's (a close
+#      position counts as no strength); and
+#   2. a pull the other way is visible: a listed reason pointing opposite to
+#      the strongest one, or an "other factors" line pointing opposite to it
+#      at slight or above.
+# It is the last line, after "other factors", so "these" covers every line
+# above it. Condition 1 alone holds on 219,678 rows at 7 days and 170,596 at
+# 30 days; condition 2 removes 241 and 1,104 of them, where every listed reason
+# points one way and the other factors roughly cancel out (the position sits
+# just under a strength cutoff). The line is shown on 219,437 rows at 7 days
+# (close 118,881, higher 60,995, lower 39,561) and 169,492 at 30 days (close
+# 63,253, higher 11,321, lower 94,918). One line, chosen by the position.
+partly_cancel:
+  close: "These pull in different directions, so the overall risk is close to typical."
+  higher: "These pull in different directions, so the overall risk ends up higher than typical."
+  lower: "These pull in different directions, so the overall risk ends up lower than typical."
+
+# --- the probability and its caveats --------------------------------------------------
+# Platt-calibrated, before the cross-horizon ordering fix (the step that makes
+# the 7-day and 30-day probabilities agree with each other is applied later,
+# when customers are scored). {horizon}: 7 or 30; {probability}: a percentage
+# with one decimal, except that a probability below 0.1% shows as "under 0.1%"
+# and one above 99.9% as "over 99.9%". In the run named at the top, 125,648 of
+# 645,753 7-day rows would otherwise read 0.0%; 165,519 show "under 0.1%"; no
+# row at either horizon is above 99.9%, and no 30-day row is below 0.1%.
+probability_label: "Chance of lapsing within {horizon} days: {probability} (calibrated for this time window only)"
+caveats:
+  # October 2016 rows in the calibration half.
+  october_2016_calibration_half: "The calibration step was fitted on this October 2016 group, so this probability was seen in fitting. The reasons come from a model that was not trained on this month."
+  # October 2016 selection half, and November 2016.
+  months_used_for_settings: "This month helped choose the model's settings, though the model was not trained on it."
+  # February 2017 rows.
+  february_2017_gap: "Renewals on 13 February 2017 may be undercounted in the data."
+
+# --- the groups ----------------------------------------------------------------------
+# Facts: a format string, or a mapping with
+#   format:       used for a known value;
+#   when_zero:    used when the value is 0;
+#   when_missing: used when the value is missing (otherwise missing_value);
+#   when_tiny:    (minutes only) used when the value rounds to 0 minutes.
+# A null when_* leaves the fact out of the line, so the same thing is not said
+# twice. Boolean facts: when_true / when_false. Category facts: one string per
+# level.
+# Placeholders: {value} (with an optional format spec, e.g. {value:.1f});
+# {days}: the value with "day" or "days"; {minutes}: seconds per day as whole
+# minutes; {tenure}: years and months in words, e.g. "2 years and 3 months",
+# "7 months".
+# Each group's comment says what the facts looked like in the run named at the
+# top. "Listed" means the group was among the top three pushing up or top two
+# pulling down, at slight or above.
+groups:
+  # Billing timing (renewal_timing). The name is deliberately broad: it has to
+  # be true both when coverage is about to end and when a long time has passed
+  # since the last payment. At 7 days, "risk up" is coverage ending soon (99.3%
+  # of listed rows expire within 7 days, 174,134 of 175,406; no "risk down" row
+  # does). At 30 days, "risk up" is mostly a long gap since paying (88.7% last
+  # paid more than 31 days ago, 21,088 of 23,781); this is also where the model
+  # picks up customers whose last plan was free.
+  renewal_timing:
+    raises: "Billing timing is pushing risk up"
+    lowers: "Billing timing is pulling risk down"
+    facts:
+      days_until_expiry:
+        format: "expires in {days}"
+        when_zero: "expires today"
+      days_since_last_payment:
+        format: "last paid {days} ago"
+        when_missing: "no payment on record"
+
+  # How much they listen (listening_amount). "Risk up" is mostly customers who
+  # did not listen at all in the last 28 days (84.3% at 7 days, 62,335 of
+  # 73,919; 68.3% at 30 days, 147,644 of 216,215), but not all of them, so the
+  # phrase does not say they stopped. "Risk down" is heavy listeners (median 27
+  # and 26 of 28 days).
+  listening_amount:
+    raises: "How much they listen is pushing risk up"
+    lowers: "How much they listen is pulling risk down"
+    facts:
+      active_days_28:
+        format: "listened on {days} of the last 28"
+        when_zero: "no listening in the last 28 days"
+      secs_per_day_28:
+        format: "about {minutes} minutes a day"
+        when_tiny: "a few seconds a day"
+        when_zero: null  # already said by the line above
+
+  # Listening trend. "Risk up" does not mean listening fell. At 30 days, of
+  # listed rows with a comparison, only 32.5% listened less in the last 7 days
+  # than in the three weeks before (3,374 of 10,371), and 73.7% had no listening
+  # in those three weeks to compare with (29,043 of 39,414). At 7 days, 62.1%
+  # listened less (6,981 of 11,246) and 14.3% had nothing to compare with.
+  listening_trend:
+    raises: "Their listening trend is pushing risk up"
+    lowers: "Their listening trend is pulling risk down"
+    facts:
+      # "The usual" is the daily level over the three weeks before the last 7
+      # days. Example: a ratio of 0.6 reads "about 60% of the usual", 1.5
+      # reads "about 150% of the usual".
+      ratio_secs_7_vs_base:
+        format: "listening in the last 7 days was about {value:.0%} of the usual (the three weeks before)"
+        when_zero: "no listening in the last 7 days"
+        when_missing: "no listening in the three weeks before to compare with"
+      ratio_active_7_vs_base:
+        format: "listening days about {value:.0%} of the usual"
+        when_zero: null  # already said by the line above
+        when_missing: null  # already said by the line above
+
+  # How recently they listened (listening_recency). Rarely listed: up on 91 rows
+  # at 7 days and 458 at 30 days. Where it is, the last listen was a week or
+  # more back (91 of 91; 274 of 275 with a history at 30 days); at 30 days 40.0%
+  # of these rows had never listened before the snapshot (183 of 458).
+  listening_recency:
+    raises: "How recently they listened is pushing risk up"
+    lowers: "How recently they listened is pulling risk down"
+    facts:
+      days_since_last_listen:
+        format: "last listened {days} ago"
+        when_missing: null  # said by the line below
+      has_any_log_before_T:
+        when_true: null  # nothing worth saying
+        when_false: "no listening on record"
+
+  # New listener (newcomer). Never listed at either horizon in these months.
+  newcomer:
+    raises: "Being a new listener is pushing risk up"
+    lowers: "Being a new listener is pulling risk down"
+    facts:
+      first_log_in_window:
+        when_true: "first listened within the last 28 days"
+        when_false: "has been listening since before the last 28 days"
+
+  # Songs played to the end (songs_finished). "Risk up" does not mean they skip
+  # songs: at 7 days the median share played to the end is 99.3% on listed rows
+  # (9,516 rows), against 76.1% where it pulls risk down (4,254 rows). Up on
+  # 299 rows at 30 days.
+  songs_finished:
+    raises: "How often songs are played to the end is pushing risk up"
+    lowers: "How often songs are played to the end is pulling risk down"
+    facts:
+      complete_share_28:
+        format: "{value:.0%} of songs played to the end in the last 28 days"
+        when_missing: "no songs played in the last 28 days"
+
+  # Plan and price (plan_kind_and_price). Mostly the price level: the median
+  # amount paid is 149 where it pushes risk up and 99 where it pulls risk down,
+  # at both horizons. Free last plans are rarely listed here (at 30 days, 32 up
+  # and 81 down of 3,687); their signal shows up under billing timing.
+  plan_kind_and_price:
+    raises: "Plan and price is pushing risk up"
+    lowers: "Plan and price is pulling risk down"
+    facts:
+      last_row_kind:
+        paid: "on a paid plan"
+        discount100: "last plan was fully discounted"
+        promo: "last plan was a free promotion"
+        trial: "last plan was a free trial"
+      last_amount_paid:
+        # Shown as recorded: the data does not state a currency, so none is
+        # named. The docs say the same.
+        format: "paid {value} for it"
+        when_zero: null  # the plan kind already says it was free
+
+  # Plan length. Up on 15 rows at 7 days (median plan 395 days); never listed at
+  # 30 days.
+  plan_length:
+    raises: "Plan length is pushing risk up"
+    lowers: "Plan length is pulling risk down"
+    facts:
+      last_plan_days:
+        format: "last plan ran for {days}"
+        when_zero: "plan length not recorded"
+
+  # How they pay (payment_setup). The direction does not tell you auto-renew:
+  # at 7 days "risk up" is mostly customers with auto-renew on (92.1%, 324,810
+  # of 352,846), so the phrase must not say auto-renew is off. Those customers
+  # are mostly far from expiry (2.4% expire within 7 days, 7,761 of 324,810;
+  # median 19 days), so it is not a near-expiry effect. At 30 days,
+  # auto-renew is on for 29.0% of "risk up" rows (36,440 of 125,613) and 100.0%
+  # of "risk down" rows (480,580 of 480,588). The payment method is a code and
+  # is not shown.
+  payment_setup:
+    raises: "How they pay is pushing risk up"
+    lowers: "How they pay is pulling risk down"
+    facts:
+      last_is_auto_renew:
+        when_true: "auto-renew on"
+        when_false: "auto-renew off"
+
+  # A cancellation (cancellation). Up on 4,058 rows at each horizon, every one
+  # with a cancellation as the last transaction; never pulls risk down.
+  cancellation:
+    raises: "A cancellation is pushing risk up"
+    lowers: "A cancellation is pulling risk down"
+    facts:
+      last_row_is_cancel:
+        when_true: "last transaction was a cancellation"
+        when_false: "last transaction was not a cancellation"
+
+  # How long they have been a member (tenure), shown only when known. At 30
+  # days, up on 21,334 rows, all members for less than a year (21,334 of
+  # 21,334); at 7 days, up on 3,270 rows, 31.0% under a year (1,015 of 3,270).
+  # Down on 1 row (7 days) and 10 rows (30 days).
+  tenure:
+    raises: "How long they have been a member is pushing risk up"
+    lowers: "How long they have been a member is pulling risk down"
+    facts:
+      tenure_days: "member for {tenure}"
