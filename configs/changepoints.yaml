@@ -118,3 +118,68 @@ amendment_2026_10_15:
 amendment_2_2026_10_15:
   what: month_end_check classes, threshold and response made explicit (month-end week = contains one of the last four days; second condition on the standard deviation; response by class size)
   why: registered before any 2016 outcome was read; replaces the first wording of month_end_check (kept in the log)
+
+alerts:  # registered before the detector reads any real series
+  status: exploratory, validated at 1.5x binomial noise; c = 5 is the last grid value and has no headroom
+  study_record:
+    - the study validates the detector's mechanics, not its false-alarm rate on the real series
+    - real quiet-week variation is about 0.4 to 0.55 points, roughly four to five times the binomial noise (descriptive, weeks chosen by eye)
+    - both-edges tally caveat: one change point within tolerance of both edges of a 1-week spike counts as both; the minimum segment of 3 forces a 3-week segment, so two change points sit one week either side
+    - no tuning on real data
+  windows:
+    follow_detector_segments: true  # week = first week of the segment the change point starts; before and after windows are the segments either side, at most 8 weeks each, never crossing a neighbouring change point
+    max_weeks_each_side: 8
+  size_small_points: 1.0  # |after - before| below this is "detected, small"; relation to the quiet-week standard deviation is reported after the run
+  quiet_week_sd:
+    rule: pooled within-segment standard deviation of the weekly rate (deviation from the segment's own mean), over weeks that are not flagged (renewal_gap, unreliable_month, uncertain_month) and that sit in detector segments of at least 8 weeks
+    reported: the value, the number of weeks, and the threshold in standard errors of a difference of two 3-week means
+  returned_to_level:
+    band: before-window mean +/- 2 quiet-week standard deviations
+    true_if: the mean of the segment after the one the change point starts lies in the band
+    null_if: there is no later segment
+  flags:
+    window_weeks: [-1, 0, 1]  # weeks around the change point
+    renewal_gap: a gap date of the daily indicator lies from a window week's start to its end plus 30 days
+    unreliable_month: a window week's Monday or Sunday falls in a month the month-quality screen marks unreliable
+    uncertain_month: the same for uncertain
+    left_truncation_risk: a window week starts before 2016-02-15
+    known_period:
+      - {label: the September 2016 level shift, from: 2016-09-01, to: 2016-09-30}
+      - {label: the November 2016 promotion wave, from: 2016-11-01, to: 2016-11-30}
+  priority: [renewal_gap, unreliable_month, left_truncation_risk, known_period, small, normal]
+  uncertain_month_suffix: appended to any template when an uncertain or unreliable month is flagged but is not the primary
+  drill_down:
+    series: paid only
+    dimensions:
+      plan_length: {column: last_plan_days, buckets: [missing, "0-7", "8-30", "31-99", "100+"]}
+      payment_method: {column: last_payment_method_id}
+      auto_renew: {column: last_is_auto_renew}
+      city: {column: city}
+      registration_channel: {column: registered_via, note: descriptive segment only, never a lever}
+      tenure: {column: tenure_days, buckets: [missing, "0-89", "90-364", "365-729", "730+"]}
+    never_used: [age, gender, profile_group, archetypes]
+    segment_source: features at the snapshot's first day
+    min_events_each_period: 1838
+    top_segments: 3  # by absolute rate contribution, over all dimensions
+    rate_contribution: (rate_after - rate_before) * (share_before + share_after) / 2
+    mix_contribution: (share_after - share_before) * (rate_before + rate_after) / 2
+    additive_within_dimension_only: true
+  sentence:
+    forbidden_causal: [causes, caused, because, due to, leads to, drives, results in]
+    forbidden_advice: [should, turn on, switch, increase, improve, reduce, try, consider]
+    forbidden_lever: [target, focus on, address, fix, act]
+    forbidden_phrases: [churn shift, churn worsen]
+    digits_only_in_fact_fields: true
+    templates:
+      renewal_gap: "This change coincides with a data gap on {dates}; the weekly churn rate for {series} moved from {before} to {after} from the week of {week}; it is flagged for data quality and not reported as a change in customer behaviour{returned}{also}."
+      unreliable_month: "This change falls in {month}, a month the data-quality screen marks as {status}; the weekly churn rate for {series} moved from {before} to {after} from the week of {week}; it is flagged for data quality and not reported as a change in customer behaviour{returned}{also}."
+      left_truncation_risk: "This change falls in a period where the data may cut observation windows short; the weekly churn rate for {series} moved from {before} to {after} from the week of {week}{returned}{also}."
+      known_period: "This change coincides with a period marked {label} in the data notes; the weekly churn rate for {series} moved from {before} to {after} from the week of {week}{segments}{returned}{also}."
+      small: "A small change was detected: the weekly churn rate for {series} moved from {before} to {after} from the week of {week}; no segments are ranked{returned}{also}."
+      normal: "The weekly churn rate for {series} {moved} from {before} to {after} from the week of {week}{segments}{returned}{also}."
+    pieces:
+      segments: "; the largest rate changes are in {list}"
+      segments_none: "; no segment met the minimum size"
+      returned: "; the weekly rate was back within its earlier range by the week of {return_week}"
+      also: "; also in {month}, marked {status}"
+    fewer_than_three: list the ranked segments; if none, use segments_none
