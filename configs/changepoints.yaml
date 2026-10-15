@@ -6,7 +6,7 @@
 # synthetic study ran and before any real series was analysed.
 
 series:
-  unit: spell_end  # one event per spell end
+  unit: expiry_event  # customers with an effective expiry in the week (snapshot rows with in_expiry_month); amended, see the amendment note below
   week_start: monday  # ISO week of the effective expiry
   churn_rule: gap_to_next_subscription_days > 30  # inclusive 30-day rule
   headline: paid  # excludes discount100_only
@@ -60,7 +60,7 @@ detector:
   jump: 1
   penalty: c * sigma2 * log(T)  # sigma2: binomial variance of a weekly rate at the week's event count and the pooled rate; T: number of points
   c_grid: [1, 2, 3, 5]
-  c_selection: smallest c in the grid that meets every pass mark at all three base rates; if none does, the study is reported as not met and c = 5 is used, alerts labelled unvalidated
+  c_selection: smallest c in the grid that meets every pass mark, judged at 1.5 times the binomial noise, at all three base rates; if none does, the study is reported as not met and c = 5 is used, alerts labelled unvalidated
   tolerance_weeks: 1  # the grain is weekly, so the tolerance is +/-1 week; this replaces "a few days" in the plan
   study:
     seed: 20161101
@@ -71,16 +71,30 @@ detector:
     shift_sizes_points: [1, 2, 3, 5]
     two_shift_series: true  # two shifts in one series, to check segments are not merged
     stable_stretches: true
-  pass_marks:  # judged on the c_selection rule above
+  pass_marks_noise_multiplier: 1.5  # with about 36,000 paid events per week, binomial noise is very small; the marks are judged at 1.5x, which decides the power-table row for the real series
+  pass_marks:  # judged on the c_selection rule above, at the multiplier above
     detect_3_points_within_tolerance: 0.80  # share of replicates
     detect_5_points_within_tolerance: 0.90
     stable_mean_false_alarms_per_stretch_at_most: 0.5
     stable_share_of_stretches_with_any_false_alarm_at_most: 0.10
   reported_points:  # reported, not pass marks
     - power curve for shifts of 1 and 2 points
-    - result at 2 times the binomial noise, and the shift size and base rate where the detector breaks
+    - results at 1.0 times (pure binomial) and at 2 times the binomial noise, and the shift size and base rate where the detector breaks
     - distribution of false-alarm counts per stable stretch (0, 1, 2 or more), not only the mean
     - the first and last weeks where a change cannot be seen (minimum segment length)
   real_series_mapping: the row of the power table used for the real paid series is the grid base rate nearest the real pooled paid rate, decided after the study and stated in the doc
   never: tune the penalty, the minimum segment or any mark on a real series
   if_marks_fail: report not met with the power curve; no re-tuning; real alerts labelled unvalidated at that sensitivity
+
+month_end_check:  # before any detector run on real data; 2016 outcomes only (snapshots before 2017-01-01)
+  series: paid weekly churn rate, weeks starting 2016-02-15 to 2016-12-19
+  classes: month_end_week (the Monday-Sunday week that contains the last day of a month) versus other weeks
+  pattern_present_if: Welch t of the difference in mean weekly rate between the two classes, absolute value above 3
+  if_present: detection runs on the series with the class median subtracted (computed on the same weeks, before the detector runs); the minimum segment stays 3 weeks
+  if_absent: detection runs on the unadjusted series
+  reported: both class means, the difference, the t value and the choice made
+
+amendment_2026_10_15:
+  what: the series unit was first written as `spell_end` (one event per spell end)
+  why: factual specification error. A spell is continuous coverage and a seamless renewal does not end one, so spell ends are not customers with an expiry in the week. Found when the paid weekly count was made. Not tuned on any result.
+  changed: unit now expiry_event; marks judged at 1.5x noise; month_end_check added; min_events_per_cell and the grain rule are unchanged
