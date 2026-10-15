@@ -87,14 +87,24 @@ detector:
   if_marks_fail: report not met with the power curve; no re-tuning; real alerts labelled unvalidated at that sensitivity
 
 month_end_check:  # before any detector run on real data; 2016 outcomes only (snapshots before 2017-01-01)
-  series: paid weekly churn rate, weeks starting 2016-02-15 to 2016-12-19
-  classes: month_end_week (the Monday-Sunday week that contains the last day of a month) versus other weeks
-  pattern_present_if: Welch t of the difference in mean weekly rate between the two classes, absolute value above 3
-  if_present: detection runs on the series with the class median subtracted (computed on the same weeks, before the detector runs); the minimum segment stays 3 weeks
+  series: paid weekly churn rate (churned_classic), weeks starting 2016-02-15 to 2016-12-19
+  classes: month_end_week (a Monday-Sunday week that contains one of the last four calendar days of a month) versus other_week
+  test: difference in mean weekly rate between the classes, with its Welch t statistic
+  pattern_present_if: absolute Welch t at least 3 AND absolute difference larger than the week-to-week standard deviation of the weekly rate among other_week weeks
+  if_present:
+    each_class_has_at_least_4_weeks: subtract the class median of the weekly rate (computed on the same weeks, before the detector runs)
+    otherwise: use month-end-matched weeks only
   if_absent: detection runs on the unadjusted series
-  reported: both class means, the difference, the t value and the choice made
+  minimum_segment_weeks: 3
+  reported: weekly rate table, both class means, the difference, the t value, the standard deviation, the choice made, and the number of weeks with unobserved rows
+  limit: the test is weak at about 45 weeks; "absent" means not detected, not shown to be absent
+  segment_note: the segment on the first of the month is used for the whole month's expiries
 
 amendment_2026_10_15:
   what: the series unit was first written as `spell_end` (one event per spell end)
   why: factual specification error. A spell is continuous coverage and a seamless renewal does not end one, so spell ends are not customers with an expiry in the week. Found when the paid weekly count was made. Not tuned on any result.
   changed: unit now expiry_event; marks judged at 1.5x noise; month_end_check added; min_events_per_cell and the grain rule are unchanged
+
+amendment_2_2026_10_15:
+  what: month_end_check classes, threshold and response made explicit (month-end week = contains one of the last four days; second condition on the standard deviation; response by class size)
+  why: registered before any 2016 outcome was read; replaces the first wording of month_end_check (kept in the log)
