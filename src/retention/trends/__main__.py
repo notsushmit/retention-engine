@@ -174,14 +174,52 @@ def month_end_check() -> dict:
     }
 
 
+def study_run() -> dict:
+    """The registered synthetic study; real weekly paid event counts only (no outcome)."""
+    import resource
+    import time
+    from datetime import date
+
+    import yaml
+
+    from retention.models.data import MAX_SNAPSHOTS_PER_READ, load_labels
+    from retention.models.protocol import load_protocol
+    from retention.trends import study as st
+
+    protocol = load_protocol()
+    snaps = [date(2016, m, 1) for m in range(2, 13)]
+    cols = ["expiry_date", "in_expiry_month", "segment"]
+    lab = pd.concat(
+        [
+            load_labels(LABELS, snaps[i : i + MAX_SNAPSHOTS_PER_READ], cols, protocol)
+            for i in range(0, len(snaps), MAX_SNAPSHOTS_PER_READ)
+        ]
+    )
+    d = lab[lab.in_expiry_month.astype(bool) & (lab.segment == "paid")]
+    wk = d.expiry_date.dt.to_period("W-SUN").dt.start_time
+    n = d.groupby(wk).size()
+    n = n[(n.index >= "2016-02-15") & (n.index <= "2016-12-19")]
+    cfg = yaml.safe_load(Path("configs/changepoints.yaml").read_text())["detector"]
+    t0 = time.time()
+    res = st.run_study(n.to_numpy(dtype=float), cfg)
+    res["commit"] = _head()
+    res["seconds"] = round(time.time() - t0, 1)
+    res["peak_rss_gb"] = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e9, 2)
+    res["real_count_weeks"] = int(len(n))
+    res["real_counts_min_median_max"] = [int(n.min()), int(n.median()), int(n.max())]
+    return res
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="retention.trends")
-    p.add_argument("command", choices=["clean-months", "known-days", "month-end-check"])
+    p.add_argument("command", choices=["clean-months", "known-days", "month-end-check", "study"])
     a = p.parse_args()
     if _dirty():
         raise SystemExit("a tracked file differs from HEAD; commit first")
     OUT.mkdir(parents=True, exist_ok=True)
-    if a.command == "month-end-check":
+    if a.command == "study":
+        res, name = study_run(), "detector_study.json"
+    elif a.command == "month-end-check":
         res, name = month_end_check(), "month_end_check.json"
     elif a.command == "clean-months":
         res, name = clean_months(), "batch_clean.json"
