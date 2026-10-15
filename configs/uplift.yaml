@@ -1,0 +1,111 @@
+# Phase 6: uplift on KKBox, the design registered before any outcome is read.
+# Committed alone. Sections for the propensity model, the learners, the
+# randomized-data validation and the customer groups are added in later
+# commits, each before the runs it judges. A change after a result is seen
+# is a logged amendment, and the original result is reported alongside.
+# Counts below come from a counts-only run on the 20% sample that read the
+# renewal rows' own amounts and pre-T label columns; no outcome column was read.
+
+kkbox:
+  sample: sample_020
+  label_family: paid  # the coverage-based family counts 100%-discount and trial rows as renewals, so a discount outcome would be partly mechanical
+
+  unit:
+    rule: one renewal event
+    member_at_T: paid coverage active at T and the paid expiry at T inside T's calendar month
+    renewal: first non-cancel transaction dated on or after T and on or before the paid expiry at T plus 30 days
+    tie_break: lowest row_id among rows on the same transaction date
+    one_unit_per_renewal: each paid expiry lies in one calendar month, so each renewal row belongs to exactly one snapshot (checked over 2016-01 to 2016-11, 1,585,654 units, 1,585,654 distinct rows)
+    snapshot_role: covariates only (features at T use rows dated before T)
+    treatment_from: the renewal row's own plan_list_price and actual_amount_paid
+    same_day_same_plan_cancel: the renewal stands; such a cancel keeps the subscription's expiry and only marks auto-renew as off, as in the labeller (2 of the 932 method-23 units have one)
+
+  treatment:
+    treated: plan_list_price > 0 and actual_amount_paid > 0 and 1 - actual_amount_paid / plan_list_price >= margin
+    untreated: plan_list_price > 0 and actual_amount_paid = plan_list_price
+    margin: 0.05
+    margin_reason: >
+      Real discounts sit at depth 0.134 (list 149, paid 129) and 0.336 (list 149, paid 99).
+      The only other below-list rows in the whole table are list 150, paid 149 (depth 0.007,
+      3 rows), which looks like rounding. Any margin from 0.01 to 0.13 gives the same treated set.
+    pooled_levels: both depths are one treatment; 69 analysed units are at 0.134 and 1 at 0.336
+    payment_method: 23  # the only method with any discounted renewal in 2016
+    plan_days: 30  # every discounted renewal is a 30-day plan; untreated renewals use the same plan
+
+  outcome:
+    name: paid churn at E
+    E: the renewal row's expiry_date
+    rule: 1 if the paid-based lapse date (T + paid_days_to_event, with paid_event_observed = 1) is on or before E; 0 if paid coverage continues past E
+    labels_as_of: 2016-12-31  # paid-based labels rebuilt from transactions dated on or before this date, so no 2017 transaction enters
+    read_path: lock-aware loader, snapshot T labels only
+    window_rule: E before 2016-11-05, so that [E, E + 30] ends by 2016-12-31 and does not contain 2016-12-05 (a missing renewal day)
+
+  months:
+    snapshots: [2016-07-01, 2016-08-01, 2016-09-01, 2016-10-01]
+    month_is_covariate: true  # snapshot-month indicators
+    month_reason: >
+      Within method 23 the discount is mostly decided by calendar month and starts in
+      September 2016, the month of a known level shift. Without month as a covariate the
+      September treated would be compared with July and August renewers, so the shift would
+      be read as a discount effect.
+    structural_overlap_rule: drop a month with no treated or no untreated unit before any model
+    overlap_effect: >
+      2016-07 (0 treated, 311 untreated) and 2016-10 (1 treated, 0 untreated) are dropped.
+      2016-08 (2 against 308) and 2016-09 (68 against 242) remain, so the estimate is in effect
+      a within-September comparison.
+
+  exclusions:
+    other_payment_methods: no discounted renewal in the 2016 window (method 41 alone has 981,641 full-price first renewals over 2016-01 to 2016-11 and none discounted)
+    plan_days_not_30: all discounts are 30-day plans; removes 25,911 full-price or discounted units over 2016-01 to 2016-11
+    discount100: list > 0, paid 0; a separate group, not part of the treatment contrast and not analysed here (137 to 227 first renewals a month in 2016)
+    trial_and_promo: list price 0, so not a discount
+    blank_plan: list price 0 with money paid; none in 2016
+    above_list: paid above list; none in 2016
+    year_2015: left-truncation risk; the 2015 method-41 discount (list 149, paid 119) is not used
+    2016-01_and_2016-02: left-truncation risk
+    2016-03_and_2016-05: unreliable months
+    2016-04_and_2016-06: uncertain months
+    2016-11: the window rule leaves no unit
+    2016-12_and_2017: never; no 2017 outcome is read, no test unlock is constructed, the test score is never run
+
+  counts_before_outcome:  # the build recomputes these and stops if any differs
+    registered_set_all_methods: 464751  # full price or discounted, plan 30, window rule, 2016-07 to 2016-10
+    method_23: 932  # 71 treated, 861 untreated
+    share_with_zero_chance: 0.998  # units on other methods
+    method_23_by_month:
+      2016-07: {treated: 0, untreated: 311}
+      2016-08: {treated: 2, untreated: 308}
+      2016-09: {treated: 68, untreated: 242}
+      2016-10: {treated: 1, untreated: 0}
+    analysed: {treated: 70, untreated: 550}
+
+  expectations:
+    power: >
+      The estimate is expected to be underpowered or not estimable. A wide interval or
+      "not estimable" is a legitimate outcome and is reported as such.
+    min_treated_after_trimming: 30  # below this the effect is reported as not estimable, with no number given as a finding
+    identification: >
+      About 99.8% of renewers in the registered months are on payment methods that never
+      received a discount in 2016, so their chance of a discount is zero and the effect
+      cannot be identified for them. The estimate applies only to method-23 renewers in
+      months where both arms exist, and only to customers who renewed at that event.
+
+  robustness:
+    placebo:
+      idea: the real treatment, dated after T, against an outcome fixed before T must show zero effect
+      outcome: days with listening in days T-56 to T-29 (the 28 days before the covariate window), from the daily logs
+      excluded_from_covariates: true
+      estimator: the same units, trimming and learners as the primary estimate
+      pass: the 95% bootstrap interval of the average effect contains 0
+      if_fails: the KKBox estimate is reported as failing its assumption check, not as a finding
+      power_note: with 70 treated the placebo detects only large imbalances; a pass is weak evidence
+    trimming_sensitivity:
+      rules: the primary trimming rule, no trimming, and one stricter rule, all registered with the propensity design before any outcome is read
+      sensitive_if: the sign of the point estimate changes, or one rule's interval excludes 0 while another's does not
+    margin_sensitivity: not used as a robustness check; any margin from 0.01 to 0.13 gives the same treated set, so the check would be empty
+    implausible_effect: an interval entirely on the side of discounts raising churn is reported as evidence that the assumptions fail, not as a finding that discounts cause churn
+
+  downstream:
+    budget_optimizer: >
+      KKBox cannot supply a customer-level effect for any action. The budget step treats
+      every discount, reminder or call effect as a labelled assumption, not an estimate.
