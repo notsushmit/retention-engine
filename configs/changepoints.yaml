@@ -1,0 +1,54 @@
+# Churn change points and the daily batch-size indicator.
+# Committed alone, before any real series is analysed and before the known
+# gap days are scored. A change after a result is seen is a logged amendment,
+# and the original result is reported alongside.
+# The detector section (penalty, pass marks) is added in a later commit, still
+# before any real series is analysed.
+
+series:
+  unit: spell_end  # one event per spell end
+  week_start: monday  # ISO week of the effective expiry
+  churn_rule: gap_to_next_subscription_days > 30  # inclusive 30-day rule
+  headline: paid  # excludes discount100_only
+  separate_series: [discount100_only, trial_only, promo_only]  # never pooled
+  min_events_per_cell: 1838
+  min_events_reason: smallest n at which a rate near 5 percent has a Wilson 95 percent interval narrower than +/-1 point
+  thin_cells: [month, whole_period]  # roll-up order; never in a detection run
+  grain_rule:  # decided from event counts only, before the paid weekly count
+    evaluated_on: [2016-02-15, 2016-12-31]
+    use_two_week_bins_if_share_of_weeks_below_min_exceeds: 0.5
+    use_month_bins_if_share_of_two_week_bins_below_min_exceeds: 0.5
+  complete_week_rule: week_end_plus_30_days_on_or_before_data_end
+  data_end: 2017-03-31
+  series_end: 2016-12-31  # snapshots before 2017-01-01 only; no read path for 2017 outcomes
+  primary_start: 2016-02-15  # earlier weeks carry left_truncation_risk
+  exploratory_before_primary: true  # 2015 weeks are a labelled exploratory series
+  known_level_shifts: [2016-09, promotion_waves_late_2015, 2016-11]  # annotated, not removed
+
+daily_indicator:
+  rows: non_cancel_auto_renew  # payment rows per transaction date
+  first_month_with_baseline: 2015-04
+  day_classes:
+    calendar_days: [2, 27]  # same calendar day; day 1 is not judged on its own
+    month_end_block_days: 4  # last four days, judged as one block by position from the end
+  baseline: median_of_same_class_over_preceding_3_months
+  gap_below_ratio: 0.60  # kept from the monthly batch check
+  weekday_rule:
+    evaluated_on: clean_months_days_2_to_27_only
+    use_same_weekday_baseline_if: abs(same_weekday_median_ratio - 1) > 1.4826 * MAD_of_daily_ratio
+  clean_months: [2016-03, 2016-04, 2016-05, 2016-06, 2016-07, 2016-08, 2016-09, 2016-10, 2016-11]
+  max_false_flags_in_clean_months: 1  # days or blocks; if exceeded, reported as failed, no tuning
+  known_gap_days: [2016-12-05, 2017-02-13]
+  known_non_gap_days: [2016-12-30]  # batch moved to the 31st
+  not_looked_at_before_commit: [2016-12, 2017-02]
+  pass_marks:
+    flags_known_gap_days: true
+    does_not_flag_moved_batch_day: true
+    batch_move_test_passes: true
+    false_flags_within_limit: true
+  week_flag:  # a week is flagged renewal_gap if a gap day falls in this window
+    from: week_start
+    to: week_end_plus_30_days
+  limits:
+    - a shortfall inside a month-end block offset by an overflow in the same block is not flagged
+    - the weekday rule can miss a small real effect
