@@ -59,3 +59,20 @@ def test_duplicate_event_raises() -> None:
     df = pd.concat([frame(), frame().iloc[[0]]])
     with pytest.raises(ValueError):
         weekly_rates(df, "paid")
+
+
+def test_month_end_week_and_test_on_a_hand_made_series() -> None:
+    from retention.trends.series import is_month_end_week, month_end_test
+
+    assert is_month_end_week(pd.Timestamp("2016-02-29"))  # Feb 29 .. Mar 6
+    assert is_month_end_week(pd.Timestamp("2016-03-28"))  # Mar 28 .. Apr 3 holds Mar 28-31
+    assert not is_month_end_week(pd.Timestamp("2016-03-07"))
+    weeks = pd.date_range("2016-02-15", periods=20, freq="W-MON")
+    me = [is_month_end_week(w) for w in weeks]
+    flat = pd.DataFrame({"rate": [0.10 + 0.002 * (i % 3) for i in range(20)]}, index=weeks)
+    assert not month_end_test(flat)["pattern_present"]
+    saw = flat.copy()
+    saw.loc[me, "rate"] += 0.05
+    out = month_end_test(saw)
+    assert out["pattern_present"] and out["response"] == "subtract class medians"
+    assert abs(out["difference"] - 0.05) < 0.005

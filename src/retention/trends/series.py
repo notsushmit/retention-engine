@@ -38,3 +38,41 @@ def weekly_rates(labels: pd.DataFrame, segment: str, data_end: str = "2017-03-31
     week_end = out.index + pd.Timedelta(days=6)
     out["complete"] = (week_end + pd.Timedelta(days=30)) <= pd.Timestamp(data_end)
     return out
+
+
+def is_month_end_week(week_start: pd.Timestamp, last_days: int = 4) -> bool:
+    """True if the Monday-Sunday week contains one of the last `last_days` days of a month."""
+    for d in pd.date_range(week_start, periods=7, freq="D"):
+        if d.day > d.days_in_month - last_days:
+            return True
+    return False
+
+
+def month_end_test(rates: pd.DataFrame, t_min: float = 3.0) -> dict:
+    """Registered month-end check on a weekly rate table (index = week start, column rate)."""
+    from scipy import stats
+
+    r = rates.rate.dropna()
+    me = pd.Series([is_month_end_week(w) for w in r.index], index=r.index)
+    a, b = r[me], r[~me]
+    t = stats.ttest_ind(a, b, equal_var=False)
+    diff = float(a.mean() - b.mean())
+    sd = float(b.std(ddof=1))
+    present = bool(abs(t.statistic) >= t_min and abs(diff) > sd)
+    return {
+        "weeks_month_end": int(len(a)),
+        "weeks_other": int(len(b)),
+        "mean_month_end": float(a.mean()),
+        "mean_other": float(b.mean()),
+        "difference": diff,
+        "welch_t": float(t.statistic),
+        "sd_other_weeks": sd,
+        "pattern_present": present,
+        "response": (
+            "none"
+            if not present
+            else "subtract class medians"
+            if min(len(a), len(b)) >= 4
+            else "use month-end-matched weeks"
+        ),
+    }

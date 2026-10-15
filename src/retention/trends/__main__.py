@@ -23,6 +23,7 @@ from retention.trends import batch
 
 OUT = Path("data/processed/kkbox/sample_020/trends")
 TIMELINE = Path("data/processed/kkbox/sample_020/timeline.parquet")
+LABELS = Path("data/processed/kkbox/sample_020/labels.parquet")
 
 
 def _head() -> str:
@@ -131,14 +132,58 @@ def known_days() -> dict:
     }
 
 
+def month_end_check() -> dict:
+    """Paid weekly rate 2016-02-15..2016-12-19 (snapshots before 2017-01-01), then the test."""
+    from datetime import date
+
+    from retention.models.data import MAX_SNAPSHOTS_PER_READ, load_labels
+    from retention.models.protocol import load_protocol
+    from retention.trends.series import COLUMNS, month_end_test, weekly_rates
+
+    protocol = load_protocol()
+    snaps = [date(2016, m, 1) for m in range(2, 13)]
+    assert max(snaps) < protocol.locked_from
+    cols = [c for c in COLUMNS if c not in ("msno", "snapshot_date")]
+    frames = [
+        load_labels(LABELS, snaps[i : i + MAX_SNAPSHOTS_PER_READ], cols, protocol)
+        for i in range(0, len(snaps), MAX_SNAPSHOTS_PER_READ)
+    ]
+    lab = pd.concat(frames, ignore_index=True)
+    w = weekly_rates(lab, "paid")
+    w = w[(w.index >= "2016-02-15") & (w.index <= "2016-12-19")]
+    res = month_end_test(w)
+    return {
+        "commit": _head(),
+        "rows_read": int(len(lab)),
+        "weeks": int(len(w)),
+        "weeks_with_unobserved_rows": int((w.unobserved > 0).sum()),
+        "unobserved_rows": int(w.unobserved.sum()),
+        "all_weeks_complete": bool(w.complete.all()),
+        "test": res,
+        "table": [
+            {
+                "week": str(i.date()),
+                **{
+                    k: (float(v) if k == "rate" else int(v))
+                    for k, v in r.items()
+                    if k != "complete"
+                },
+            }
+            for i, r in w.iterrows()
+        ],
+    }
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="retention.trends")
-    p.add_argument("command", choices=["clean-months", "known-days"])
+    p.add_argument("command", choices=["clean-months", "known-days", "month-end-check"])
     a = p.parse_args()
     if _dirty():
         raise SystemExit("a tracked file differs from HEAD; commit first")
     OUT.mkdir(parents=True, exist_ok=True)
-    if a.command == "clean-months":
+    if a.command == "month-end-check":
+        res, name = month_end_check(), "month_end_check.json"
+    elif a.command == "clean-months":
         res, name = clean_months(), "batch_clean.json"
     else:
         if not (OUT / "batch_clean.json").exists():
