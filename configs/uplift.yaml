@@ -84,6 +84,7 @@ kkbox:
       The estimate is expected to be underpowered or not estimable. A wide interval or
       "not estimable" is a legitimate outcome and is reported as such.
     min_treated_after_trimming: 30  # below this the effect is reported as not estimable, with no number given as a finding
+    min_untreated_after_trimming: 30  # added with the propensity design, after the feature counts and before any outcome; same consequence
     identification: >
       About 99.8% of renewers in the registered months are on payment methods that never
       received a discount in 2016, so their chance of a discount is zero and the effect
@@ -104,6 +105,63 @@ kkbox:
       sensitive_if: the sign of the point estimate changes, or one rule's interval excludes 0 while another's does not
     margin_sensitivity: not used as a robustness check; any margin from 0.01 to 0.13 gives the same treated set, so the check would be empty
     implausible_effect: an interval entirely on the side of discounts raising churn is reported as evidence that the assumptions fail, not as a finding that discounts cause churn
+
+  propensity:  # added in a second commit, after feature counts on the analysed units and before any outcome is read
+    units: the analysed units (2016-08 and 2016-09, method 23), features at T
+    model: L2-regularised logistic regression on standardised inputs (scikit-learn LogisticRegression)
+    why_not_trees: with about 70 treated units, tree models overfit and push scores toward 0 and 1, which makes trimming arbitrary
+    covariates:
+      base: feature set fs1 (40 columns, all built from rows dated before T)
+      profile_columns: excluded (age, gender, city, profile_blank); the members table is a post-data snapshot whose presence depends on later activity
+      members_columns: tenure_days and registered_via kept, null when there is no listening before T (the fs1 column has_any_log_before_T marks those units); registered_via may stand in for plan type or payment channel, so part of what it adjusts for may be the assignment itself
+      snapshot_month: indicator for 2016-09
+      added_after_counts:
+        name: any_discount_365  # 1 if n_discounted_365 > 0 (a discounted or 100%-discount row in the 365 days before T), else 0
+        reason: >
+          Added after counting pre-T features of the analysed units, before any outcome.
+          65 of 68 September treated units have a discount in the past year, against 25 of 242
+          September untreated units; last_discount_ratio, the only discount column in fs1, is
+          constant (0 for all 620 units). Every such earlier row is method 23, list 149, paid 129.
+      not_in_model:
+        name: days_since_last_discount  # T minus the date of the latest discounted row in the 365 days before T
+        reason: it separates the arms completely in September (treated units' earlier discount 2015-11 to 2016-08, untreated 2015-09 to 2015-10), so it would leave no overlap; the separation is evidence about how discounts were assigned, not a covariate
+        diagnostic: its SMD is reported, on units with a past-year discount only, and is not judged
+    preprocessing:  # every rule is fitted on the training folds only, except the column rules below, which use the 620 units' feature values
+      constant_columns: dropped (7 expected from the counts, namely segment, paid_state, last_plan_days, last_plan_days_missing, last_discount_ratio, last_row_kind, last_row_is_cancel)
+      rare_level_rule: a binary column, or a categorical level, held by fewer than 5 units is dropped (expected to drop last_is_auto_renew and last_payment_method_id, 1 unit each)
+      categorical: registered_via one-hot, null as its own level "missing"
+      numeric_nulls: filled with the training-fold median, with a 0/1 flag per column
+      duplicate_columns: after encoding, a column identical to an earlier one is dropped (for example a null flag identical to has_any_log_before_T)
+      scaling: standardised with training-fold mean and standard deviation
+    penalty:
+      C_grid: [0.01, 0.1, 1, 10]  # inverse regularisation strength, lambda = 1 / C
+      chosen_by: mean out-of-fold log loss of treatment over the folds (treatment only, never the outcome); ties go to the smaller C
+      folds: StratifiedGroupKFold, 5 splits, grouped by customer (305 customers appear in both months), stratified by treatment, shuffle with seed 0
+      propensity_used: out-of-fold predictions from the same folds with the chosen C
+      threads: 4
+    overlap_check:  # reported
+      per_arm: minimum, quartiles and maximum of the propensity; a histogram per arm
+      outside_primary_band: units per arm outside [0.05, 0.95]
+      effective_sample_size: Kish effective sample size of the weights per arm, after primary trimming
+    trimming:
+      primary: {low: 0.05, high: 0.95}  # keep units with propensity inside the band
+      stricter: {low: 0.10, high: 0.90}  # a conventional rule of thumb, registered here as a chosen value
+      none: {low: 0.0, high: 1.0}
+      refit_after_trimming: false
+      both_arms: true
+    estimability: at least 30 treated and 30 untreated after primary trimming; otherwise the KKBox effect is reported as not estimable, while the propensity, overlap and balance tables are still reported
+    weights:
+      kind: stabilised inverse-probability weights  # treated p / e, untreated (1 - p) / (1 - e), p = treated share of the trimmed group
+      estimand: average effect in the trimmed group
+    balance:
+      smd: (weighted mean treated - weighted mean untreated) / sqrt((var treated + var untreated) / 2), variances unweighted, within the trimmed group
+      zero_variance: if both arms' variances are 0 the SMD is 0 when the means are equal, otherwise the column fails
+      columns: every model input after preprocessing (each flag, each registered_via level, the month indicator, any_discount_365)
+      pass: every |SMD| <= 0.10 after weighting
+      reported: SMDs before weighting; variance ratios (not judged); the days_since_last_discount diagnostic
+      if_fails: the KKBox estimate carries the label "balance not met" and is not reported as a finding; the propensity model is not respecified
+      expected_case: with about 65 treated against 25 untreated after trimming, the standard error of an SMD is near 0.24 (sqrt(1/65 + 1/25)), so the mark may fail from noise alone
+    sensitivity_without_members_columns: the same pipeline without tenure_days and registered_via (has_any_log_before_T stays, as a usage column)
 
   downstream:
     budget_optimizer: >
