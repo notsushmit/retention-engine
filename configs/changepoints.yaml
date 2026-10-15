@@ -174,6 +174,8 @@ alerts:  # registered before the detector reads any real series
       renewal_gap: "This change coincides with a data gap on {dates}; the weekly churn rate for {series} moved from {before} to {after} from the week of {week}; it is flagged for data quality and not reported as a change in customer behaviour{returned}{also}."
       unreliable_month: "This change falls in {month}, a month the data-quality screen marks as {status}; the weekly churn rate for {series} moved from {before} to {after} from the week of {week}; it is flagged for data quality and not reported as a change in customer behaviour{returned}{also}."
       left_truncation_risk: "This change falls in a period where the data may cut observation windows short; the weekly churn rate for {series} moved from {before} to {after} from the week of {week}{returned}{also}."
+      renewal_window: "This change from the week of {week} falls in the {window_days}-day renewal window of a data gap on {dates}; the weekly churn rate for {series} moved from {before} to {after}; it is flagged for data quality and not reported as a change in customer behaviour{returned}{also}."
+      short_window: "A change point was detected from the week of {week}; a window on one side had too few weeks, so no rates are stated{also}."
       known_period: "This change coincides with a period marked {label} in the data notes; the weekly churn rate for {series} moved from {before} to {after} from the week of {week}{segments}{returned}{also}."
       small: "A small change was detected: the weekly churn rate for {series} moved from {before} to {after} from the week of {week}; no segments are ranked{returned}{also}."
       normal: "The weekly churn rate for {series} {moved} from {before} to {after} from the week of {week}{segments}{returned}{also}."
@@ -183,3 +185,4 @@ alerts:  # registered before the detector reads any real series
       returned: "; the weekly rate was back within its earlier range by the week of {return_week}"
       also: "; also in {month}, marked {status}"
     fewer_than_three: list the ranked segments; if none, use segments_none
+    template_fix_2026_10_15: renewal_window (a gap date only in the 30-day renewal window of a window week) and short_window (an empty or short window) added; renewal_gap keeps the same-week wording

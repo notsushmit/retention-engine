@@ -38,6 +38,7 @@ def week_flags(
     ]
     return {
         "renewal_gap_dates": gaps,
+        "gap_same_week": [d for d in gaps if week <= d <= end],
         "unreliable_months": unreliable,
         "uncertain_months": uncertain,
         "left_truncation_risk": bool(week < pd.Timestamp("2016-02-15")),
@@ -49,6 +50,7 @@ def merge_flags(per_week: list[dict[str, Any]]) -> dict[str, Any]:
     dates = sorted({d for f in per_week for d in f["renewal_gap_dates"]})
     return {
         "renewal_gap_dates": dates,
+        "gap_same_weeks": sorted({d for f in per_week for d in f["gap_same_week"]}),
         "unreliable_months": sorted({m for f in per_week for m in f["unreliable_months"]}),
         "uncertain_months": sorted({m for f in per_week for m in f["uncertain_months"]}),
         "left_truncation_risk": any(f["left_truncation_risk"] for f in per_week),
@@ -219,8 +221,10 @@ def segment_text(dimension: str, value: str) -> str:
 
 
 def primary_template(flags: dict[str, Any], small: bool) -> str:
-    if flags["renewal_gap_dates"]:
+    if flags.get("gap_same_weeks"):
         return "renewal_gap"
+    if flags["renewal_gap_dates"]:
+        return "renewal_window"
     if flags["unreliable_months"]:
         return "unreliable_month"
     if flags["left_truncation_risk"]:
@@ -235,7 +239,10 @@ def render(alert: dict[str, Any], cfg: dict[str, Any]) -> str:
     t = cfg["sentence"]["templates"]
     pc = cfg["sentence"]["pieces"]
     flags = alert["flags"]
-    which = primary_template(flags, alert["size_class"] == "small")
+    if alert["size_class"] == "not_computable":
+        which = "short_window"
+    else:
+        which = primary_template(flags, alert["size_class"] == "small")
     ranked = [segment_text(s["dimension"], s["value"]) for s in alert["top_segments"]]
     segs = pc["segments"].format(list=_join(ranked)) if ranked else pc["segments_none"]
     ret = alert["series_returned_to_level"]
@@ -247,15 +254,21 @@ def render(alert: dict[str, Any], cfg: dict[str, Any]) -> str:
         status_month = (flags["uncertain_months"][0], "uncertain")
     also = pc["also"].format(month=status_month[0], status=status_month[1]) if status_month else ""
     fields = {
-        "dates": _join([str(pd.Timestamp(d).date()) for d in flags["renewal_gap_dates"][:3]]),
+        "dates": _join(
+            [
+                str(pd.Timestamp(d).date())
+                for d in (flags.get("gap_same_weeks") or flags["renewal_gap_dates"])[:3]
+            ]
+        ),
         "series": alert["series"],
-        "before": _fmt_pct(alert["before_rate"]),
-        "after": _fmt_pct(alert["after_rate"]),
+        "before": "" if alert["before_rate"] is None else _fmt_pct(alert["before_rate"]),
+        "after": "" if alert["after_rate"] is None else _fmt_pct(alert["after_rate"]),
         "week": alert["week"],
         "moved": "rose" if alert["direction"] == "up" else "fell",
         "month": flags["unreliable_months"][0] if flags["unreliable_months"] else "",
         "status": "unreliable",
         "label": flags["known_periods"][0] if flags["known_periods"] else "",
+        "window_days": "30",
         "segments": segs,
         "returned": returned,
         "also": also,

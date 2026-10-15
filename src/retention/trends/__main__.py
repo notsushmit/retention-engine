@@ -305,20 +305,30 @@ def alerts_run() -> dict:
         (b0, b1) = next(s for s in segs if s[1] == cp)
         (a0, a1) = next(s for s in segs if s[0] == cp)
         b0w, a1w = max(b0, b1 - maxw), min(a1, a0 + maxw)
-        rb = float(d[(d.widx >= b0w) & (d.widx < b1)].churned.mean())
-        ra = float(d[(d.widx >= a0) & (d.widx < a1w)].churned.mean())
-        size = 100 * (ra - rb)
+        min_w = int(det["min_size_weeks"])
+        short = (b1 - b0w) < min_w or (a1w - a0) < min_w
+        if short:
+            rb = ra = size = None
+            is_note = "a window had fewer than the minimum weeks; no rate is stated"
+        else:
+            rb = float(d[(d.widx >= b0w) & (d.widx < b1)].churned.mean())
+            ra = float(d[(d.widx >= a0) & (d.widx < a1w)].churned.mean())
+            size = 100 * (ra - rb)
+            is_note = None
         nxt = next((s for s in segs if s[0] == a1), None)
         m_next = float(rates[nxt[0] : nxt[1]].mean()) if nxt is not None else None
-        band, returned = al.returned_to_level(rb, quiet["sd"], m_next)
+        if short:
+            band, returned = [None, None], None
+        else:
+            band, returned = al.returned_to_level(rb, quiet["sd"], m_next)
         ret_week = str(weeks[nxt[0]].date()) if returned and nxt is not None else None
         win = range(max(0, cp - 1), min(len(weeks), cp + 2))
         flags = al.merge_flags([wflags[j] for j in win])
-        is_small = abs(size) < small_pts
+        is_small = (not short) and abs(size) < small_pts
         ranked: list[dict] = []
         too_small: list[dict] = []
         totals: dict = {}
-        if not is_small:
+        if not is_small and not short:
             rows, too_small, totals = al.contributions(
                 window(b0w, b1), window(a0, a1w), int(acfg["drill_down"]["min_events_each_period"])
             )
@@ -331,12 +341,15 @@ def alerts_run() -> dict:
             "series": "the paid series",
             "before_rate": rb,
             "after_rate": ra,
-            "size_points": round(size, 3),
-            "direction": "up" if ra > rb else "down",
-            "size_class": "small" if is_small else "shift",
+            "size_points": None if size is None else round(size, 3),
+            "note": is_note,
+            "direction": None if short else ("up" if ra > rb else "down"),
+            "size_class": "not_computable" if short else ("small" if is_small else "shift"),
             "windows": {
                 "rule": "detector segments, at most 8 weeks each side",
-                "before_weeks": [str(weeks[b0w].date()), str(weeks[b1 - 1].date())],
+                "before_weeks": [str(weeks[b0w].date()), str(weeks[b1 - 1].date())]
+                if b1 > b0w
+                else None,
                 "after_weeks": [str(weeks[a0].date()), str(weeks[a1w - 1].date())],
                 "segment_after": [str(weeks[a0].date()), str(weeks[a1 - 1].date())],
             },
@@ -346,6 +359,7 @@ def alerts_run() -> dict:
             "flags": {
                 **flags,
                 "renewal_gap_dates": [str(x.date()) for x in flags["renewal_gap_dates"]],
+                "gap_same_weeks": [str(x.date()) for x in flags["gap_same_weeks"]],
             },
             "data_quality_flags": al.flag_names(flags),
             "top_segments": ranked,

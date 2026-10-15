@@ -128,6 +128,7 @@ def test_rendered_sentences_for_flagged_and_normal_alerts() -> None:
         flags={
             **alert()["flags"],
             "renewal_gap_dates": ["2016-12-05"],
+            "gap_same_weeks": ["2016-12-05"],
             "uncertain_months": ["2016-12"],
         },
         series_returned_to_level=True,
@@ -161,7 +162,11 @@ def test_rendered_sentences_for_flagged_and_normal_alerts() -> None:
 
 @pytest.mark.parametrize("weeks", [1, 4])
 def test_spike_alert_never_uses_normal_template_or_churn_shift(weeks: int) -> None:
-    flags = {**alert()["flags"], "renewal_gap_dates": ["2016-12-05"]}
+    flags = {
+        **alert()["flags"],
+        "renewal_gap_dates": ["2016-12-05"],
+        "gap_same_weeks": ["2016-12-05"],
+    }
     for size_class in ("shift", "small"):
         a = alert(flags=flags, size_class=size_class, series_returned_to_level=weeks == 1)
         s = alerts.render(a, CFG)
@@ -215,3 +220,16 @@ def test_returned_to_level_is_null_without_a_band_or_a_later_segment() -> None:
 def test_no_returned_fragment_when_not_computable() -> None:
     s = alerts.render(alert(series_returned_to_level=None), CFG)
     assert "back within its earlier range" not in s
+
+
+def test_renewal_window_wording_and_short_window_never_nan() -> None:
+    f = {**alert()["flags"], "renewal_gap_dates": ["2016-12-05"], "gap_same_weeks": []}
+    s = alerts.render(alert(flags=f), CFG)
+    assert s.startswith(
+        "This change from the week of 2016-09-05 falls in the 30-day renewal window"
+    )
+    assert "data gap on 2016-12-05" in s and "coincides" not in s
+    short = alert(before_rate=None, after_rate=None, size_class="not_computable", direction=None)
+    t = alerts.render(short, CFG)
+    assert "nan" not in t.lower() and "%" not in t
+    assert t.startswith("A change point was detected from the week of 2016-09-05;")
