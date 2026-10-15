@@ -99,12 +99,30 @@ def known_days() -> dict:
             "flag": bool(r.flag),
         }
 
+    around: dict[str, list[dict]] = {}
+    for d in (*cfg.known_gap_days, *cfg.known_non_gap_days):
+        t = pd.Timestamp(d)
+        around[d] = [find(str((t + pd.Timedelta(days=k)).date())) for k in (-2, -1, 1, 2)]
+    blocks = [
+        {
+            "unit": f"{r.start.date()}..{r.end.date()}",
+            "count": r["count"],
+            "baseline": r.baseline,
+            "ratio": round(float(r.ratio), 3),
+            "flag": bool(r.flag),
+        }
+        for _, r in ind[
+            (ind.kind == "block") & ind.month.astype(str).isin(["2016-12", "2017-02"])
+        ].iterrows()
+    ]
     gaps = [find(d) for d in cfg.known_gap_days]
     non = [find(d) for d in cfg.known_non_gap_days]
     return {
         "commit": _head(),
         "known_gap_days": gaps,
         "known_non_gap_days": non,
+        "two_days_either_side": around,
+        "month_end_blocks": blocks,
         "flags_known_gap_days": all(g["flag"] for g in gaps),
         "does_not_flag_moved_batch_day": not any(n["flag"] for n in non),
         "false_flags_within_limit": clean["within_limit"],
