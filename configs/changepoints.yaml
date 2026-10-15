@@ -82,6 +82,16 @@ detector:
     - results at 1.0 times (pure binomial) and at 2 times the binomial noise, and the shift size and base rate where the detector breaks
     - distribution of false-alarm counts per stable stretch (0, 1, 2 or more), not only the mean
     - the first and last weeks where a change cannot be seen (minimum segment length)
+    - spike scenario: on the same base noise, a spike of 3 and of 4 times the base rate lasting 1 week and one lasting 4 weeks (like the late-February to March 2016 excursion and the 2016-12-05 week); report how many change points are returned and whether they sit at both edges of the spike or are absent, with the registered minimum segment of 3
+  spike_alert_rule: an alert around such a spike is reported with the renewal_gap or unreliable-month flag and never as a churn shift
+  study_details:
+    series_counts: 40 consecutive real weekly paid event counts from 2016-02-15 to 2016-12-19, window start drawn at random from the first 6 positions (counts only)
+    noise_model: weekly rate = base rate + multiplier * binomial standard error at that week's count * standard normal
+    shifts: upward only, at a random week with at least 8 weeks before and after; sizes in absolute points of rate
+    detector_sigma2: binomial variance at the series' own mean rate and the week's count (not inflated by the multiplier)
+    detected_if: a returned change point within +/-1 week of the true shift week
+    false_alarm_count: change points returned on a stable series
+    two_shift_series: shifts of 3 points at weeks 8 to 16 and 24 to 32, both must be detected within tolerance
   real_series_mapping: the row of the power table used for the real paid series is the grid base rate nearest the real pooled paid rate, decided after the study and stated in the doc
   never: tune the penalty, the minimum segment or any mark on a real series
   if_marks_fail: report not met with the power curve; no re-tuning; real alerts labelled unvalidated at that sensitivity
