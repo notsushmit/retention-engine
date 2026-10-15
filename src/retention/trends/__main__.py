@@ -88,6 +88,8 @@ def known_days() -> dict:
     def find(day: str):
         d = pd.Timestamp(day)
         hit = ind[(ind.start <= d) & (ind.end >= d)]
+        if hit.empty:
+            return {"date": day, "unit": None, "note": "not judged (day 1)"}
         r = hit.iloc[0]
         return {
             "date": day,
