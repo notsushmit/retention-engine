@@ -167,3 +167,46 @@ kkbox:
     budget_optimizer: >
       KKBox cannot supply a customer-level effect for any action. The budget step treats
       every discount, reminder or call effect as a labelled assumption, not an estimate.
+
+learners:  # added in a third commit, before any outcome is read and before any public dataset is downloaded
+  base_model: LightGBM, written in the project (no uplift library)
+  t_learner: one classifier per arm on the outcome; the effect for a unit is the treated model's predicted probability minus the untreated model's
+  x_learner:
+    stage_1: the T-learner's two classifiers
+    imputed_effects: treated units Y - mu0(x), untreated units mu1(x) - Y, with mu predictions taken out-of-fold
+    stage_2: one LightGBM regressor per arm on that arm's imputed effects
+    combine: tau(x) = e(x) * tau0(x) + (1 - e(x)) * tau1(x)
+    e: KKBox, the registered out-of-fold propensity; randomized data, the treated share of the training split
+  causal_forest: skipped  # about 90 renewals leave a forest nothing to split; T- and X-learners are enough for the Qini test
+  cross_fitting:
+    folds: 5
+    kkbox: the propensity's customer-grouped folds (StratifiedGroupKFold, stratified by treatment, seed 0); every effect for a unit comes from models that did not see it
+    public_training_split: StratifiedKFold by treatment, shuffle, seed 0, used for the out-of-fold stage-1 predictions and for grid selection
+    public_evaluation_split: scored by models refit on the whole training split with the chosen grid point; never used for any choice
+  public_grid:
+    n_estimators: [100, 300]
+    num_leaves: [4, 15]
+    min_child_samples: [20, 100]
+    learning_rate: 0.05
+    chosen_by: 5-fold cross-validated loss on the training split only (log loss for classifiers, squared error for stage-2 regressors), per base model
+    ties: fewer trees, then fewer leaves, then larger min_child_samples
+  kkbox_fixed:  # no search: tuning on about 25 untreated renewals is meaningless
+    n_estimators: 100
+    num_leaves: 4
+    min_child_samples: 10
+    learning_rate: 0.05
+  lightgbm_common: {seed: 0, deterministic: true, n_jobs: 4, verbose: -1}
+  kkbox_average_effect:
+    estimator: AIPW  # mean of mu1 - mu0 + T (Y - mu1) / e - (1 - T) (Y - mu0) / (1 - e), with out-of-fold mu and e, over the trimmed group
+    beside_it: the averages of the T-learner and X-learner effects over the same group
+    interval: customer bootstrap, 1000 resamples, seed 0, 95% percentile interval; each resample refits the propensity (C fixed) and the outcome models; trimming membership stays fixed
+  naive_difference:
+    kkbox: outcome rate of discounted minus full-price renewals, on the analysed set and on the trimmed group, with the same bootstrap
+    public: outcome rate of treated minus control on the evaluation split, with a customer bootstrap (1000 resamples, seed 0)
+    role: reference; on KKBox it shows the bias the adjustment is meant to remove; on randomized data it is an unbiased average effect
+  public_sanity_mark: each learner's average predicted effect on the evaluation split lies inside the naive difference's 95% interval (reported per dataset, outcome and learner)
+  kkbox_not_estimable:
+    rule: if primary trimming leaves fewer than 30 treated or fewer than 30 untreated renewals
+    then: the registered KKBox outcome is "not estimable"; the outcome is never read for KKBox; no learner, AIPW, naive difference or placebo runs on KKBox; no exploratory estimate on the untrimmed set
+    reason: the untrimmed set contains units with no overlap, and any number from it would be quoted
+    report: the KKBox robustness checks are met in design (registered) and not met in execution (the estimability mark stopped the run); the uplift criterion rests on the Hillstrom and Criteo validation
