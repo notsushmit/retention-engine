@@ -24,6 +24,7 @@ from retention.trends import batch
 OUT = Path("data/processed/kkbox/sample_020/trends")
 TIMELINE = Path("data/processed/kkbox/sample_020/timeline.parquet")
 LABELS = Path("data/processed/kkbox/sample_020/labels.parquet")
+FEATURES = Path("data/processed/kkbox/sample_020/features.parquet")
 
 
 def _head() -> str:
@@ -210,14 +211,207 @@ def study_run() -> dict:
     return res
 
 
+def _bucket(x: pd.Series, edges: list[tuple[str, float, float]]) -> pd.Series:
+    out = pd.Series("missing", index=x.index, dtype="object")
+    for name, lo, hi in edges:
+        out[(x >= lo) & (x <= hi)] = name
+    return out
+
+
+def alerts_run() -> dict:
+    """The one detector run on the real paid weekly series, with every registered rule."""
+    import json as _json
+    from datetime import date
+
+    import numpy as np
+    import yaml
+
+    from retention.models.data import MAX_SNAPSHOTS_PER_READ, load_features, load_labels
+    from retention.models.protocol import load_protocol
+    from retention.trends import alerts as al
+    from retention.trends import study as st
+    from retention.trends.series import COLUMNS, weekly_rates
+
+    full = yaml.safe_load(Path("configs/changepoints.yaml").read_text())
+    det, acfg = full["detector"], full["alerts"]
+    study = _json.loads((OUT / "detector_study.json").read_text())
+    c = float(study["chosen_c"])  # the c the registered selection rule chose
+    protocol = load_protocol()
+    snaps = [date(2016, m, 1) for m in range(2, 13)]
+    chunks = [
+        snaps[i : i + MAX_SNAPSHOTS_PER_READ] for i in range(0, len(snaps), MAX_SNAPSHOTS_PER_READ)
+    ]
+    lcols = [x for x in COLUMNS if x not in ("msno", "snapshot_date")]
+    lab = pd.concat([load_labels(LABELS, ch, lcols, protocol) for ch in chunks], ignore_index=True)
+    w = weekly_rates(lab, "paid")
+    w = w[(w.index >= "2016-02-15") & (w.index <= "2016-12-19")]
+    rates, events = w.rate.to_numpy(), w.events.to_numpy(dtype=float)
+    cps = st.detect(rates, events, c=c, min_size=int(det["min_size_weeks"]))
+    segs = al.segments_from_cps(len(w), cps)
+
+    # data-quality inputs (payment rows and the month-quality table; no outcome)
+    icfg = batch.load_indicator_config()
+    counts = batch.daily_counts(TIMELINE, "2015-12-01", "2017-03-31")
+    ind = batch.indicator(counts, icfg)
+    gaps = batch.gap_dates(ind)
+    mq = pd.read_parquet("data/processed/kkbox/sample_020/month_quality.parquet")
+    status = {str(m): s for m, s in zip(mq.month, mq.status, strict=True)}
+    weeks = list(w.index)
+    wflags = [al.week_flags(x, gaps, status, acfg) for x in weeks]
+    flagged = np.array(
+        [
+            bool(f["renewal_gap_dates"] or f["unreliable_months"] or f["uncertain_months"])
+            for f in wflags
+        ]
+    )
+    quiet = al.quiet_week_sd(rates, segs, flagged)
+
+    # drill-down frames: paid expiry events with features at the snapshot's first day
+    feats = [
+        "last_plan_days",
+        "last_payment_method_id",
+        "last_is_auto_renew",
+        "city",
+        "registered_via",
+        "tenure_days",
+    ]
+    fr = pd.concat([load_features(FEATURES, ch, feats) for ch in chunks], ignore_index=True)
+    d = lab[lab.in_expiry_month.astype(bool) & (lab.segment == "paid")].merge(
+        fr, on=["msno", "snapshot_date"], how="left"
+    )
+    d["week"] = d.expiry_date.dt.to_period("W-SUN").dt.start_time
+    d = d[d.week.isin(weeks) & d.churned_classic.notna()].copy()
+    d["widx"] = d.week.map({x: i for i, x in enumerate(weeks)})
+    d["churned"] = d.churned_classic.astype(int)
+    dims = {
+        "plan_length": _bucket(
+            d.last_plan_days,
+            [("0-7", 0, 7), ("8-30", 8, 30), ("31-99", 31, 99), ("100+", 100, 1e9)],
+        ),
+        "payment_method": d.last_payment_method_id.astype("Int64")
+        .astype(str)
+        .replace("<NA>", "missing"),
+        "auto_renew": d.last_is_auto_renew.astype("Int64").astype(str).replace("<NA>", "missing"),
+        "city": d.city.astype("Int64").astype(str).replace("<NA>", "missing"),
+        "registration_channel": d.registered_via.astype("Int64")
+        .astype(str)
+        .replace("<NA>", "missing"),
+        "tenure": _bucket(
+            d.tenure_days,
+            [("0-89", 0, 89), ("90-364", 90, 364), ("365-729", 365, 729), ("730+", 730, 1e9)],
+        ),
+    }
+
+    def window(a: int, b: int) -> pd.DataFrame:
+        m = (d.widx >= a) & (d.widx < b)
+        parts = []
+        for name, col in dims.items():
+            g = (
+                pd.DataFrame({"value": col[m], "churned": d.churned[m]})
+                .groupby("value")
+                .churned.agg(events="size", churned="sum")
+            )
+            g.insert(0, "dimension", name)
+            parts.append(g.reset_index())
+        return pd.concat(parts, ignore_index=True)
+
+    maxw = int(acfg["windows"]["max_weeks_each_side"])
+    small_pts = float(acfg["size_small_points"])
+    out_alerts = []
+    for i, cp in enumerate(cps):
+        (b0, b1) = next(s for s in segs if s[1] == cp)
+        (a0, a1) = next(s for s in segs if s[0] == cp)
+        b0w, a1w = max(b0, b1 - maxw), min(a1, a0 + maxw)
+        rb = float(d[(d.widx >= b0w) & (d.widx < b1)].churned.mean())
+        ra = float(d[(d.widx >= a0) & (d.widx < a1w)].churned.mean())
+        size = 100 * (ra - rb)
+        nxt = next((s for s in segs if s[0] == a1), None)
+        band = (rb - 2 * quiet["sd"], rb + 2 * quiet["sd"])
+        returned = None
+        ret_week = None
+        if nxt is not None:
+            m_next = float(rates[nxt[0] : nxt[1]].mean())
+            returned = bool(band[0] <= m_next <= band[1])
+            ret_week = str(weeks[nxt[0]].date()) if returned else None
+        win = range(max(0, cp - 1), min(len(weeks), cp + 2))
+        flags = al.merge_flags([wflags[j] for j in win])
+        is_small = abs(size) < small_pts
+        ranked: list[dict] = []
+        too_small: list[dict] = []
+        totals: dict = {}
+        if not is_small:
+            rows, too_small, totals = al.contributions(
+                window(b0w, b1), window(a0, a1w), int(acfg["drill_down"]["min_events_each_period"])
+            )
+            ranked = sorted(rows, key=lambda r: -abs(r["rate_contribution"]))[
+                : int(acfg["drill_down"]["top_segments"])
+            ]
+        alert = {
+            "alert_id": f"cp{i + 1}",
+            "week": str(weeks[cp].date()),
+            "series": "the paid series",
+            "before_rate": rb,
+            "after_rate": ra,
+            "size_points": round(size, 3),
+            "direction": "up" if ra > rb else "down",
+            "size_class": "small" if is_small else "shift",
+            "windows": {
+                "rule": "detector segments, at most 8 weeks each side",
+                "before_weeks": [str(weeks[b0w].date()), str(weeks[b1 - 1].date())],
+                "after_weeks": [str(weeks[a0].date()), str(weeks[a1w - 1].date())],
+                "segment_after": [str(weeks[a0].date()), str(weeks[a1 - 1].date())],
+            },
+            "series_returned_to_level": returned,
+            "return_week": ret_week,
+            "band": [band[0], band[1]],
+            "flags": {
+                **flags,
+                "renewal_gap_dates": [str(x.date()) for x in flags["renewal_gap_dates"]],
+            },
+            "data_quality_flags": al.flag_names(flags),
+            "top_segments": ranked,
+            "too_small_segments": too_small,
+            "dimension_totals": totals,
+            "noise_assumption": {
+                "validated_at": "1.5x binomial noise",
+                "c": c,
+                "min_segment_weeks": int(det["min_size_weeks"]),
+                "real_series_false_alarm_rate": "not validated",
+                "status": "exploratory",
+            },
+        }
+        alert["sentence"] = al.render(alert, acfg)
+        out_alerts.append(alert)
+    result = {
+        "commit": _head(),
+        "series_weeks": [str(weeks[0].date()), str(weeks[-1].date())],
+        "weeks": len(weeks),
+        "change_points": [str(weeks[k].date()) for k in cps],
+        "quiet_week_sd": quiet,
+        "small_threshold_points": small_pts,
+        "alerts": out_alerts,
+        "weekly": [
+            {"week": str(x.date()), "events": int(e), "rate": float(r), "flagged": bool(f)}
+            for x, e, r, f in zip(weeks, events, rates, flagged, strict=True)
+        ],
+    }
+    Path("data/processed").mkdir(parents=True, exist_ok=True)
+    Path("data/processed/alerts.json").write_text(_json.dumps(result, indent=2, default=str))
+    return result
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="retention.trends")
-    p.add_argument("command", choices=["clean-months", "known-days", "month-end-check", "study"])
+    p.add_argument(
+        "command", choices=["clean-months", "known-days", "month-end-check", "study", "alerts"]
+    )
     a = p.parse_args()
     if _dirty():
         raise SystemExit("a tracked file differs from HEAD; commit first")
     OUT.mkdir(parents=True, exist_ok=True)
-    if a.command == "study":
+    if a.command == "alerts":
+        res, name = alerts_run(), "alerts_run.json"
+    elif a.command == "study":
         res, name = study_run(), "detector_study.json"
     elif a.command == "month-end-check":
         res, name = month_end_check(), "month_end_check.json"
