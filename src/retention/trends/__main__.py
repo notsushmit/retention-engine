@@ -283,24 +283,7 @@ def alerts_run() -> dict:
     d = d[d.week.isin(weeks) & d.churned_classic.notna()].copy()
     d["widx"] = d.week.map({x: i for i, x in enumerate(weeks)})
     d["churned"] = d.churned_classic.astype(int)
-    dims = {
-        "plan_length": _bucket(
-            d.last_plan_days,
-            [("0-7", 0, 7), ("8-30", 8, 30), ("31-99", 31, 99), ("100+", 100, 1e9)],
-        ),
-        "payment_method": d.last_payment_method_id.astype("Int64")
-        .astype(str)
-        .replace("<NA>", "missing"),
-        "auto_renew": d.last_is_auto_renew.astype("Int64").astype(str).replace("<NA>", "missing"),
-        "city": d.city.astype("Int64").astype(str).replace("<NA>", "missing"),
-        "registration_channel": d.registered_via.astype("Int64")
-        .astype(str)
-        .replace("<NA>", "missing"),
-        "tenure": _bucket(
-            d.tenure_days,
-            [("0-89", 0, 89), ("90-364", 90, 364), ("365-729", 365, 729), ("730+", 730, 1e9)],
-        ),
-    }
+    dims = al.segment_columns(d)
 
     def window(a: int, b: int) -> pd.DataFrame:
         m = (d.widx >= a) & (d.widx < b)

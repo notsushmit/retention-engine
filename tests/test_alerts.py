@@ -169,3 +169,35 @@ def test_spike_alert_never_uses_normal_template_or_churn_shift(weeks: int) -> No
         assert not s.startswith("The weekly churn rate")
         assert "churn shift" not in s and "churn worsen" not in s
         assert not re.search(r"\b(target|focus on|address|fix|act)\b", s)
+
+
+def test_missing_city_and_channel_are_labelled_and_kept_in_the_sum_check() -> None:
+    d = pd.DataFrame(
+        {
+            "last_plan_days": [30, 30, 7, 100],
+            "last_payment_method_id": [41, 41, 38, 41],
+            "last_is_auto_renew": [1, 1, 0, 1],
+            "city": pd.array([1, None, 5, None], dtype="Int16"),
+            "registered_via": pd.array([7, None, 9, 3], dtype="Int16"),
+            "tenure_days": [10, 400, None, 900],
+            "churned": [0, 1, 1, 0],
+        }
+    )
+    cols = alerts.segment_columns(d)
+    assert list(cols["city"]) == ["1", "missing", "5", "missing"]
+    assert list(cols["registration_channel"]) == ["7", "missing", "9", "3"]
+    assert list(cols["tenure"]) == ["0-89", "365-729", "missing", "730+"]
+    for name, col in cols.items():
+        assert col.notna().all() and len(col) == len(d), name
+    # every dimension holds the same events, so totals agree
+    frames = []
+    for name, col in cols.items():
+        g = (
+            pd.DataFrame({"value": col, "churned": d.churned})
+            .groupby("value")
+            .churned.agg(events="size", churned="sum")
+        )
+        g.insert(0, "dimension", name)
+        frames.append(g.reset_index())
+    f = pd.concat(frames)
+    assert f.groupby("dimension").events.sum().nunique() == 1

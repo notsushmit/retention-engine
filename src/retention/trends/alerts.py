@@ -149,6 +149,36 @@ def contributions(
     return rows, small, totals
 
 
+def _bucket(x: pd.Series, edges: list[tuple[str, float, float]]) -> pd.Series:
+    out = pd.Series("missing", index=x.index, dtype="object")
+    for name, lo, hi in edges:
+        out[(x >= lo) & (x <= hi)] = name
+    return out
+
+
+def _label(x: pd.Series) -> pd.Series:
+    """Integer codes as text; a missing value is the value "missing" (never dropped)."""
+    return x.astype("Int64").astype(object).where(x.notna(), "missing").astype(str)
+
+
+def segment_columns(d: pd.DataFrame) -> dict[str, pd.Series]:
+    """The six registered dimensions from feature columns at the snapshot's first day."""
+    return {
+        "plan_length": _bucket(
+            d.last_plan_days,
+            [("0-7", 0, 7), ("8-30", 8, 30), ("31-99", 31, 99), ("100+", 100, 1e9)],
+        ),
+        "payment_method": _label(d.last_payment_method_id),
+        "auto_renew": _label(d.last_is_auto_renew),
+        "city": _label(d.city),
+        "registration_channel": _label(d.registered_via),
+        "tenure": _bucket(
+            d.tenure_days,
+            [("0-89", 0, 89), ("90-364", 90, 364), ("365-729", 365, 729), ("730+", 730, 1e9)],
+        ),
+    }
+
+
 def _fmt_pct(x: float) -> str:
     return f"{100 * x:.1f}%"
 
