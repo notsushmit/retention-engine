@@ -309,13 +309,9 @@ def alerts_run() -> dict:
         ra = float(d[(d.widx >= a0) & (d.widx < a1w)].churned.mean())
         size = 100 * (ra - rb)
         nxt = next((s for s in segs if s[0] == a1), None)
-        band = (rb - 2 * quiet["sd"], rb + 2 * quiet["sd"])
-        returned = None
-        ret_week = None
-        if nxt is not None:
-            m_next = float(rates[nxt[0] : nxt[1]].mean())
-            returned = bool(band[0] <= m_next <= band[1])
-            ret_week = str(weeks[nxt[0]].date()) if returned else None
+        m_next = float(rates[nxt[0] : nxt[1]].mean()) if nxt is not None else None
+        band, returned = al.returned_to_level(rb, quiet["sd"], m_next)
+        ret_week = str(weeks[nxt[0]].date()) if returned and nxt is not None else None
         win = range(max(0, cp - 1), min(len(weeks), cp + 2))
         flags = al.merge_flags([wflags[j] for j in win])
         is_small = abs(size) < small_pts
@@ -346,7 +342,7 @@ def alerts_run() -> dict:
             },
             "series_returned_to_level": returned,
             "return_week": ret_week,
-            "band": [band[0], band[1]],
+            "band": band,
             "flags": {
                 **flags,
                 "renewal_gap_dates": [str(x.date()) for x in flags["renewal_gap_dates"]],
@@ -370,7 +366,11 @@ def alerts_run() -> dict:
         "series_weeks": [str(weeks[0].date()), str(weeks[-1].date())],
         "weeks": len(weeks),
         "change_points": [str(weeks[k].date()) for k in cps],
-        "quiet_week_sd": quiet,
+        "quiet_week_sd": {
+            **quiet,
+            "sd": None if not np.isfinite(quiet["sd"]) else quiet["sd"],
+            "computable": bool(np.isfinite(quiet["sd"])),
+        },
         "small_threshold_points": small_pts,
         "alerts": out_alerts,
         "weekly": [

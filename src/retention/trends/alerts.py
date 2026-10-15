@@ -91,6 +91,18 @@ def quiet_week_sd(
     return {"sd": sd, "weeks": n, "segments": k}
 
 
+def returned_to_level(
+    before_mean: float, quiet_sd: float, next_mean: float | None
+) -> tuple[list[float | None], bool | None]:
+    """Band and verdict. No quiet-week SD or no later segment: [None, None] and None."""
+    if quiet_sd is None or not np.isfinite(quiet_sd):
+        return [None, None], None
+    band = [before_mean - 2 * quiet_sd, before_mean + 2 * quiet_sd]
+    if next_mean is None:
+        return band, None
+    return band, bool(band[0] <= next_mean <= band[1])
+
+
 def contributions(
     before: pd.DataFrame, after: pd.DataFrame, min_events: int
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, float]]:

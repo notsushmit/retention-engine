@@ -201,3 +201,17 @@ def test_missing_city_and_channel_are_labelled_and_kept_in_the_sum_check() -> No
         frames.append(g.reset_index())
     f = pd.concat(frames)
     assert f.groupby("dimension").events.sum().nunique() == 1
+
+
+def test_returned_to_level_is_null_without_a_band_or_a_later_segment() -> None:
+    assert alerts.returned_to_level(0.05, float("nan"), 0.05) == ([None, None], None)
+    assert alerts.returned_to_level(0.05, None, 0.05) == ([None, None], None)
+    band, ret = alerts.returned_to_level(0.05, 0.004, None)
+    assert band == pytest.approx([0.042, 0.058]) and ret is None
+    assert alerts.returned_to_level(0.05, 0.004, 0.055)[1] is True
+    assert alerts.returned_to_level(0.05, 0.004, 0.07)[1] is False
+
+
+def test_no_returned_fragment_when_not_computable() -> None:
+    s = alerts.render(alert(series_returned_to_level=None), CFG)
+    assert "back within its earlier range" not in s
