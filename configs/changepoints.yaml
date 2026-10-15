@@ -2,8 +2,8 @@
 # Committed alone, before any real series is analysed and before the known
 # gap days are scored. A change after a result is seen is a logged amendment,
 # and the original result is reported alongside.
-# The detector section (penalty, pass marks) is added in a later commit, still
-# before any real series is analysed.
+# The detector section was added in a second commit, still before the
+# synthetic study ran and before any real series was analysed.
 
 series:
   unit: spell_end  # one event per spell end
@@ -52,3 +52,35 @@ daily_indicator:
   limits:
     - a shortfall inside a month-end block offset by an overflow in the same block is not flagged
     - the weekday rule can miss a small real effect
+
+detector:
+  method: ruptures_pelt
+  cost: l2  # mean shift
+  min_size_weeks: 3
+  jump: 1
+  penalty: c * sigma2 * log(T)  # sigma2: binomial variance of a weekly rate at the week's event count and the pooled rate; T: number of points
+  c_grid: [1, 2, 3, 5]
+  c_selection: smallest c in the grid that meets every pass mark at all three base rates; if none does, the study is reported as not met and c = 5 is used, alerts labelled unvalidated
+  tolerance_weeks: 1  # the grain is weekly, so the tolerance is +/-1 week; this replaces "a few days" in the plan
+  study:
+    seed: 20161101
+    replicates_per_cell: 500
+    series_length_weeks: 40
+    base_rates: [0.05, 0.10, 0.20]  # a grid, so the real rate level is not needed
+    noise: binomial at the real weekly event counts (counts only, no rates read from the real series)
+    shift_sizes_points: [1, 2, 3, 5]
+    two_shift_series: true  # two shifts in one series, to check segments are not merged
+    stable_stretches: true
+  pass_marks:  # judged on the c_selection rule above
+    detect_3_points_within_tolerance: 0.80  # share of replicates
+    detect_5_points_within_tolerance: 0.90
+    stable_mean_false_alarms_per_stretch_at_most: 0.5
+    stable_share_of_stretches_with_any_false_alarm_at_most: 0.10
+  reported_points:  # reported, not pass marks
+    - power curve for shifts of 1 and 2 points
+    - result at 2 times the binomial noise, and the shift size and base rate where the detector breaks
+    - distribution of false-alarm counts per stable stretch (0, 1, 2 or more), not only the mean
+    - the first and last weeks where a change cannot be seen (minimum segment length)
+  real_series_mapping: the row of the power table used for the real paid series is the grid base rate nearest the real pooled paid rate, decided after the study and stated in the doc
+  never: tune the penalty, the minimum segment or any mark on a real series
+  if_marks_fail: report not met with the power curve; no re-tuning; real alerts labelled unvalidated at that sensitivity
