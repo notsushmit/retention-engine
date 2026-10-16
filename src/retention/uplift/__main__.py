@@ -28,6 +28,9 @@ unfinished attempt needs --rerun-reason). Writes validation.json, qini_curves.pa
 uplift_scores.parquet under data/processed/public/.
 
 qini-figures: draws one SVG per primary cell in docs/img/ from qini_curves.parquet only.
+
+groups: the registered customer groups on the public data (configs/uplift.yaml, groups);
+writes groups.json and group_members.parquet under data/processed/public/.
 """
 
 from __future__ import annotations
@@ -50,6 +53,7 @@ from retention.uplift import (
     balance,
     config,
     figures,
+    groups,
     kkbox_bootstrap,
     kkbox_units,
     learners,
@@ -679,6 +683,22 @@ def qini_figures() -> dict:
     return {"figures": [str(p) for p in paths]}
 
 
+def groups_step() -> dict:
+    _require_clean()
+    hill = pd.read_parquet(OUT / "hillstrom.parquet")
+    crit = pd.read_parquet(OUT / "criteo_uplift_v2.1.parquet")
+    log = json.loads((PUBLIC_OUT / public_validation.LOG).read_text())
+    scores = pd.read_parquet(PUBLIC_OUT / "uplift_scores.parquet")
+    start = time.perf_counter()
+    with threadpool_limits(limits=THREADS):
+        out = groups.run_groups(hill, crit, scores, log, PUBLIC_OUT)
+    out["commit"] = _git("rev-parse", "--short", "HEAD").strip()
+    out["seconds"] = round(time.perf_counter() - start, 1)
+    out["peak_rss_gb"] = peak_rss_gb()
+    (PUBLIC_OUT / "groups.json").write_text(json.dumps(out, indent=2, default=str) + "\n")
+    return out
+
+
 COMMANDS = {
     "check-public": check_public,
     "recount": recount,
@@ -687,6 +707,7 @@ COMMANDS = {
     "outcome": outcome_step,
     "validate": validate,
     "qini-figures": qini_figures,
+    "groups": groups_step,
 }
 
 
