@@ -367,3 +367,34 @@ validation:  # added in a fourth commit, before either public dataset is downloa
       uplift_scores: data/processed/public/uplift_scores.parquet holds evaluation-half scores of the two public datasets only (dataset, cell, row number, T-learner and X-learner uplift, outcome probability); no KKBox row can be written to it, and a test checks that
     tests_before_the_run: hand cases for every pass-mark path, including (a) passing while (b) fails, (b) not judged, and the all-three Done-when rule
     expected_case: Hillstrom's email effects are small and noisy and its features few, so a failing Hillstrom cell is plausible; the two Hillstrom cells share the No E-Mail control arm and are not independent
+
+groups:  # registered before any group is built
+  first_paragraph: >
+    The four groups are built on the randomized public data only. In both cells where they are built, the
+    X-learner added little over ranking by outcome probability, so the groups mostly separate customers by
+    their baseline rate, not by the effect of the action. No KKBox customer is assigned to a group: KKBox
+    has no per-customer effect.
+  cells: [hillstrom_womens_vs_none_visit, criteo_visit]  # the two primary cells that were met
+  not_built:
+    hillstrom_mens_vs_none_visit: "not built: the cell did not beat random"
+  source: >
+    A separate step. For each cell it refits the T-learner's two models on the training half with the grid
+    points the validation run logged, rebuilds the T-learner uplift for the evaluation half and stops if it
+    differs from the logged uplift_scores.parquet by more than 1e-9 (the reproduction check). The effect
+    measure is the X-learner uplift tau from uplift_scores.parquet; the no-action outcome is the refit
+    control model's prediction mu0.
+  thresholds:
+    delta: half the naive treated-minus-control difference in outcome rate on the training half
+    delta_reason: the user's own choice, not validated; it asks a group's predicted effect to be large next to the cell's average effect
+    m: the control arm's outcome rate on the training half
+  rules:
+    persuadable: tau >= delta
+    do_not_disturb: tau <= -delta
+    stays_anyway: abs(tau) < delta and mu0 >= m
+    lost_cause: abs(tau) < delta and mu0 < m
+  evaluation: thresholds come from the training half only; groups are assigned and evaluated on the held-out evaluation half only
+  report: the count in each group per cell, and the thresholds used
+  check:
+    rule: within each group, the treated-minus-control difference in outcome rate on the evaluation half, with a Poisson customer bootstrap (1000 resamples, seed 0) 95% interval, interval before estimate
+    expectation: the Persuadable group shows the largest difference
+    if_fails: reported as found; no change to the thresholds or rules
