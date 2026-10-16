@@ -4,6 +4,8 @@
 # second commit, before any of them was run or used.
 # The optimizer, the comparison strategies and the observed-churn check were
 # added in the third commit, before any of them was run or read.
+# The sensitivity analysis, the stability rules and the pass marks were added in
+# the fourth commit, before any run.
 #
 # Every effect below is an ASSUMPTION chosen by the user. None is an estimate: no
 # KKBox uplift estimate exists for any action, and no number here comes from KKBox
@@ -229,3 +231,101 @@ snapshots_roles:
   primary: 2016-11-01
   secondary: 2016-10-01
   secondary_caveat: 2016-10-01 contains the half of customers used to fit the Platt calibration, so its probabilities are partly in-sample
+
+# --- sensitivity ----------------------------------------------------------------------
+sensitivity:
+  base_point:
+    form: relative
+    level: base
+    margin: 0.5
+    cost_level: base
+    discount_cost_scaled_by_margin: false
+    value_horizon_days: 90
+    contact_limit: none
+    snapshot: 2016-11-01
+  variants:  # each changes the base point as stated, nothing else
+    absolute: {form: absolute}
+    low_effect: {level: low}
+    high_effect: {level: high}
+    margin_low: {margin: 0.3}
+    margin_high: {margin: 1.0}
+    cost_low: {cost_level: low}
+    cost_high: {cost_level: high}
+    discount_scaled_by_margin: {discount_cost_scaled_by_margin: true}
+    value_365: {value_horizon_days: 365}  # the labelled extrapolation
+    contact_limit: {contact_limit: 5000}
+    pessimistic: {margin: 0.3, cost_level: high}
+    optimistic: {margin: 1.0, cost_level: low, level: high}
+  runs:
+    primary: base point and every variant, at every budget level, on 2016-11-01 (104 greedy solves, each checked by HiGHS)
+    secondary: base point only, at every budget level, on 2016-10-01 (8 solves)
+    random_draws: 1000 at every scenario and budget
+
+  stability:
+    compared_with: the base plan at the same budget
+    measures:
+      regret:  # headline
+        loss: variant optimum minus the base plan's net value scored under the variant, in price units
+        relative: loss / variant optimum, when the variant optimum > 0
+      jaccard: customers in both plans / customers in either plan; two empty plans = 1; empty against non-empty = 0
+      action_agreement: among customers in both plans, the share given the same action
+      budget_curve: net value against budget, with the extra net value per extra price unit between levels
+      discount_rank: the discount's rank among actions by net value contributed, under both discount cost rules
+    thresholds:
+      label: "my choice, not based on data"
+      stable: jaccard >= 0.70 and relative regret <= 0.10
+      stricter_reading: {jaccard: 0.80, relative_regret: 0.05, role: "reported, not judged"}
+    headline_budget:
+      rule: the largest scan level strictly below the base plan's no-limit spend on 2016-11-01
+      level: not yet registered
+      procedure: >
+        The no-limit spend needs customer value, which needs the dt01 refit, so it cannot
+        be computed from counts before code exists. The value step computes and logs only
+        the base plan's no-limit spend (no variant, no comparison, no outcome); the level
+        then follows from the rule and is registered in its own commit before any variant
+        or comparison is computed. If the spend is at or below the smallest positive level
+        (1000), the headline budget is "no limit" and that is stated.
+    verdict:
+      per_variant_and_budget: stable or unstable by the thresholds
+      headline: the verdict at the headline budget; every other budget reported with its own verdict
+      low_effect: excluded from the overall verdict (zero effect empties every plan by design); its absolute loss, what the base plan spends if no action works, is its own headline number
+      overall: 'the overall verdict is "robust within the registered ranges" only if every variant except low_effect is stable at the headline budget; otherwise "unstable", naming the variants that failed'
+      does_not_decide_criterion_4: true  # an unstable plan is a finding, not a failure
+
+  discount_rank_sentence:
+    if_rank_changes: the discount's rank depends on whether its cost is scaled by margin
+    if_rank_same: the discount's rank did not change in this run, but the choice of cost rule remains an assumption the result rests on
+
+  unstable_report:
+    - a plain statement that the plan is driven by assumptions, not data
+    - the assumptions ranked by the loss they cause (largest first)
+    - "the robust core: customers chosen in the base plan and in every variant except low_effect, as a count; if it is empty, a plain statement that no customer is chosen under every assumption"
+    - one recommendation, a randomized holdout test of the action behind the largest loss; no deployment claim
+
+  expectations:  # registered before any run, repeated beside the results
+    - the low_effect variant gives an empty plan
+    - the absolute form is likely the least stable (a flat effect favours high-value customers whatever their risk)
+    - the margin and cost variants mostly change spend more than who is targeted
+
+# --- pass marks -----------------------------------------------------------------------
+pass_marks:
+  done_when:
+    budget_and_capacity:
+      tests: hand-made cases whose optimum is known by trying every combination; random small cases checked against HiGHS
+      runtime_guard: every real solve checks expected cost <= budget and contacts <= the limit; any breach on any solve = not met
+    comparison_exists: reports/strategy_backtest.md with the captioned comparison tables for 2016-11-01 and 2016-10-01
+    readme_statement: the README states that KKBox backtest figures are model estimates under assumed effects, not observed outcomes
+  sensitivity_complete:  # criterion 4, ours
+    - all 104 primary solves and the 8 secondary solves ran
+    - every output row carries effect_basis, form, level, margin, cost level, discount cost rule, value horizon and budget (a test and a runtime check)
+    - the stability table and the verdict sentences follow the rules above
+  solver_checks:  # a failure stops the run
+    highs_not_below_greedy: HiGHS objective >= greedy objective - 1e-6
+    greedy_within_bound: greedy objective >= LP bound - the largest single customer net value
+    highs_deterministic: two HiGHS solves give the identical selection
+  resources: {memory_ceiling_gb: 10.0, threads: 4}
+
+tests_required:
+  - a hand-made pair of plans that must be judged "unstable"
+  - a hand-made customer whose last row paid 0 with an earlier paid row; the price comes from the earlier paid row
+  - every comparison table carries the registered caption
