@@ -1,7 +1,7 @@
 # Phase 7: actions and their assumed effects, registered before any optimizer run.
 # Committed alone. The level names "off" and "on" are quoted: bare, YAML reads them as booleans.
-# Costs, lead times, customer value and budget levels are added in
-# later commits, each before the runs that use them.
+# Value, costs, lead times, budget levels and the dt01 refit were added in the
+# second commit, before any of them was run or used.
 #
 # Every effect below is an ASSUMPTION chosen by the user. None is an estimate: no
 # KKBox uplift estimate exists for any action, and no number here comes from KKBox
@@ -73,3 +73,92 @@ scenarios:
 
 wording:
   sentence_prefix: "Under the assumed <scenario> <level> effect"  # every sentence that uses an effect carries it
+
+# --- population -----------------------------------------------------------------------
+# The rows that already carry a calibrated 30-day probability in 2016: P2 main
+# (in_exp30 and segment in paid, discount100_only) at 2016-10-01 and 2016-11-01.
+# 2016-12-01 is never used; no 2017 snapshot is used.
+population:
+  rows: P2 main
+  snapshots: [2016-10-01, 2016-11-01]
+
+# --- customer value -------------------------------------------------------------------
+# Every input below is an assumption or a model output, never an observed profit.
+value:
+  label: "assumed value: user choice, 2026-10-17, provisional"
+  formula: margin * price_per_day * expected_paid_days_30_90
+  price_per_day:
+    row: last non-cancel transaction dated before T with actual_amount_paid > 0 and payment_plan_days > 0
+    tie_break: latest transaction date, then latest expiry date, then highest amount paid
+    value: actual_amount_paid / payment_plan_days
+    no_usable_price: value 0, so no action can have positive net value; the count per snapshot is reported
+  expected_paid_days_30_90:
+    model: dt01 survival curve, shape only (raw curve, no calibration)
+    rule: expected days not lapsed in (30, 90] given not lapsed by day 30
+    computation: trapezoid on the interval ends 30, 37, 44, 51, 59, 67, 74, 81, 90 of S(t) / S(30)
+    range_days: [0, 60]
+  margin: {low: 0.3, base: 0.5, high: 1.0}  # revenue overstates value; KKBox has no costs
+  extrapolation_scenario:
+    role: labelled extrapolation, a scenario only, never the primary value
+    label: "extrapolation beyond the survival model's range: user choice, 2026-10-17, provisional"
+    rule: expected days not lapsed in (30, 365] given not lapsed by day 30; after day 90 the daily hazard of the 81-90 interval is held constant
+  model_disagreement:
+    statement: risk comes from c01 (calibrated 30-day probability) and value from dt01 (curve shape); they are different models and can disagree
+    report: per snapshot, the count and share of customers in c01's top decile of risk whose dt01 30-day lapse probability is below dt01's snapshot median
+    role: descriptive, no pass mark
+
+# --- the dt01 refit -------------------------------------------------------------------
+# dt01 was not saved in Phase 3, so it is refit once, registered here before it runs.
+dt01_refit:
+  settings: frozen Phase 3 choices (discrete_time, dt01), exactly as the test stage fits it
+  fit_rows: P2 main rows of 2016-08-01 and 2016-09-01
+  labels_as_of: 2017-01-01  # only transactions dated in 2016 enter; no 2017 outcome
+  seed: 20161001
+  threads: 4
+  never: [score-test, TestUnlock, any 2017 outcome]
+  memory_ceiling_gb: 10.0  # peak RSS reported; a breach is a failure
+  reproduction:
+    # Pass: every field of the refit's raw-score summary on the same P2 main rows,
+    # in the same order, equals the logged one exactly (mean, nine deciles, min,
+    # max as floats after the JSON round trip; distinct count as an integer).
+    # Any difference: stop, exit non-zero, save nothing, report the difference.
+    # Never loosened. Causes examined first: row order, a library version, threads.
+    source: rehearsal.json
+    cells:
+      - {horizon: 7, snapshot: 2016-11-01, path: [primary, "7 days, 2016-11-01", models, survival_dt01, score_summary_raw]}
+      - {horizon: 30, snapshot: 2016-11-01, path: [primary, "30 days, 2016-11-01", models, survival_dt01, score_summary_raw]}
+      - {horizon: 59, snapshot: 2016-11-01, path: [demonstration_59, "59 days, 2016-11-01", models, survival_dt01, score_summary_raw]}
+  saves_only_after_pass: booster text with its SHA-256, and S(t) at every interval end for the population rows
+
+# --- action costs and lead times ------------------------------------------------------
+costs:
+  label: "assumed cost: user choice, 2026-10-17, provisional"
+  unit: price units  # the currency of the KKBox price columns, not named in the data
+  reminder: {low: 0.5, base: 1.0, high: 2.0}  # per customer contacted
+  autorenew_prompt: {low: 0.5, base: 1.0, high: 2.0}
+  discount:
+    depth: 0.134  # KKBox's own 149 -> 129 price point
+    rule: depth * (30 * price_per_day) * chance of renewing under the action
+    chance_of_renewing: 1 - treated probability (as defined by the scenario's form)
+    margin: not applied; the forgone price is counted in full
+  none: 0
+  budget_counts: expected cost (the discount's cost depends on the chance of renewing)
+
+lead_time_days:
+  reminder: 2
+  autorenew_prompt: 2
+  discount: 7
+  deadline: days_until_paid_expiry at T  # observed at T; an action is skipped when its lead time exceeds it
+  deviation: the deadline is the paid expiry date, not a predicted time to churn (observed, not modelled)
+
+# --- budget ---------------------------------------------------------------------------
+budget:
+  unit: price units per snapshot, on the 20% sample
+  levels: [0, 1000, 2500, 5000, 10000, 25000, 50000, no_limit]
+  no_limit: every customer with positive net value gets the action with the highest net value
+  zero: no action for anyone
+  net_value: value * effect - cost  # value includes the margin; effect = the probability cut under the scenario
+
+phone_call: not an action  # user decision, 2026-10-17
+
+docs_rule: every number quoted in a doc comes from a logged run
