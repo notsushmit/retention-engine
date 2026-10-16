@@ -2,6 +2,8 @@
 # Committed alone. The level names "off" and "on" are quoted: bare, YAML reads them as booleans.
 # Value, costs, lead times, budget levels and the dt01 refit were added in the
 # second commit, before any of them was run or used.
+# The optimizer, the comparison strategies and the observed-churn check were
+# added in the third commit, before any of them was run or read.
 #
 # Every effect below is an ASSUMPTION chosen by the user. None is an estimate: no
 # KKBox uplift estimate exists for any action, and no number here comes from KKBox
@@ -162,3 +164,68 @@ budget:
 phone_call: not an action  # user decision, 2026-10-17
 
 docs_rule: every number quoted in a doc comes from a logged run
+
+# --- the optimizer --------------------------------------------------------------------
+optimizer:
+  problem: per customer, one eligible action or none; maximize the sum of net value; expected cost within the budget
+  net_value_floor: none scores 0, so an action with negative net value is never chosen; unspent budget is reported, never forced
+  plan_solver: greedy  # incremental steps per customer, funded in order of extra net value per unit of extra cost
+  exact_check:
+    solver: scipy.optimize.milp (HiGHS, bundled with scipy; no install)
+    threads: 1
+    determinism_test: two solves on the same input give the identical selection
+    role: the check on the greedy plan; the plan solver only in the contact-limit case
+  report: [lp_bound, greedy_objective, highs_objective, greedy_gap_to_lp_bound]
+  deviation: OR-Tools and PuLP are not used; adding OR-Tools needs the user's approval first
+  constraints:
+    budget: expected cost of the chosen actions <= budget, summed with math.fsum and checked exactly after solving
+    budget_repair: if a solver tolerance overshoots, chosen actions are removed in reverse greedy order (lowest efficiency first) until the plan fits; every repair is logged
+    one_action_per_customer: true
+    eligibility: from the actions section (autorenew_prompt only with auto-renew off)
+    deadline: an action is allowed only if its lead time <= days_until_paid_expiry at T
+    missing_deadline: no action allowed; the count per snapshot is reported
+    contact_limit:
+      primary: none
+      case: {total_contacted_max: 5000, per: snapshot, label: "my choice, not KKBox capacity"}
+  ties:
+    row_order: rows sorted by msno ascending before any step
+    ranking: score descending, then msno ascending
+    greedy: efficiency descending, then net value descending, then msno ascending, then action order
+    one_customer_equal_value: the cheaper action, then action order
+    action_order: [reminder, autorenew_prompt, discount]
+
+# --- comparison strategies ------------------------------------------------------------
+# Every strategy uses the same scenario, budget and costs. The baselines differ from
+# the optimizer only in who is targeted (best-action variants) or also in what they
+# get (the fixed-action variant).
+strategies:
+  optimizer: as solved
+  highest_risk: {rank_by: calibrated 30-day probability}
+  highest_assumed_uplift_x_value:
+    rank_by: the largest assumed effect x value over the customer's eligible actions
+    label: the uplift is assumed, not estimated
+  random: {draws: 1000, seed: "20161001 + draw number", report: [mean, p2_5, p97_5], range_label: "spread of random targeting, not a confidence interval"}
+  no_action: net value 0 by definition
+  baseline_actions:
+    best_action: each targeted customer gets their eligible action with the highest net value, even when negative
+    fixed_action: the reminder to every eligible customer, ranked by calibrated 30-day probability, within the budget
+    reported: best_action for highest_risk, highest_assumed_uplift_x_value and random; fixed_action as its own row; both shown in every comparison table
+  fill: walk down the ranking; add a customer when the action fits the remaining budget; otherwise skip and continue
+  no_limit_budget: each baseline targets as many customers as the optimizer chose
+  table_caption: "optimizer maximizes this quantity by design; the comparison is arithmetic on assumed effects"  # a test checks every comparison table carries it
+  columns: [expected_retained_customers, expected_retained_value, expected_cost, net_value, budget_used, budget_unspent, contacted_by_action, effect_basis, form, level, margin, cost_level, budget]
+
+# --- observed churn among targeted customers ------------------------------------------
+observed_churn_check:
+  label: "says nothing about whether any action works"
+  measure: share of each strategy's targeted customers who lapsed within 30 days
+  outcome_column: churned_30  # coverage-based, the target c01 was trained on
+  read_path: retention.models.data.load_labels  # the lock-aware loader; no TestUnlock, 2016 snapshots only
+  snapshots: [2016-11-01, 2016-10-01]
+  read_once_per_snapshot: true  # one read, logged; never repeated
+  registered_before_read: true
+
+snapshots_roles:
+  primary: 2016-11-01
+  secondary: 2016-10-01
+  secondary_caveat: 2016-10-01 contains the half of customers used to fit the Platt calibration, so its probabilities are partly in-sample
