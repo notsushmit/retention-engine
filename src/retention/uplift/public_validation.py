@@ -25,6 +25,7 @@ import pandas as pd
 from sklearn.metrics import log_loss, mean_squared_error
 from sklearn.model_selection import StratifiedKFold, train_test_split
 
+from retention.uplift import qini
 from retention.uplift.learners import COMMON
 
 SEED = 0
@@ -176,3 +177,131 @@ def oof_stage1(
             rows = ~test & (t == arm)
             out[test] = fit_predict("classifier", point, x[rows], y[rows], x[test])
     return mu0, mu1
+
+
+# --- fitting a cell ---------------------------------------------------------------
+
+
+@dataclass
+class Scores:
+    uplift_t: np.ndarray
+    uplift_x: np.ndarray
+    outcome_probability: np.ndarray
+    chosen: dict
+    losses: dict
+
+
+def fit_cell(x: pd.DataFrame, cell: Cell, selection: np.ndarray | None = None) -> Scores:
+    """Choose every base model on the selection rows, refit on the whole training half,
+    and score the evaluation half.
+
+    `x` holds the features of the cell's rows, in the cell's row order. `selection` is a
+    boolean mask over those rows (inside the training half) used for grid selection; by
+    default the whole training half.
+    """
+    check_features(x)
+    t, y = cell.t, cell.y
+    train = ~cell.evaluation
+    sel = train if selection is None else selection & train
+    xs, ys, ts = x[sel].reset_index(drop=True), y[sel], t[sel]
+    fs = folds(ts)
+    chosen, losses = {}, {}
+    for arm, name in ((0, "mu0"), (1, "mu1")):
+        m = ts == arm
+        chosen[name], losses[name] = select("classifier", xs[m], ys[m], fs[m])
+    mu0, mu1 = oof_stage1(xs, ys, ts, fs, chosen["mu0"], chosen["mu1"])
+    imputed = np.where(ts == 1, ys - mu0, mu1 - ys)
+    for arm, name in ((0, "tau0"), (1, "tau1")):
+        m = ts == arm
+        chosen[name], losses[name] = select("regressor", xs[m], imputed[m], fs[m])
+    chosen["outcome"], losses["outcome"] = select("classifier", xs, ys, fs)
+
+    xt, yt, tt = x[train].reset_index(drop=True), y[train], t[train]
+    ft = folds(tt)
+    mu0t, mu1t = oof_stage1(xt, yt, tt, ft, chosen["mu0"], chosen["mu1"])
+    imputed_t = np.where(tt == 1, yt - mu0t, mu1t - yt)
+    xe = x[cell.evaluation].reset_index(drop=True)
+    pred = {}
+    for arm, name in ((0, "mu0"), (1, "mu1")):
+        m = tt == arm
+        pred[name] = fit_predict("classifier", chosen[name], xt[m], yt[m], xe)
+    for arm, name in ((0, "tau0"), (1, "tau1")):
+        m = tt == arm
+        pred[name] = fit_predict("regressor", chosen[name], xt[m], imputed_t[m], xe)
+    pred["outcome"] = fit_predict("classifier", chosen["outcome"], xt, yt, xe)
+    e = float(tt.mean())  # randomized: the treated share of the training half
+    return Scores(
+        uplift_t=pred["mu1"] - pred["mu0"],
+        uplift_x=e * pred["tau0"] + (1 - e) * pred["tau1"],
+        outcome_probability=pred["outcome"],
+        chosen=chosen,
+        losses=losses,
+    )
+
+
+# --- pass marks -------------------------------------------------------------------
+
+MIN_SIZE = 0.10
+PASSED_ON_A_ALONE = "passed on (a) alone; average effect not distinguishable from zero"
+PRIMARY = ["hillstrom_mens_vs_none_visit", "hillstrom_womens_vs_none_visit", "criteo_visit"]
+
+
+def judge(area: qini.Interval, naive: qini.Interval, q1: float) -> dict:
+    """(a) the lower end of A's interval above 0; (b) A >= 0.10 * Q(1) / 2, judged only
+    when the naive difference's interval lies entirely above 0. A cell passing (a) alone
+    is reported as such and counts as not met."""
+    a = area.low > 0
+    b_judged = naive.low > 0
+    b = bool(area.estimate >= MIN_SIZE * q1 / 2) if b_judged else None
+    if b_judged:
+        met = a and b
+        status = "met" if met else "not met"
+    else:
+        met = False
+        status = PASSED_ON_A_ALONE if a else "not met"
+    return {
+        "a": a,
+        "b_judged": b_judged,
+        "b": b,
+        "b_threshold": MIN_SIZE * q1 / 2,
+        "met": met,
+        "status": status,
+    }
+
+
+def done_when(verdicts: dict[str, dict]) -> dict:
+    """Met only if every primary cell passes both (a) and (b)."""
+    missing = [c for c in PRIMARY if c not in verdicts]
+    if missing:
+        raise ValueError(f"primary cells missing: {missing}")
+    failing = [c for c in PRIMARY if not verdicts[c]["met"]]
+    return {"met": not failing, "failing_primary_cells": failing}
+
+
+def sanity(average_effect: float, naive: qini.Interval) -> bool:
+    """A learner's average predicted effect lies inside the naive difference's 95% interval."""
+    return bool(naive.low <= average_effect <= naive.high)
+
+
+# --- outputs ----------------------------------------------------------------------
+
+PUBLIC_DATASETS = frozenset({"hillstrom", "criteo"})
+SCORE_COLUMNS = [
+    "dataset",
+    "cell",
+    "outcome",
+    "row",
+    "uplift_t_learner",
+    "uplift_x_learner",
+    "outcome_probability",
+]
+
+
+def write_uplift_scores(scores: pd.DataFrame, path) -> None:
+    """Public evaluation rows only; a KKBox row or any customer field is refused."""
+    if list(scores.columns) != SCORE_COLUMNS:
+        raise ValueError(f"uplift scores take exactly {SCORE_COLUMNS}, got {list(scores.columns)}")
+    other = sorted(set(scores.dataset.astype(str)) - PUBLIC_DATASETS)
+    if other:
+        raise ValueError(f"uplift scores hold public datasets only; refused {other}")
+    scores.to_parquet(path, index=False)

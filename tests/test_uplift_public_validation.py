@@ -99,3 +99,93 @@ def test_grid_tie_rule():
         pv.pick_point([(p[(300, 4, 100)], 0.5 - 1e-12), (p[(100, 15, 100)], 0.5)])
         == p[(100, 15, 100)]
     )
+
+
+def iv(est, lo, hi):
+    from retention.uplift.qini import Interval
+
+    return Interval(est, lo, hi, np.zeros(1))
+
+
+# Q(1) = 0.02 in every hand case, so the size mark (b) is A >= 0.10 * 0.02 / 2 = 0.001.
+Q1 = 0.02
+
+
+def test_pass_marks_a_and_b_both_pass():
+    v = pv.judge(iv(0.004, 0.002, 0.006), iv(0.03, 0.01, 0.05), Q1)
+    assert v["a"] and v["b_judged"] and v["b"] and v["met"] and v["status"] == "met"
+    assert v["b_threshold"] == pytest.approx(0.001)
+
+
+def test_pass_marks_a_passes_b_fails():
+    # the interval of A is above 0, but A = 0.0008 is below the minimum size 0.001
+    v = pv.judge(iv(0.0008, 0.0002, 0.0014), iv(0.03, 0.01, 0.05), Q1)
+    assert v["a"] and v["b_judged"] and v["b"] is False
+    assert not v["met"] and v["status"] == "not met"
+
+
+def test_pass_marks_a_fails():
+    v = pv.judge(iv(0.004, -0.001, 0.009), iv(0.03, 0.01, 0.05), Q1)
+    assert not v["a"] and not v["met"] and v["status"] == "not met"
+
+
+def test_b_not_judged_and_passed_on_a_alone_counts_as_not_met():
+    v = pv.judge(iv(0.004, 0.002, 0.006), iv(0.01, -0.005, 0.025), Q1)
+    assert v["a"] and not v["b_judged"] and v["b"] is None
+    assert not v["met"]
+    assert v["status"] == "passed on (a) alone; average effect not distinguishable from zero"
+    # (b) not judged and (a) failing: plain "not met"
+    w = pv.judge(iv(0.004, -0.002, 0.01), iv(0.01, -0.005, 0.025), Q1)
+    assert not w["met"] and w["status"] == "not met"
+
+
+def test_done_when_needs_all_three_primary_cells():
+    met = {"met": True}
+    alone = {"met": False}
+    all_met = dict.fromkeys(pv.PRIMARY, met)
+    assert pv.done_when(all_met) == {"met": True, "failing_primary_cells": []}
+    one = {**all_met, "hillstrom_womens_vs_none_visit": alone}
+    assert pv.done_when(one) == {
+        "met": False,
+        "failing_primary_cells": ["hillstrom_womens_vs_none_visit"],
+    }
+    with pytest.raises(ValueError, match="missing"):
+        pv.done_when({"criteo_visit": met})
+    # secondary cells never count
+    assert pv.done_when({**all_met, "criteo_conversion": alone})["met"]
+
+
+def test_primary_cells_match_the_config():
+    assert load()["validation"]["cells"]["primary"] == pv.PRIMARY
+
+
+def test_sanity_mark():
+    naive = iv(0.03, 0.01, 0.05)
+    assert pv.sanity(0.02, naive) and pv.sanity(0.05, naive)
+    assert not pv.sanity(0.06, naive)
+
+
+def score_frame(dataset="hillstrom"):
+    return pd.DataFrame(
+        {
+            "dataset": [dataset],
+            "cell": ["mens_vs_none"],
+            "outcome": ["visit"],
+            "row": [3],
+            "uplift_t_learner": [0.1],
+            "uplift_x_learner": [0.1],
+            "outcome_probability": [0.2],
+        }
+    )
+
+
+def test_no_kkbox_row_can_be_written_to_uplift_scores(tmp_path):
+    path = tmp_path / "uplift_scores.parquet"
+    pv.write_uplift_scores(score_frame(), path)
+    assert path.exists()
+    with pytest.raises(ValueError, match="public datasets only"):
+        pv.write_uplift_scores(score_frame("kkbox"), tmp_path / "x.parquet")
+    with_customer = score_frame().assign(msno="abc")
+    with pytest.raises(ValueError, match="exactly"):
+        pv.write_uplift_scores(with_customer, tmp_path / "y.parquet")
+    assert not (tmp_path / "x.parquet").exists() and not (tmp_path / "y.parquet").exists()
