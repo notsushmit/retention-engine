@@ -110,6 +110,18 @@ uv run python -m retention.features docs   # regenerate the feature dictionary f
 
 One row per customer and snapshot, keyed to the labels table; every feature for snapshot T reads only rows dated before T. The feature dictionary, with the window and null rule of every column, is in [docs/features.md](docs/features.md).
 
+## Budget optimizer
+
+```bash
+uv run python -m retention.optimize recount    # counts only: prices, customers without a usable price
+uv run python -m retention.optimize value      # dt01 refit with an exact reproduction check, value inputs
+uv run python -m retention.optimize plan       # every scenario and budget level, strategies, stability
+uv run python -m retention.optimize observed   # one read of 2016 outcomes per snapshot
+uv run python -m retention.optimize report     # reports/strategy_backtest.md from the logged runs
+```
+
+Chooses at most one action per customer (a reminder, an auto-renew prompt or a discount) to maximize the expected net value within a budget. Every effect, cost and margin is a labelled assumption in `configs/actions.yaml`; no KKBox effect of any action has been estimated. KKBox backtest figures are model estimates under assumed effects, not observed outcomes. The comparison with simpler targeting rules (highest risk, highest assumed uplift x value, random, reminder only, no action) is arithmetic on assumed effects, and the optimizer maximizes that quantity by design. The observed churn of each strategy's targeted customers says nothing about whether any action works. Each step runs once, at a clean commit; the results are in [reports/strategy_backtest.md](reports/strategy_backtest.md) once the steps have run.
+
 ## Make targets
 
 | Target | Does |

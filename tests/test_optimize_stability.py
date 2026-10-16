@@ -106,6 +106,8 @@ def test_robust_core_and_its_sentence():
     assert robust_core(base, variants) == 2  # low_effect ignored
     assert robust_core(base, {"absolute": np.array([N, N, N, 0])}) == 0
     assert robust_core_sentence(0) == "No customer is chosen under every assumption."
+    assert robust_core_sentence(1).startswith("1 customer is chosen")
+    assert robust_core_sentence(2500).startswith("2,500 customers are chosen")
 
 
 def test_base_plan_breaking_the_variant_contact_limit_is_flagged():

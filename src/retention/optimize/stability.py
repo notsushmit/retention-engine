@@ -113,6 +113,8 @@ def robust_core(base_choice: np.ndarray, variant_choices: dict[str, np.ndarray])
 def robust_core_sentence(count: int) -> str:
     if count == 0:
         return "No customer is chosen under every assumption."
+    if count == 1:
+        return "1 customer is chosen under every assumption except zero effect."
     return f"{count:,} customers are chosen under every assumption except zero effect."
 
 
