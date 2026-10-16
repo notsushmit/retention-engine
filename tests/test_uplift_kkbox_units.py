@@ -222,3 +222,15 @@ def test_constants_match_the_registered_config():
     assert ku.E_BEFORE.isoformat() in k["outcome"]["window_rule"]
     assert k["propensity"]["covariates"]["base"].startswith("feature set fs1")
     assert len(ku.fs1_columns()) == 40
+
+
+def test_two_builds_give_the_same_sorted_unit_order(tmp_path):
+    members = ku.read_members(write_labels(tmp_path), [T_SEP, T_DEC], load_protocol())
+    tx = ku.read_transactions(write_tx(tmp_path))
+    a = ku.renewal_units(members, tx)
+    shuffled = tx.sample(frac=1.0, random_state=3).reset_index(drop=True)
+    reordered = members.sample(frac=1.0, random_state=4).reset_index(drop=True).copy()
+    b = ku.renewal_units(reordered, shuffled.copy())
+    keys = ["snapshot_date", "msno"]
+    assert a[keys].equals(b[keys])
+    assert a[keys].equals(a[keys].sort_values(keys).reset_index(drop=True))

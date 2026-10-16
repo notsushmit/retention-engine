@@ -97,6 +97,8 @@ def renewal_units(members: pd.DataFrame, tx: pd.DataFrame) -> pd.DataFrame:
         where rn = 1
         """
     ).df()
+    # the join returns rows in no fixed order; sort so every build gives the same order
+    units = units.sort_values(["snapshot_date", "msno"], kind="mergesort").reset_index(drop=True)
     return classify(units)
 
 
@@ -140,7 +142,8 @@ def analysed_set(reg: pd.DataFrame) -> pd.DataFrame:
     m = reg[reg.payment_method_id.eq(PAYMENT_METHOD)]
     arms = m.groupby("snapshot_date").treated.agg(["min", "max"])
     both = arms.index[(arms["min"] == 0) & (arms["max"] == 1)]
-    return m[m.snapshot_date.isin(both)].reset_index(drop=True)
+    out = m[m.snapshot_date.isin(both)]
+    return out.sort_values(["snapshot_date", "msno"], kind="mergesort").reset_index(drop=True)
 
 
 @dataclass(frozen=True)
