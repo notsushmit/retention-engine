@@ -164,6 +164,21 @@ kkbox:
       expected_case: with about 65 treated against 25 untreated after trimming, the standard error of an SMD is near 0.24 (sqrt(1/65 + 1/25)), so the mark may fail from noise alone
     sensitivity_without_members_columns: the same pipeline without tenure_days and registered_via (has_any_log_before_T stays, as a usage column)
 
+  outcome_read:  # added after the propensity step (estimable, balance not met) and before any KKBox outcome is read
+    decision: the outcome is read once, as registered, because the estimability mark is met (62 treated, 51 untreated after primary trimming); no new stop rule is added after seeing the balance result
+    label: every KKBox output carries "balance not met"; no KKBox estimate is reported as a finding
+    table_order: every table gives the 95% interval before the point estimate
+    placebo_first: the placebo is computed and reported before any effect estimate, with its power limit
+    placebo_power_limit: >
+      Smallest difference detected with 80% probability at the 5% level, 2.8 * sqrt(1/n_treated + 1/n_untreated)
+      standard deviations of the placebo outcome: about 0.53 with the 62 and 51 kept units, and about 0.74 with the
+      weighted effective sample sizes (26.5 and 31.9). The earlier figure for 65 against 25 is 0.66 (2.8 * sqrt(1/65 + 1/25) = 0.659), first written as 0.67 in error.
+    expected_reading: >
+      With balance not met (21 of 37 inputs above 0.10 after weighting) and the timing of the past discount
+      separating the arms almost completely (days_since_last_discount SMD -1.10 before weighting and -1.41 after),
+      the KKBox effect is unlikely to be identified. The report reads "balance not met, assumptions unsupported"
+      unless the registered checks show otherwise.
+
   downstream:
     budget_optimizer: >
       KKBox cannot supply a customer-level effect for any action. The budget step treats
