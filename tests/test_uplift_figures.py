@@ -91,3 +91,8 @@ def test_write_figures_needs_every_primary_cell(tmp_path):
     assert [p.name for p in out] == [f"qini_{c}.svg" for c in figures.TITLES]
     for p in out:
         ET.fromstring(p.read_text())  # well-formed
+
+
+def test_zero_tick_is_never_negative_zero():
+    svg = figures.svg_for(hand_curves(), "criteo_visit", "test")
+    assert ">-0<" not in svg and ">0<" in svg

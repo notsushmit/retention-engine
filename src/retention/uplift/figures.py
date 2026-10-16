@@ -92,6 +92,7 @@ def _points(x: np.ndarray, y: np.ndarray) -> str:
 
 
 def _fmt(v: float) -> str:
+    v = 0.0 if abs(v) < 1e-12 else v  # no "-0" tick
     return f"{v:.3f}".rstrip("0").rstrip(".") if abs(v) >= 0.001 or v == 0 else f"{v:.4f}"
 
 
