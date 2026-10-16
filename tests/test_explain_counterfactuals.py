@@ -57,11 +57,11 @@ def test_hand_booster_known_best_change():
     )
     support = np.array([True, True, True, False])
     res = cf.search(rows, score, support, a=0.0, b=1.0, min_reduction=0.01)
-    assert res.status.tolist() == ["counterfactual", "below_threshold", "already_on", "no_support"]
+    assert res.status.tolist() == ["counterfactual", "raises_score", "already_on", "no_support"]
     # row 0: auto-renew on moves the score from about 0.8 down to about 0.05
     assert res.old[0] > 0.6 and res.new[0] < 0.15
-    # row 1: when x <= 0 the lever lowers the score by less than the minimum (here it raises it)
-    assert res.old[1] - res.new[1] < 0.01
+    # row 1: when x <= 0 the lever does not lower the score; here it raises it
+    assert res.new[1] > res.old[1]
     assert np.isnan(res.new[2]) and np.isnan(res.new[3])
 
 
@@ -246,3 +246,27 @@ def test_row_reader_requests_no_outcome_column(tmp_path, monkeypatch):
     rows = explain_model.p2_main_rows(tmp_path, t, [LEVER, "segment"], load_protocol())
     assert len(rows) == 2 and seen
     assert all(column_kind(c) == "pre_t" for cols in seen for c in cols)
+
+
+def test_raised_score_line_and_below_threshold_are_told_apart():
+    rows = pd.DataFrame({LEVER: [0, 0, 0], "active_days_28": 10, "days_until_expiry": 5})
+    scores = {0: np.array([0.05, 0.05, 0.05]), 1: np.array([0.03, 0.045, 0.07])}
+
+    def score(r):
+        return scores[int(r[LEVER].iloc[0])]
+
+    res = cf.search(rows, score, np.ones(3, bool), 0.0, 1.0, 0.01)
+    # 0.05 -> 0.03 meets the 1-point minimum; 0.05 -> 0.045 does not; 0.05 -> 0.07 rises
+    assert res.status.tolist() == ["counterfactual", "below_threshold", "raises_score"]
+    lines = cf.render("raises_score", 0.05, 0.07, cf.load_phrases(), 0.01)
+    assert lines[0] == (
+        "With auto-renew recorded as on, the model's 30-day churn score would be higher, "
+        "7.0% instead of 5.0%."
+    )
+    assert "not the effect of any action" in lines[1]
+
+
+@pytest.mark.parametrize("word", ["because", "should", "offer", "helps", "tenure", "30"])
+def test_raised_score_line_is_held_to_the_same_rules(word):
+    phrases = {**cf.load_phrases(), "raises_line": f"Score {{new}} {word} {{old}}."}
+    assert any(p.startswith("raises_line") for p in cf.phrase_problems(phrases))

@@ -34,7 +34,7 @@ TRAINING_SNAPSHOTS = [date(2016, 8, 1), date(2016, 9, 1)]
 GROUP_COLUMNS = ["last_plan_days", "last_list_price", "last_payment_method_id"]
 LISTEN_BANDS = [(0, 0, "0"), (1, 7, "1-7"), (8, 20, "8-20"), (21, 28, "21-28")]
 DUE_BANDS = [(0, 6, "0-6"), (7, 13, "7-13"), (14, 20, "14-20"), (21, 29, "21-29")]
-STATUSES = ["counterfactual", "below_threshold", "no_support", "already_on"]
+STATUSES = ["counterfactual", "below_threshold", "raises_score", "no_support", "already_on"]
 PHRASES = Path("configs/counterfactual_phrases.yaml")
 CONFIG = Path("configs/uplift.yaml")
 
@@ -126,8 +126,8 @@ def search(
         new_all = calibrated(score(changed), a, b)
         new[eligible] = new_all[eligible]
     status = np.select(
-        [~off, ~support, (old - new) >= min_reduction],
-        ["already_on", "no_support", "counterfactual"],
+        [~off, ~support, (old - new) >= min_reduction, new > old],
+        ["already_on", "no_support", "counterfactual", "raises_score"],
         "below_threshold",
     )
     return Searched(old, new, status)
@@ -160,6 +160,7 @@ def phrase_lines(phrases: dict) -> dict[str, str]:
     return {
         "counterfactual_line": phrases["counterfactual_line"],
         "caveat_line": phrases["caveat_line"],
+        "raises_line": phrases["raises_line"],
         **{f"no_counterfactual.{k}": v for k, v in phrases["no_counterfactual"].items()},
     }
 
@@ -187,6 +188,11 @@ def render(status: str, old: float, new: float, phrases: dict, min_reduction: fl
     fmt = phrases["score_format"]
     if status == "counterfactual":
         line = phrases["counterfactual_line"].format(
+            horizon=HORIZON, new=fmt.format(new), old=fmt.format(old)
+        )
+        return [line, phrases["caveat_line"]]
+    if status == "raises_score":
+        line = phrases["raises_line"].format(
             horizon=HORIZON, new=fmt.format(new), old=fmt.format(old)
         )
         return [line, phrases["caveat_line"]]
