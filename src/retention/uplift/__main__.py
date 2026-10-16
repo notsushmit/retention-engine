@@ -21,6 +21,11 @@ kept-composition: from the saved propensity scores and pre-T covariates (no refi
 outcome), the kept units per trimming rule by month, arm and past-year discount, and the
 mirror check of month_2016_09 against days_until_expiry in each balance table. Writes
 kept_composition.json.
+
+validate: the single public-data validation run (configs/uplift.yaml, validation). Runs
+once (a marker before the first fit; refuses once validation.json exists; a repeat of an
+unfinished attempt needs --rerun-reason). Writes validation.json, qini_curves.parquet and
+uplift_scores.parquet under data/processed/public/.
 """
 
 from __future__ import annotations
@@ -49,6 +54,7 @@ from retention.uplift import (
     placebo,
     propensity,
     public_data,
+    public_validation,
     report,
 )
 
@@ -639,22 +645,46 @@ def outcome_step(rerun_reason: str | None = None) -> dict:
     return log
 
 
+PUBLIC_OUT = Path("data/processed/public")
+
+
+def validate(rerun_reason: str | None = None) -> dict:
+    _require_clean()
+    public_validation.guard(PUBLIC_OUT, rerun_reason)
+    hill = pd.read_parquet(OUT / "hillstrom.parquet")
+    crit = pd.read_parquet(OUT / "criteo_uplift_v2.1.parquet")
+    commit = _git("rev-parse", "--short", "HEAD").strip()
+    with threadpool_limits(limits=THREADS):
+        log = public_validation.run_validation(hill, crit, PUBLIC_OUT, commit, rerun_reason)
+    log["peak_rss_gb"] = peak_rss_gb()
+    public_validation.write_log(PUBLIC_OUT, log)
+    return {
+        "commit": log["commit"],
+        "seconds": log["seconds"],
+        "peak_rss_gb": log["peak_rss_gb"],
+        "log": str(PUBLIC_OUT / public_validation.LOG),
+    }
+
+
 COMMANDS = {
     "check-public": check_public,
     "recount": recount,
     "propensity": propensity_step,
     "kept-composition": kept_composition,
     "outcome": outcome_step,
+    "validate": validate,
 }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m retention.uplift")
     parser.add_argument("command", choices=list(COMMANDS))
-    parser.add_argument("--rerun-reason", default=None, help="outcome only: why an attempt repeats")
+    parser.add_argument(
+        "--rerun-reason", default=None, help="outcome and validate: why an attempt repeats"
+    )
     args = parser.parse_args()
     run = COMMANDS[args.command]
-    log = run(args.rerun_reason) if args.command == "outcome" else run()
+    log = run(args.rerun_reason) if args.command in ("outcome", "validate") else run()
     print(json.dumps(log, indent=2, default=str))
     if log.get("status") == "stopped":
         raise SystemExit(1)

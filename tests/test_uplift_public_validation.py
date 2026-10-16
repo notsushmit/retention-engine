@@ -189,3 +189,73 @@ def test_no_kkbox_row_can_be_written_to_uplift_scores(tmp_path):
     with pytest.raises(ValueError, match="exactly"):
         pv.write_uplift_scores(with_customer, tmp_path / "y.parquet")
     assert not (tmp_path / "x.parquet").exists() and not (tmp_path / "y.parquet").exists()
+
+
+def test_run_once_guard(tmp_path):
+    out = tmp_path / "public"
+    marker = pv.begin_run(out, "abc1234")
+    assert marker["first_attempt"]["commit"] == "abc1234" and (out / pv.MARKER).exists()
+    # an attempt that started fitting and did not finish: a repeat needs a stated reason
+    with pytest.raises(pv.RunOnce, match="stated reason"):
+        pv.begin_run(out, "abc1234")
+    marker = pv.begin_run(out, "abc1234", "crashed during the Criteo bootstrap")
+    assert marker["repeats"][0]["reason"] == "crashed during the Criteo bootstrap"
+    # once the log exists, every further run refuses, with or without a reason
+    (out / pv.LOG).write_text("{}")
+    for reason in (None, "any reason"):
+        with pytest.raises(pv.RunOnce, match="runs once"):
+            pv.guard(out, reason)
+
+
+def synthetic_public(seed: int = 0):
+    rng = np.random.default_rng(seed)
+    hill = hillstrom_frame(3000, seed)
+    high = (hill.history > hill.history.median()).to_numpy()
+    p = 0.15 + 0.15 * high * hill.segment.eq("Mens E-Mail").to_numpy()
+    p += 0.03 * hill.segment.eq("Womens E-Mail").to_numpy()
+    hill["visit"] = (rng.random(len(hill)) < p).astype(int)
+    hill["conversion"] = (rng.random(len(hill)) < p / 5).astype(int)
+    n = 6000
+    crit = pd.DataFrame({f"f{i}": rng.normal(size=n) for i in range(12)})
+    crit["treatment"] = (rng.random(n) < 0.85).astype(int)
+    crit["exposure"] = crit.treatment * (rng.random(n) < 0.04)
+    pc = 0.05 + 0.10 * (crit.f0.to_numpy() > 0) * crit.treatment.to_numpy()
+    crit["visit"] = (rng.random(n) < pc).astype(int)
+    crit["conversion"] = (rng.random(n) < pc / 5).astype(int)
+    return hill, crit
+
+
+def test_end_to_end_on_small_synthetic_data(tmp_path):
+    hill, crit = synthetic_public()
+    out = tmp_path / "public"
+    log = pv.run_validation(hill, crit, out, "abc1234", b=20, grid=pv.GRID[:2], grid_size=1000)
+    assert (out / pv.MARKER).exists()  # written before the first fit
+    assert not (out / pv.LOG).exists()  # the log is written by write_log, last
+    pv.write_log(out, log)
+    keys = {
+        "hillstrom_mens_vs_none_visit",
+        "hillstrom_womens_vs_none_visit",
+        "hillstrom_mens_vs_none_conversion",
+        "hillstrom_womens_vs_none_conversion",
+        "criteo_visit",
+        "criteo_conversion",
+    }
+    assert set(log["cells"]) == keys
+    for rec in log["cells"].values():
+        area = rec["qini_area"]["x_learner"]
+        assert list(area) == ["ci_low", "ci_high", "estimate"]  # interval before estimate
+        assert set(rec["pass_marks"]) == {"a", "b_judged", "b", "b_threshold", "met", "status"}
+        assert rec["timing"]["seconds_per_resample"] >= 0
+        assert "exposure" not in str(rec["chosen_grid_points"])
+    assert set(log["done_when_first_criterion"]) == {"met", "failing_primary_cells"}
+    # the strong, heterogeneous effect built into the men's cell is found
+    assert log["cells"]["hillstrom_mens_vs_none_visit"]["qini_area"]["x_learner"]["estimate"] > 0
+    curves = pd.read_parquet(out / "qini_curves.parquet")
+    assert len(curves) == 6 * 4 * 100
+    scores = pd.read_parquet(out / "uplift_scores.parquet")
+    assert set(scores.dataset) == {"hillstrom", "criteo"}
+    assert list(scores.columns) == pv.SCORE_COLUMNS
+    assert len(scores) == sum(rec["evaluation_rows"] for rec in log["cells"].values())
+    assert len(log["budget"]) == 6  # one timing projection per cell
+    with pytest.raises(pv.RunOnce, match="runs once"):
+        pv.run_validation(hill, crit, out, "abc1234", b=20, grid=pv.GRID[:2], grid_size=1000)
