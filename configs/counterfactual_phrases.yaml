@@ -16,10 +16,13 @@
 #   - Digits only inside the fact fields {horizon}, {new}, {old} and {min_points}.
 #   - Nothing about age, gender, the registration channel, tenure or city.
 #   - The line reads correctly whether the new score is lower or higher than
-#     the old one ("would be {new} instead of {old}").
+#     the old one ("would be {new} instead of {old}"); a score that would rise
+#     gets its own line (raises_line), added before any counterfactual was run.
 
 counterfactual_line: "With auto-renew recorded as on, the model's {horizon}-day churn score would be {new} instead of {old}."
 caveat_line: "This is the model's score under a changed input, not the effect of any action; customers with auto-renew on may simply be customers who were staying anyway."
+# When recording auto-renew as on would raise the model's score; shown with the caveat line.
+raises_line: "With auto-renew recorded as on, the model's {horizon}-day churn score would be higher, {new} instead of {old}."
 no_counterfactual:
   no_support: "No counterfactual: auto-renew is not recorded as on for enough comparable customers."
   below_threshold: "No counterfactual: recording auto-renew as on would not move the model's {horizon}-day churn score by at least {min_points} percentage point."
