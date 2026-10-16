@@ -26,6 +26,8 @@ validate: the single public-data validation run (configs/uplift.yaml, validation
 once (a marker before the first fit; refuses once validation.json exists; a repeat of an
 unfinished attempt needs --rerun-reason). Writes validation.json, qini_curves.parquet and
 uplift_scores.parquet under data/processed/public/.
+
+qini-figures: draws one SVG per primary cell in docs/img/ from qini_curves.parquet only.
 """
 
 from __future__ import annotations
@@ -47,6 +49,7 @@ from retention.models.resources import peak_rss_gb
 from retention.uplift import (
     balance,
     config,
+    figures,
     kkbox_bootstrap,
     kkbox_units,
     learners,
@@ -666,6 +669,16 @@ def validate(rerun_reason: str | None = None) -> dict:
     }
 
 
+def qini_figures() -> dict:
+    log = json.loads((PUBLIC_OUT / public_validation.LOG).read_text())
+    note = (
+        f"drawn from {PUBLIC_OUT / figures.CURVES_NAME}, "
+        f"validation run at commit {log['commit']}; no dataset row is read"
+    )
+    paths = figures.write_figures(PUBLIC_OUT / figures.CURVES_NAME, Path("docs/img"), note)
+    return {"figures": [str(p) for p in paths]}
+
+
 COMMANDS = {
     "check-public": check_public,
     "recount": recount,
@@ -673,6 +686,7 @@ COMMANDS = {
     "kept-composition": kept_composition,
     "outcome": outcome_step,
     "validate": validate,
+    "qini-figures": qini_figures,
 }
 
 
