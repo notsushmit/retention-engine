@@ -83,3 +83,35 @@ def read_transactions(snapshots: list[date], path: Path = CLEAN_TRANSACTIONS) ->
         ).df()
     finally:
         con.close()
+
+
+def price_table(path: Path = CLEAN_TRANSACTIONS, top: int = 12) -> dict:
+    """Counts only: paid non-cancel rows dated 2016-01-01 to 2016-11-30 by plan and price."""
+    con = duckdb.connect()
+    try:
+        rows = con.sql(
+            f"""
+            select payment_plan_days, plan_list_price, actual_amount_paid, count(*) as n
+            from read_parquet('{path}')
+            where transaction_date >= date '2016-01-01' and transaction_date < date '2016-12-01'
+              and is_cancel = 0 and actual_amount_paid > 0
+            group by all order by n desc, payment_plan_days, plan_list_price, actual_amount_paid
+            """
+        ).df()
+    finally:
+        con.close()
+    total = int(rows.n.sum())
+    return {
+        "rows": total,
+        "window": ["2016-01-01", "2016-11-30"],
+        "top": [
+            {
+                "plan_days": int(r.payment_plan_days),
+                "list_price": int(r.plan_list_price),
+                "paid": int(r.actual_amount_paid),
+                "n": int(r.n),
+                "share": int(r.n) / total,
+            }
+            for r in rows.head(top).itertuples()
+        ],
+    }
