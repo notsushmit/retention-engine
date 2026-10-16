@@ -210,3 +210,66 @@ learners:  # added in a third commit, before any outcome is read and before any 
     then: the registered KKBox outcome is "not estimable"; the outcome is never read for KKBox; no learner, AIPW, naive difference or placebo runs on KKBox; no exploratory estimate on the untrimmed set
     reason: the untrimmed set contains units with no overlap, and any number from it would be quoted
     report: the KKBox robustness checks are met in design (registered) and not met in execution (the estimability mark stopped the run); the uplift criterion rests on the Hillstrom and Criteo validation
+
+validation:  # added in a fourth commit, before either public dataset is downloaded and before any model runs
+  purpose: test whether the learners rank customers by effect where treatment was randomized; it validates the method, not the KKBox assumptions
+  datasets:
+    hillstrom:
+      source: http://www.minethatdata.com/Kevin_Hillstrom_MineThatData_E-MailAnalytics_DataMiningChallenge_2008.03.20.csv
+      citation: Kevin Hillstrom, MineThatData E-Mail Analytics and Data Mining Challenge, March 2008
+      terms: no license is stated, so the file is treated as all rights reserved; downloaded for local use only, never hosted, copied into the repository or any image
+      expected_bytes: 3964977  # Content-Length read from the response headers before download
+      checks: record the SHA-256 at download (plain HTTP, no published checksum); 64,000 rows; three arms of about one third each (Mens E-Mail, Womens E-Mail, No E-Mail); stop if any check fails
+      features: [recency, history, mens, womens, zip_code, newbie, channel]  # history_segment dropped as a banded copy of history
+      treatment_arms: {mens_vs_none: Mens E-Mail, womens_vs_none: Womens E-Mail}
+      control_arm: No E-Mail
+    criteo:
+      source: Hugging Face dataset criteo/criteo-uplift, file criteo-research-uplift-v2.1.csv.gz, pinned to revision 2424920019e49d52d72c13ac1143ec5d53af276b
+      official_page: https://ailab.criteo.com/criteo-uplift-prediction-dataset/  # refused the connection when checked; the license comes from the mirror's card
+      license: CC BY-NC-SA 4.0 (attribution, non-commercial, share-alike); this project is non-commercial; never hosted or copied into the repository or any image
+      citation: Diemert, Betlei, Renaudin and Amini, A Large Scale Benchmark for Uplift Modeling, AdKDD 2018 workshop (KDD 2018); cited in the docs
+      expected_bytes: 311422618
+      expected_sha256: 2716e1bf0fd157a93b5bf86924d9088419dfbac2022c6cd90030220634f616dc  # the mirror's published LFS hash at the pinned revision
+      checks: SHA-256 equal to expected; 13,979,592 rows; columns exactly f0 to f11, treatment, visit, conversion, exposure; treatment share about 0.85; stop if anything differs
+      row_count_conflict: the mirror's card also says "25M rows"; the row count of the downloaded file decides, and the conflict is resolved and written down before any model runs
+      storage: read from the compressed file into Parquet; the CSV is never unpacked to disk
+      features: [f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11]
+      never_a_feature: exposure  # recorded after assignment; the analysis uses the assigned treatment (intent to treat)
+  split:
+    hillstrom: one 50/50 split of all 64,000 customers, stratified by the three arms, seed 0; both comparisons use it
+    criteo: 50/50, stratified by treatment, seed 0
+    criteo_grid_subsample: a fixed 1,000,000-row subsample of the training half, stratified by treatment, seed 0, used only for grid selection; the chosen setting is refit on the whole training half
+    evaluation_half: never used for any choice
+  cells:
+    primary: [hillstrom_mens_vs_none_visit, hillstrom_womens_vs_none_visit, criteo_visit]
+    secondary: [hillstrom_mens_vs_none_conversion, hillstrom_womens_vs_none_conversion, criteo_conversion]  # reported, not judged; conversion is sparse (Criteo average conversion rate 0.29% on the mirror's card)
+    shared_control: the two Hillstrom cells share the No E-Mail arm, so they are not independent
+  learner_judged: x_learner  # registered before any result; the T-learner is reported beside it
+  qini:
+    ranking: evaluation customers by predicted uplift, descending; ties broken by a fixed random key, seed 0
+    cut_points: 100 equal-size cut points, phi = 0.01 to 1.00
+    curve: Q(phi) = (treated outcomes in the top phi - control outcomes in the top phi * N_T(phi) / N_C(phi)) / N
+    area: A = mean over the 100 cut points of (Q(phi) - phi * Q(1)); a random ranking scores 0 in expectation
+    interval: customer bootstrap with Poisson(1) weights, 1000 resamples, seed 0, 95% percentile interval
+    interval_note: the Poisson weights keep the ranking fixed, so the interval covers evaluation sampling only, not model-training variation
+  baselines:
+    random: a seeded random ranking (seed 0), shown as the diagonal
+    outcome_probability: one LightGBM classifier on the pooled training split, treatment not a feature, same grid and selection rule, ranking by predicted outcome probability
+  pass_marks:
+    beats_random:
+      a: the lower end of the 95% interval of A is above 0
+      b: A >= 0.10 * Q(1) / 2, i.e. the model adds at least 10% to the area under the random diagonal
+      b_judged_when: the naive difference's 95% interval lies entirely above 0
+      if_b_not_judged: a cell passing (a) is reported as "passed on (a) alone; average effect not distinguishable from zero" and counts as not met
+    done_when_first_criterion: met only if every primary cell passes both (a) and (b)
+    beats_outcome_ranking:  # secondary, reported, not part of the Done-when
+      rule: the lower end of the paired-bootstrap 95% interval of (A of the X-learner - A of the outcome-probability ranking) is above 0
+      if_beats_random_but_not_outcome_ranking: reported as found, that uplift modelling added nothing over targeting by risk on that dataset
+    sanity: see learners.public_sanity_mark
+  expected_case: the Hillstrom email effects are small and its features are few, so a failing Hillstrom cell is plausible
+  if_not_met: the cell is reported as "not met" with A, its interval and the curve; uplift models often fail to beat random on weak features, which is a legitimate outcome; no retuning, no new learner, no new split
+  tests_before_real_data:  # hand-made cases with known answers, written and passing before either dataset is read
+    - a perfect ranking (by the true effect, in a synthetic case with known potential outcomes) gives a larger area than each of 1,000 seeded random rankings
+    - a random ranking gives an area near 0 over many seeds
+    - a reversed ranking gives a negative area equal in size to the perfect ranking's on a hand case with equal treated and control counts in every cut (the curve's N_T / N_C scaling makes this exact only then)
+    - a small hand case whose area is computed by hand
