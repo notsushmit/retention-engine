@@ -5,9 +5,11 @@ X-learner's imputed effects use out-of-fold stage-1 predictions, and its stage-2
 models are cross-fitted on the same folds. A fold whose training rows leave an arm
 with fewer than 2 units raises NotComputable.
 
-A classifier trained on an arm whose outcomes in the training rows are all one value
-cannot be fitted by LightGBM; it predicts that value (0 or 1) for every row, and the
-number of such fits is counted.
+Constant-fit rule (configs/uplift.yaml, kkbox.outcome_step.constant_fits): if every
+training outcome in an arm and fold is the same value, LightGBM cannot fit a classifier;
+the arm's prediction in that fold is the value itself (0 or 1), and the fit is logged as
+degenerate with its fold and arm. Only stage-1 outcome models count as fits here; the
+X-learner's stage-2 regressors are counted apart.
 """
 
 from __future__ import annotations
@@ -28,9 +30,20 @@ class NotComputable(RuntimeError):
 
 @dataclass
 class FitLog:
-    constant_fits: int = 0
-    fits: int = 0
-    notes: list[str] = field(default_factory=list)
+    outcome_fits: int = 0
+    degenerate: list[tuple[int, int]] = field(default_factory=list)  # (fold, arm)
+    stage2_fits: int = 0
+
+    @property
+    def constant_fits(self) -> int:
+        return len(self.degenerate)
+
+    @property
+    def share(self) -> float:
+        return self.constant_fits / self.outcome_fits if self.outcome_fits else 0.0
+
+    def summary(self) -> str:
+        return f"outcome models were degenerate in {self.constant_fits} of {self.outcome_fits} fits"
 
 
 def _fit_predict(
@@ -40,12 +53,14 @@ def _fit_predict(
     y_train: np.ndarray,
     x_pred: pd.DataFrame,
     log: FitLog,
+    fold: int,
+    arm: int,
 ) -> np.ndarray:
-    log.fits += 1
+    log.outcome_fits += 1
     if kind == "classifier":
         values = np.unique(y_train)
         if len(values) == 1:
-            log.constant_fits += 1
+            log.degenerate.append((fold, arm))
             return np.full(len(x_pred), float(values[0]))
         model = lgb.LGBMClassifier(**params, **COMMON).fit(x_train, y_train)
         return model.predict_proba(x_pred)[:, 1]
@@ -81,7 +96,7 @@ def t_learner(
         _check_arms(t[train], k)
         for arm, out in ((0, mu0), (1, mu1)):
             rows = train & (t == arm)
-            out[test] = _fit_predict(kind, params, x[rows], y[rows], x[test], log)
+            out[test] = _fit_predict(kind, params, x[rows], y[rows], x[test], log, k, arm)
     return mu0, mu1
 
 
@@ -94,10 +109,14 @@ def x_learner(
     params: dict,
     e: np.ndarray,
     log: FitLog | None = None,
+    mu: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> np.ndarray:
-    """Per-unit effect tau = e * tau0 + (1 - e) * tau1, cross-fitted at both stages."""
+    """Per-unit effect tau = e * tau0 + (1 - e) * tau1, cross-fitted at both stages.
+
+    `mu` passes stage-1 predictions already made on the same folds, so they are not refit.
+    """
     log = log or FitLog()
-    mu0, mu1 = t_learner(x, y, t, fold_id, kind, params, log)
+    mu0, mu1 = mu if mu is not None else t_learner(x, y, t, fold_id, kind, params, log)
     imputed = np.where(t == 1, y - mu0, mu1 - y)
     tau0, tau1 = np.full(len(y), np.nan), np.full(len(y), np.nan)
     for k in _folds(fold_id):
@@ -106,7 +125,9 @@ def x_learner(
         _check_arms(t[train], k)
         for arm, out in ((0, tau0), (1, tau1)):
             rows = train & (t == arm)
-            out[test] = _fit_predict("regressor", params, x[rows], imputed[rows], x[test], log)
+            stage2 = lgb.LGBMRegressor(**params, **COMMON).fit(x[rows], imputed[rows])
+            log.stage2_fits += 1
+            out[test] = stage2.predict(x[test])
     return e * tau0 + (1 - e) * tau1
 
 
@@ -147,5 +168,5 @@ def estimate(
     """AIPW and the T- and X-learner average effects on the same folds and propensities."""
     log = log or FitLog()
     mu0, mu1 = t_learner(x, y, t, fold_id, kind, params, log)
-    tau_x = x_learner(x, y, t, fold_id, kind, params, e, log)
+    tau_x = x_learner(x, y, t, fold_id, kind, params, e, log, mu=(mu0, mu1))
     return Estimates(aipw(y, t, mu0, mu1, e), float(np.mean(mu1 - mu0)), float(np.mean(tau_x)))

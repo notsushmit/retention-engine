@@ -123,9 +123,12 @@ def effect_statistic(
     c: float,
     kind: str,
     params: dict,
+    log: learners.FitLog | None = None,
 ) -> Callable[[np.ndarray, np.random.Generator], dict[str, float]]:
     """Refit the propensity on the resample (C fixed, new grouped folds), keep the original
-    trimming membership, refit the outcome models on the kept units."""
+    trimming membership, refit the outcome models on the kept units. `log` sums the
+    outcome-model fits (and degenerate fits) over every resample."""
+    log = log if log is not None else learners.FitLog()
 
     def statistic(idx: np.ndarray, rng: np.random.Generator) -> dict[str, float]:
         xr, tr, gr, yr, kr = (
@@ -140,7 +143,7 @@ def effect_statistic(
         if np.any((e_r[kr] <= 0) | (e_r[kr] >= 1)):
             raise learners.NotComputable("a kept unit has a propensity of exactly 0 or 1")
         est = learners.estimate(
-            xr[kr].reset_index(drop=True), yr[kr], tr[kr], fold_r[kr], e_r[kr], kind, params
+            xr[kr].reset_index(drop=True), yr[kr], tr[kr], fold_r[kr], e_r[kr], kind, params, log
         )
         return {"aipw": est.aipw, "t_learner": est.t_learner, "x_learner": est.x_learner}
 

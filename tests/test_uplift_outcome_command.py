@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 import retention.uplift.__main__ as cmd
-from retention.uplift import kkbox_bootstrap, outcome, placebo, propensity, report
+from retention.uplift import kkbox_bootstrap, learners, outcome, placebo, propensity, report
 
 
 @pytest.fixture
@@ -48,13 +48,18 @@ def stubbed(tmp_path, monkeypatch):
 
     def est(name, *args):
         order.append(f"estimate {name}")
-        return kkbox_bootstrap.Result(
-            {"aipw": 0.0, "t_learner": 0.0, "x_learner": 0.0},
-            "computed",
-            None,
-            {"aipw": (-1, 1), "t_learner": (-1, 1), "x_learner": (-1, 1)},
-            None,
-            1000,
+        log = learners.FitLog(outcome_fits=10, degenerate=[(0, 0)])
+        return (
+            kkbox_bootstrap.Result(
+                {"aipw": 0.0, "t_learner": 0.0, "x_learner": 0.0},
+                "computed",
+                None,
+                {"aipw": (-1, 1), "t_learner": (-1, 1), "x_learner": (-1, 1)},
+                None,
+                1000,
+            ),
+            log,
+            learners.FitLog(),
         )
 
     monkeypatch.setattr(cmd, "_estimate", est)
@@ -100,3 +105,17 @@ def test_a_second_run_refuses_once_the_log_exists(stubbed):
     cmd.outcome_step()
     with pytest.raises(outcome.ReadOnce, match="read once"):
         cmd.outcome_step()
+
+
+def test_degenerate_fits_are_reported_with_the_registered_note(stubbed):
+    _, _ = stubbed
+    log = cmd.outcome_step()
+    assert (
+        log["outcome_models"]["primary"]["main"] == "outcome models were degenerate in 1 of 10 fits"
+    )
+    effect = [r for r in log["table"] if r["statistic"] != "naive"]
+    primary = [r for r in effect if r["set"] == "primary trimming"]
+    stricter = [r for r in effect if r["set"] == "stricter trimming"]
+    # one degenerate fold in the primary run: noted; 10% elsewhere (not more than 10%): no note
+    assert primary and all("single arm's predicted rate" in r["note"] for r in primary)
+    assert stricter and not any(isinstance(r["note"], str) for r in stricter)

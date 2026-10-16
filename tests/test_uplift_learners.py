@@ -107,7 +107,9 @@ def test_one_valued_training_arm_predicts_that_value_and_is_counted():
     log = learners.FitLog()
     mu0, _ = learners.t_learner(x, y, t, folds, "classifier", learners.KKBOX_FIXED, log)
     assert np.all(mu0 == 0.0)
-    assert log.constant_fits == 2 and log.fits == 4
+    assert log.constant_fits == 2 and log.outcome_fits == 4
+    assert sorted(log.degenerate) == [(0, 0), (1, 0)]  # the untreated arm in both folds
+    assert log.summary() == "outcome models were degenerate in 2 of 4 fits"
 
 
 def test_a_fold_with_too_few_units_in_an_arm_is_not_computable():
@@ -122,3 +124,51 @@ def test_naive_difference_hand_case():
     y = np.array([1.0, 1.0, 0.0, 1.0, 0.0, 0.0])
     t = np.array([1, 1, 1, 0, 0, 0])
     assert learners.naive_difference(y, t) == pytest.approx(2 / 3 - 1 / 3)
+
+
+def test_regressor_path_recovers_a_continuous_effect_with_cross_fitting_and_weights():
+    # The placebo path: a continuous outcome (like listening days), LightGBM regressors,
+    # cross-fitted folds and inverse-propensity weights. Stated before the first run:
+    # n = 3000, seed 1, x1 ~ N(0, 1), P(t = 1) = 1 / (1 + exp(-x1)) (confounded by x1),
+    # y = 10 + 2 x1 + 3 t + N(0, 1), true effect 3. Pass: AIPW within 3 +/- 0.3, T- and
+    # X-learner within 3 +/- 0.5, and the naive difference off by more than 0.5 (the
+    # confounding the adjustment has to remove).
+    rng = np.random.default_rng(1)
+    n = 3000
+    x = pd.DataFrame({"x1": rng.normal(size=n), "x2": rng.normal(size=n)})
+    e = 1 / (1 + np.exp(-x["x1"].to_numpy()))
+    t = (rng.random(n) < e).astype(int)
+    y = 10 + 2 * x["x1"].to_numpy() + 3 * t + rng.normal(size=n)
+    folds = np.full(n, -1)
+    for k, (_, test) in enumerate(
+        StratifiedKFold(5, shuffle=True, random_state=1).split(np.zeros(n), t)
+    ):
+        folds[test] = k
+    log = learners.FitLog()
+    est = learners.estimate(x, y, t, folds, e, "regressor", learners.KKBOX_FIXED, log)
+    naive = learners.naive_difference(y, t)
+    assert abs(est.aipw - 3) <= 0.3, est
+    assert abs(est.t_learner - 3) <= 0.5 and abs(est.x_learner - 3) <= 0.5, est
+    assert abs(naive - 3) > 0.5, naive
+    assert log.constant_fits == 0 and log.outcome_fits == 10  # regressors are never degenerate
+
+
+def test_bootstrap_regressor_path_refits_and_returns_finite_values():
+    from retention.uplift import kkbox_bootstrap as kb
+
+    rng = np.random.default_rng(2)
+    n = 300
+    x = pd.DataFrame({"x1": rng.normal(size=n)})
+    t = (rng.random(n) < 0.5).astype(int)
+    y = rng.integers(0, 29, size=n).astype(float)  # listening days, 0 to 28
+    groups = np.repeat(np.arange(n // 2), 2)
+    log = learners.FitLog()
+    stat = kb.effect_statistic(
+        x, t, y, groups, np.ones(n, bool), 1.0, "regressor", learners.KKBOX_FIXED, log
+    )
+    out = kb.bootstrap(
+        "placebo", stat, {"aipw": 0.0, "t_learner": 0.0, "x_learner": 0.0}, groups, b=5
+    )
+    assert out.status == "computed"
+    assert all(np.isfinite(v).all() for v in out.replicates.values())
+    assert log.outcome_fits == 5 * 10 and log.constant_fits == 0

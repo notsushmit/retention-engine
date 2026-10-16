@@ -444,9 +444,11 @@ def _check_saved_scores(analysed: pd.DataFrame, e: np.ndarray, fold_id: np.ndarr
     return diff
 
 
-def _estimate(name, x, y, t, groups, kept, fold_id, e, c, kind, budget, fit_log):
-    """Point estimates on the kept units and their customer bootstrap."""
+def _estimate(name, x, y, t, groups, kept, fold_id, e, c, kind, budget):
+    """Point estimates on the kept units and their customer bootstrap, with the fit logs
+    of the main estimate and of the bootstrap (summed over resamples)."""
     k = kept
+    fit_log, boot_log = learners.FitLog(), learners.FitLog()
     try:
         est = learners.estimate(
             x[k].reset_index(drop=True),
@@ -462,10 +464,22 @@ def _estimate(name, x, y, t, groups, kept, fold_id, e, c, kind, budget, fit_log)
     except learners.NotComputable as err:
         nan = float("nan")
         estimates = {"aipw": nan, "t_learner": nan, "x_learner": nan}
-        return kkbox_bootstrap.Result(estimates, "not computable", f"point estimate: {err}")
-    stat = kkbox_bootstrap.effect_statistic(x, t, y, groups, kept, c, kind, learners.KKBOX_FIXED)
+        result = kkbox_bootstrap.Result(estimates, "not computable", f"point estimate: {err}")
+        return result, fit_log, boot_log
+    stat = kkbox_bootstrap.effect_statistic(
+        x, t, y, groups, kept, c, kind, learners.KKBOX_FIXED, boot_log
+    )
     with threadpool_limits(limits=THREADS):
-        return kkbox_bootstrap.bootstrap(name, stat, estimates, groups, B, BOOT_SEED, budget)
+        result = kkbox_bootstrap.bootstrap(name, stat, estimates, groups, B, BOOT_SEED, budget)
+    return result, fit_log, boot_log
+
+
+def _fit_record(main: learners.FitLog, boot: learners.FitLog) -> dict:
+    return {
+        "main": main.summary(),
+        "main_degenerate_fold_arm": main.degenerate,
+        "bootstrap": boot.summary(),
+    }
 
 
 def _naive(name, y, t, groups, rows, budget):
@@ -493,7 +507,7 @@ def outcome_step(rerun_reason: str | None = None) -> dict:
     }
     x = design.x
     sizes = {r: int(kept[r].sum()) for r in RULES}
-    fit_log = learners.FitLog()
+    fits: dict = {}
     budget = kkbox_bootstrap.Budget(step_start)
 
     def later(*rules: str, base: str) -> float:
@@ -505,20 +519,10 @@ def outcome_step(rerun_reason: str | None = None) -> dict:
         leak = placebo.leak_count(cats, t, kept["primary"])
         placebo.check_leak(leak)
         budget.later_work = later("primary", "stricter", "none", "primary", base="primary")
-        res = _estimate(
-            "placebo",
-            x,
-            y_p,
-            t,
-            groups,
-            kept["primary"],
-            fold_id,
-            e,
-            c,
-            "regressor",
-            budget,
-            fit_log,
+        res, main_log, boot_log = _estimate(
+            "placebo", x, y_p, t, groups, kept["primary"], fold_id, e, c, "regressor", budget
         )
+        fits["placebo"] = _fit_record(main_log, boot_log)
         sd = float(np.std(y_p[kept["primary"]], ddof=1))
         return {
             "label": report.LABEL,
@@ -527,7 +531,10 @@ def outcome_step(rerun_reason: str | None = None) -> dict:
             "leak_count": leak,
             "placebo_sd_kept": round(sd, 3),
             "power_limit_sd": {"by_counts": 0.53, "by_effective_sample_size": 0.74},
-            "rows": report.rows(res, "placebo, primary trimming"),
+            "outcome_models": fits["placebo"],
+            "rows": report.rows(
+                res, "placebo, primary trimming", report.degenerate_note(main_log, False)
+            ),
         }
 
     def write_log(result: dict) -> Path:
@@ -550,8 +557,12 @@ def outcome_step(rerun_reason: str | None = None) -> dict:
     for i, r in enumerate(order):
         # what remains after this bootstrap: the later rules and the sensitivity run
         budget.later_work = later(*order[i + 1 :], "primary", base=r)
-        res = _estimate(r, x, y, t, groups, kept[r], fold_id, e, c, "classifier", budget, fit_log)
-        all_rows += report.rows(res, f"{r} trimming")
+        res, main_log, boot_log = _estimate(
+            r, x, y, t, groups, kept[r], fold_id, e, c, "classifier", budget
+        )
+        fits[r] = _fit_record(main_log, boot_log)
+        note = report.degenerate_note(main_log, primary=r == "primary")
+        all_rows += report.rows(res, f"{r} trimming", note)
     every = np.ones(len(t), dtype=bool)
     all_rows += report.rows(_naive("naive_analysed", y, t, groups, every, None), "analysed set")
     all_rows += report.rows(
@@ -578,7 +589,7 @@ def outcome_step(rerun_reason: str | None = None) -> dict:
         sens["verdict"] = "estimable"
         sens["balance_failing"] = int((~table_s.passes).sum())
         sens["balance_columns"] = len(table_s)
-        res = _estimate(
+        res, main_log, boot_log = _estimate(
             "without_members",
             design_s.x,
             y,
@@ -590,9 +601,13 @@ def outcome_step(rerun_reason: str | None = None) -> dict:
             c_s,
             "classifier",
             budget,
-            fit_log,
         )
-        all_rows += report.rows(res, "primary trimming, without tenure and registration channel")
+        fits["without_members"] = _fit_record(main_log, boot_log)
+        all_rows += report.rows(
+            res,
+            "primary trimming, without tenure and registration channel",
+            report.degenerate_note(main_log, primary=False),
+        )
     else:
         sens["verdict"] = "not estimable"
     table = report.table(all_rows)
@@ -613,7 +628,7 @@ def outcome_step(rerun_reason: str | None = None) -> dict:
         "table": table.to_dict(orient="records"),
         "sentences": [report.sentence(r) for r in all_rows],
         "sensitivity_without_members": sens,
-        "learner_fits": {"fits": fit_log.fits, "constant_fits": fit_log.constant_fits},
+        "outcome_models": fits,
         "budget": budget.projections,
         "seconds": round(time.perf_counter() - step_start, 1),
         "peak_rss_gb": peak_rss_gb(),

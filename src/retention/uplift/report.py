@@ -14,6 +14,7 @@ from typing import Any
 import pandas as pd
 
 from retention.uplift.kkbox_bootstrap import Result
+from retention.uplift.learners import FitLog
 
 LABEL = "balance not met"
 READING = "balance not met, assumptions unsupported"
@@ -30,10 +31,26 @@ COLUMNS = [
     "estimate",
     "interval_status",
     "resamples",
+    "note",
 ]
+DEGENERATE_SHARE = 0.10
 
 
-def rows(result: Result, set_name: str) -> list[dict[str, Any]]:
+def degenerate_note(log: FitLog, primary: bool) -> str | None:
+    """The registered note: more than 10% degenerate fits, or any in the primary run."""
+    if log.outcome_fits == 0:
+        return None
+    if log.share > DEGENERATE_SHARE or (primary and log.constant_fits > 0):
+        summary = log.summary()
+        return (
+            f"{summary[0].upper()}{summary[1:]}: where every training outcome in an arm and fold "
+            "was one value, that arm's model predicts the value itself, so the T- and X-learner "
+            "effects are close to a single arm's predicted rate"
+        )
+    return None
+
+
+def rows(result: Result, set_name: str, note: str | None = None) -> list[dict[str, Any]]:
     out = []
     for stat, est in result.estimates.items():
         lo, hi = result.intervals[stat] if result.intervals else (None, None)
@@ -48,6 +65,7 @@ def rows(result: Result, set_name: str) -> list[dict[str, Any]]:
                 "estimate": est,
                 "interval_status": status,
                 "resamples": result.resamples_done,
+                "note": note,
             }
         )
     return out
@@ -77,4 +95,5 @@ def sentence(row: dict[str, Any]) -> str:
         )
     else:
         body = f", interval {row['interval_status']}, point estimate {_num(row['estimate'])}"
-    return f"{head}{body}. This is not a finding. {INTERVAL_SCOPE}"
+    note = f" {row['note']}." if row.get("note") else ""
+    return f"{head}{body}.{note} This is not a finding. {INTERVAL_SCOPE}"
