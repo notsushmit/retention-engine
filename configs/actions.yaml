@@ -6,6 +6,8 @@
 # added in the third commit, before any of them was run or read.
 # The sensitivity analysis, the stability rules and the pass marks were added in
 # the fourth commit, before any run.
+# The wording rules, the fixed disclaimers and the run-time stop were added in the
+# fifth commit, before any code.
 #
 # Every effect below is an ASSUMPTION chosen by the user. None is an estimate: no
 # KKBox uplift estimate exists for any action, and no number here comes from KKBox
@@ -329,3 +331,50 @@ tests_required:
   - a hand-made pair of plans that must be judged "unstable"
   - a hand-made customer whose last row paid 0 with an earlier paid row; the price comes from the earlier paid row
   - every comparison table carries the registered caption
+
+# --- wording rules and the run-time stop ----------------------------------------------
+wording_rules:
+  effect_sentence_prefix: "Under the assumed <form> <level> effect"  # every sentence that uses an effect, a retained value or a net value
+  fixed_disclaimers:  # used verbatim by the report; removed before the banned-word scan
+    - "KKBox backtest figures are model estimates under assumed effects, not observed outcomes."
+    - "No KKBox customer was ever given these actions, so nothing here shows that any action causes a customer to stay."
+    - "optimizer maximizes this quantity by design; the comparison is arithmetic on assumed effects"
+    - "says nothing about whether any action works"
+  banned_words:  # whole words, case-insensitive, outside the fixed disclaimers
+    - cause
+    - caused
+    - causes
+    - causing
+    - proves
+    - proved
+    - guarantee
+    - guarantees
+    - guaranteed
+    - retain
+    - retains
+    - will retain
+    - save
+    - saves
+    - saved
+    - saving
+    - will save
+    - prevent
+    - prevents
+    - prevented
+    - preventing
+    - keeps
+    - works
+  retained_allowed_only_in: ["expected retained customers", "expected retained value"]  # the registered quantity names
+  uplift_allowed_only_as: "assumed uplift"
+  works_exception: "says nothing about whether any action works"  # exact string; the only allowed "works"
+  external_figures_ban:
+    names: [Hillstrom, Criteo]
+    scope: [reports/strategy_backtest.md, "README.md section Budget optimizer", "configs/actions.yaml outside this entry", src/retention/optimize]
+    exempt: [docs/uplift_validation.md, docs/causal_assumptions.md, docs/counterfactuals.md]  # Phase 6 docs keep their own public-data figures
+  money_unit: price units
+
+random_baseline_timing:
+  measure: 1000 draws on synthetic data at the 2016-11-01 row count, before the real plan run; logged
+  projection: measured seconds per scenario-budget cell x 112 cells
+  stop_hours: 3.0  # the plan step refuses to start above this projection
+  recheck: after the first real cell, project again from its measured time; stop above 3 hours
