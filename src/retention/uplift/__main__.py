@@ -39,7 +39,18 @@ from threadpoolctl import threadpool_limits
 
 from retention.models.protocol import load_protocol
 from retention.models.resources import peak_rss_gb
-from retention.uplift import balance, config, kkbox_units, propensity, public_data
+from retention.uplift import (
+    balance,
+    config,
+    kkbox_bootstrap,
+    kkbox_units,
+    learners,
+    outcome,
+    placebo,
+    propensity,
+    public_data,
+    report,
+)
 
 OUT = Path("data/interim/public")
 KKBOX = Path("data/processed/kkbox/sample_020")
@@ -255,20 +266,33 @@ def _arm_counts(t: np.ndarray) -> dict:
     return {"treated": int((t == 1).sum()), "untreated": int((t == 0).sum())}
 
 
-def propensity_step() -> dict:
-    _require_clean()
-    start = time.perf_counter()
-    k = config.load()["kkbox"]
-    reg_counts, p = k["counts_before_outcome"], k["propensity"]
+MEMBERS_COLUMNS = ("tenure_days", "registered_via")
+
+
+def _inputs(drop_members: bool = False):
+    """Analysed units (counts checked), pre-T covariates, the coded design, transactions."""
+    reg_counts = config.load()["kkbox"]["counts_before_outcome"]
     tx = kkbox_units.read_transactions(KKBOX / "transactions.parquet")
     reg = kkbox_units.registered_set(_units(kkbox_units.SNAPSHOTS, tx))
     analysed = kkbox_units.analysed_set(reg)
     kkbox_units.check_counts(kkbox_units.recount(reg, analysed), reg_counts)
     cov = kkbox_units.covariates(analysed, KKBOX / "features.parquet", tx)
-    fs1 = kkbox_units.fs1_columns()
+    return analysed, cov, _design(cov, drop_members), tx
+
+
+def _design(cov: pd.DataFrame, drop_members: bool = False) -> propensity.Design:
+    fs1 = [c for c in kkbox_units.fs1_columns() if not (drop_members and c in MEMBERS_COLUMNS)]
     categorical = [c for c in fs1 if c in kkbox_units.CATEGORICAL]
     numeric = [c for c in fs1 if c not in categorical] + ["month_2016_09", "any_discount_365"]
-    design = propensity.build_design(cov, numeric, categorical, MIN_COUNT)
+    return propensity.build_design(cov, numeric, categorical, MIN_COUNT)
+
+
+def propensity_step() -> dict:
+    _require_clean()
+    start = time.perf_counter()
+    k = config.load()["kkbox"]
+    p = k["propensity"]
+    analysed, cov, design, tx = _inputs()
     t = analysed.treated.to_numpy()
     groups = analysed.msno.to_numpy()
     with threadpool_limits(limits=THREADS):
@@ -393,20 +417,229 @@ def kept_composition() -> dict:
     return log
 
 
+LOGS = Path("data/interim/kkbox/sample_020/user_logs.parquet")
+RULES = ("primary", "stricter", "none")
+B, BOOT_SEED = 1000, 0
+
+
+def _fit_propensity(design: propensity.Design, t: np.ndarray, groups: np.ndarray, grid: list):
+    with threadpool_limits(limits=THREADS):
+        fold_id = propensity.folds(t, groups, FOLDS, FOLD_SEED)
+        c, _ = propensity.choose_c(design.x, t, fold_id, grid)
+        e = propensity.oof_propensity(design.x, t, fold_id, c)
+    return fold_id, c, e
+
+
+def _check_saved_scores(analysed: pd.DataFrame, e: np.ndarray, fold_id: np.ndarray) -> float:
+    """The refit must reproduce the logged propensity step; stop otherwise."""
+    saved = pd.read_parquet(KKBOX_OUT / "propensity_scores.parquet")
+    now = analysed[["msno", "snapshot_date"]].assign(
+        snapshot_date=pd.to_datetime(analysed.snapshot_date), propensity=e, fold=fold_id
+    )
+    saved["snapshot_date"] = pd.to_datetime(saved.snapshot_date)
+    m = now.merge(saved, on=["msno", "snapshot_date"], suffixes=("", "_saved"), validate="1:1")
+    diff = float((m.propensity - m.propensity_saved).abs().max())
+    if len(m) != len(now) or diff > 1e-9 or not (m.fold == m.fold_saved).all():
+        raise SystemExit(f"the refit propensity differs from the logged step (max {diff:.2e})")
+    return diff
+
+
+def _estimate(name, x, y, t, groups, kept, fold_id, e, c, kind, budget, fit_log):
+    """Point estimates on the kept units and their customer bootstrap."""
+    k = kept
+    try:
+        est = learners.estimate(
+            x[k].reset_index(drop=True),
+            y[k],
+            t[k],
+            fold_id[k],
+            e[k],
+            kind,
+            learners.KKBOX_FIXED,
+            fit_log,
+        )
+        estimates = {"aipw": est.aipw, "t_learner": est.t_learner, "x_learner": est.x_learner}
+    except learners.NotComputable as err:
+        nan = float("nan")
+        estimates = {"aipw": nan, "t_learner": nan, "x_learner": nan}
+        return kkbox_bootstrap.Result(estimates, "not computable", f"point estimate: {err}")
+    stat = kkbox_bootstrap.effect_statistic(x, t, y, groups, kept, c, kind, learners.KKBOX_FIXED)
+    with threadpool_limits(limits=THREADS):
+        return kkbox_bootstrap.bootstrap(name, stat, estimates, groups, B, BOOT_SEED, budget)
+
+
+def _naive(name, y, t, groups, rows, budget):
+    est = {"naive": learners.naive_difference(y[rows], t[rows])}
+    stat = kkbox_bootstrap.naive_statistic(t, y, rows)
+    return kkbox_bootstrap.bootstrap(name, stat, est, groups, B, BOOT_SEED, budget)
+
+
+def outcome_step(rerun_reason: str | None = None) -> dict:
+    """Placebo, then the one KKBox outcome read, then every registered estimate."""
+    _require_clean()
+    step_start = time.perf_counter()
+    run_started = outcome.now()
+    commit = _git("rev-parse", "--short", "HEAD").strip()
+    outcome.guard_not_read(KKBOX_OUT, rerun_reason)
+    k = config.load()["kkbox"]
+    p = k["propensity"]
+    analysed, cov, design, _ = _inputs()
+    t = analysed.treated.to_numpy()
+    groups = analysed.msno.to_numpy()
+    fold_id, c, e = _fit_propensity(design, t, groups, p["penalty"]["C_grid"])
+    max_diff = _check_saved_scores(analysed, e, fold_id)
+    kept = {
+        r: propensity.trim_mask(e, p["trimming"][r]["low"], p["trimming"][r]["high"]) for r in RULES
+    }
+    x = design.x
+    sizes = {r: int(kept[r].sum()) for r in RULES}
+    fit_log = learners.FitLog()
+    budget = kkbox_bootstrap.Budget(step_start)
+
+    def later(*rules: str, base: str) -> float:
+        return float(sum(B * sizes[r] / sizes[base] for r in rules))
+
+    def compute_placebo() -> dict:
+        y_p = placebo.placebo_days(LOGS, analysed)
+        cats = placebo.leak_categories(cov)
+        leak = placebo.leak_count(cats, t, kept["primary"])
+        placebo.check_leak(leak)
+        budget.later_work = later("primary", "stricter", "none", "primary", base="primary")
+        res = _estimate(
+            "placebo",
+            x,
+            y_p,
+            t,
+            groups,
+            kept["primary"],
+            fold_id,
+            e,
+            c,
+            "regressor",
+            budget,
+            fit_log,
+        )
+        sd = float(np.std(y_p[kept["primary"]], ddof=1))
+        return {
+            "label": report.LABEL,
+            "interval_scope": report.INTERVAL_SCOPE,
+            "outcome": "distinct days with a log row in days T-56 to T-29, inclusive",
+            "leak_count": leak,
+            "placebo_sd_kept": round(sd, 3),
+            "power_limit_sd": {"by_counts": 0.53, "by_effective_sample_size": 0.74},
+            "rows": report.rows(res, "placebo, primary trimming"),
+        }
+
+    def write_log(result: dict) -> Path:
+        return outcome.write_placebo_log(KKBOX_OUT / "placebo.json", result, commit, analysed)
+
+    def read(log_path: Path) -> np.ndarray:
+        return outcome.read_outcome(
+            analysed,
+            out_dir=KKBOX_OUT,
+            placebo_log=log_path,
+            commit=commit,
+            run_started=run_started,
+            protocol=load_protocol(),
+            rerun_reason=rerun_reason,
+        )
+
+    placebo_result, _, y = outcome.placebo_then_outcome(compute_placebo, write_log, read)
+    all_rows = list(placebo_result["rows"])
+    order = list(RULES)
+    for i, r in enumerate(order):
+        # what remains after this bootstrap: the later rules and the sensitivity run
+        budget.later_work = later(*order[i + 1 :], "primary", base=r)
+        res = _estimate(r, x, y, t, groups, kept[r], fold_id, e, c, "classifier", budget, fit_log)
+        all_rows += report.rows(res, f"{r} trimming")
+    every = np.ones(len(t), dtype=bool)
+    all_rows += report.rows(_naive("naive_analysed", y, t, groups, every, None), "analysed set")
+    all_rows += report.rows(
+        _naive("naive_trimmed", y, t, groups, kept["primary"], None), "primary trimming"
+    )
+    # registered sensitivity: the same pipeline without tenure_days and registered_via
+    design_s = _design(cov, drop_members=True)
+    fold_s, c_s, e_s = _fit_propensity(design_s, t, groups, p["penalty"]["C_grid"])
+    kept_s = propensity.trim_mask(
+        e_s, p["trimming"]["primary"]["low"], p["trimming"]["primary"]["high"]
+    )
+    arms_s = {"treated": int(kept_s[t == 1].sum()), "untreated": int(kept_s[t == 0].sum())}
+    mins = (
+        k["expectations"]["min_treated_after_trimming"],
+        k["expectations"]["min_untreated_after_trimming"],
+    )
+    sens: dict = {"label": report.LABEL, "C": c_s, "kept_primary": arms_s}
+    if arms_s["treated"] >= mins[0] and arms_s["untreated"] >= mins[1]:
+        budget.later_work = 0.0
+        tk = t[kept_s]
+        w = propensity.stabilised_weights(tk, e_s[kept_s])
+        xb = balance.fill_for_balance(design_s.x)
+        table_s = balance.balance_table(xb[kept_s].reset_index(drop=True), tk, w)
+        sens["verdict"] = "estimable"
+        sens["balance_failing"] = int((~table_s.passes).sum())
+        sens["balance_columns"] = len(table_s)
+        res = _estimate(
+            "without_members",
+            design_s.x,
+            y,
+            t,
+            groups,
+            kept_s,
+            fold_s,
+            e_s,
+            c_s,
+            "classifier",
+            budget,
+            fit_log,
+        )
+        all_rows += report.rows(res, "primary trimming, without tenure and registration channel")
+    else:
+        sens["verdict"] = "not estimable"
+    table = report.table(all_rows)
+    table.to_parquet(KKBOX_OUT / "outcome_table.parquet", index=False)
+    log = {
+        "label": report.LABEL,
+        "reading": report.READING,
+        "interval_scope": report.INTERVAL_SCOPE,
+        "commit": commit,
+        "run_started": run_started.isoformat(),
+        "rerun_reason": rerun_reason,
+        "propensity_refit_max_abs_diff": max_diff,
+        "kept": {
+            r: {"treated": int(kept[r][t == 1].sum()), "untreated": int(kept[r][t == 0].sum())}
+            for r in RULES
+        },
+        "placebo": {key: v for key, v in placebo_result.items() if key != "rows"},
+        "table": table.to_dict(orient="records"),
+        "sentences": [report.sentence(r) for r in all_rows],
+        "sensitivity_without_members": sens,
+        "learner_fits": {"fits": fit_log.fits, "constant_fits": fit_log.constant_fits},
+        "budget": budget.projections,
+        "seconds": round(time.perf_counter() - step_start, 1),
+        "peak_rss_gb": peak_rss_gb(),
+    }
+    text = json.dumps(log, indent=2, default=str) + "\n"
+    (KKBOX_OUT / "outcome_first_run.json").write_text(text)
+    (KKBOX_OUT / outcome.LOG).write_text(text)
+    return log
+
+
 COMMANDS = {
     "check-public": check_public,
     "recount": recount,
     "propensity": propensity_step,
     "kept-composition": kept_composition,
+    "outcome": outcome_step,
 }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m retention.uplift")
     parser.add_argument("command", choices=list(COMMANDS))
+    parser.add_argument("--rerun-reason", default=None, help="outcome only: why an attempt repeats")
     args = parser.parse_args()
     run = COMMANDS[args.command]
-    log = run()
+    log = run(args.rerun_reason) if args.command == "outcome" else run()
     print(json.dumps(log, indent=2, default=str))
     if log.get("status") == "stopped":
         raise SystemExit(1)
