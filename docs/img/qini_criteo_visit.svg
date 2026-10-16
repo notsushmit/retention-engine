@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 420" width="680" height="420" role="img" aria-labelledby="t d">
+<!-- drawn from data/processed/public/qini_curves.parquet, validation run at commit ac1d00c; no dataset row is read -->
+<style>
+  .surface { fill: #fcfcfb; }
+  .title { fill: #0b0b0b; font: 600 15px system-ui, -apple-system, sans-serif; }
+  .label { fill: #52514e; font: 12px system-ui, -apple-system, sans-serif; }
+  .tick { fill: #52514e; font: 11px system-ui, -apple-system, sans-serif; }
+  .grid { stroke: #e3e2dd; stroke-width: 1; }
+  .axis { stroke: #8a8984; stroke-width: 1; }
+  .ref { stroke: #8a8984; stroke-width: 1.5; stroke-dasharray: 5 4; fill: none; }
+  .s1 { stroke: #2a78d6; stroke-width: 2; fill: none; }
+  .s2 { stroke: #eb6834; stroke-width: 2; fill: none; }
+  .k1 { fill: #2a78d6; } .k2 { fill: #eb6834; }
+  @media (prefers-color-scheme: dark) {
+    .surface { fill: #1a1a19; }
+    .title { fill: #ffffff; }
+    .label, .tick { fill: #c3c2b7; }
+    .grid { stroke: #33332f; }
+    .s1 { stroke: #3987e5; } .s2 { stroke: #d95926; }
+    .k1 { fill: #3987e5; } .k2 { fill: #d95926; }
+  }
+</style>
+<title id="t">Qini curve. Criteo: treated against control, visits.</title>
+<desc id="d">Extra visits per customer in the evaluation half against the share of customers targeted, for the X-learner, the outcome-probability ranking and a random ranking. No interval band: the log holds a 95% interval for the area only, not for each curve point.</desc>
+<rect class="surface" width="680" height="420"/>
+<text class="title" x="84" y="28">Criteo: treated against control</text>
+<text class="label" x="84" y="46">Qini curve, visits</text>
+<line class="grid" x1="84" x2="484" y1="314.8" y2="314.8"/>
+<text class="tick" x="76" y="318.8" text-anchor="end">0</text>
+<line class="grid" x1="84" x2="484" y1="264.6" y2="264.6"/>
+<text class="tick" x="76" y="268.6" text-anchor="end">0.002</text>
+<line class="grid" x1="84" x2="484" y1="214.5" y2="214.5"/>
+<text class="tick" x="76" y="218.5" text-anchor="end">0.004</text>
+<line class="grid" x1="84" x2="484" y1="164.3" y2="164.3"/>
+<text class="tick" x="76" y="168.3" text-anchor="end">0.006</text>
+<line class="grid" x1="84" x2="484" y1="114.2" y2="114.2"/>
+<text class="tick" x="76" y="118.2" text-anchor="end">0.008</text>
+<line class="grid" x1="84" x2="484" y1="64.0" y2="64.0"/>
+<text class="tick" x="76" y="68.0" text-anchor="end">0.01</text>
+<text class="tick" x="84.0" y="346" text-anchor="middle">0%</text>
+<text class="tick" x="184.0" y="346" text-anchor="middle">25%</text>
+<text class="tick" x="284.0" y="346" text-anchor="middle">50%</text>
+<text class="tick" x="384.0" y="346" text-anchor="middle">75%</text>
+<text class="tick" x="484.0" y="346" text-anchor="middle">100%</text>
+<line class="axis" x1="84" x2="484" y1="314.8" y2="314.8"/>
+<polyline class="ref" points="84.0,314.8 484.0,94.4"/>
+<polyline class="s1" points="84.0,314.8 88.0,275.6 92.0,253.7 96.0,237.0 100.0,224.0 104.0,211.2 108.0,201.4 112.0,194.5 116.0,187.6 120.0,184.9 124.0,182.7 128.0,181.5 132.0,178.7 136.0,176.5 140.0,174.6 144.0,171.9 148.0,168.0 152.0,165.4 156.0,161.7 160.0,158.4 164.0,154.3 168.0,151.3 172.0,149.0 176.0,145.7 180.0,143.0 184.0,141.4 188.0,138.7 192.0,136.0 196.0,133.9 200.0,131.8 204.0,130.0 208.0,128.2 212.0,126.6 216.0,125.8 220.0,124.1 224.0,122.5 228.0,121.4 232.0,120.4 236.0,119.2 240.0,118.3 244.0,117.3 248.0,116.6 252.0,115.6 256.0,114.7 260.0,114.1 264.0,113.8 268.0,112.8 272.0,111.4 276.0,110.6 280.0,110.0 284.0,109.0 288.0,108.4 292.0,107.5 296.0,106.8 300.0,106.1 304.0,105.2 308.0,104.3 312.0,103.5 316.0,102.9 320.0,102.4 324.0,101.8 328.0,101.8 332.0,101.5 336.0,101.1 340.0,100.8 344.0,100.7 348.0,100.6 352.0,100.3 356.0,100.3 360.0,99.8 364.0,99.6 368.0,99.5 372.0,99.1 376.0,98.8 380.0,98.5 384.0,98.4 388.0,98.3 392.0,98.1 396.0,97.9 400.0,97.7 404.0,97.6 408.0,97.6 412.0,97.6 416.0,97.4 420.0,97.5 424.0,97.3 428.0,97.1 432.0,97.0 436.0,96.9 440.0,96.8 444.0,96.7 448.0,96.4 452.0,96.2 456.0,96.1 460.0,96.0 464.0,95.9 468.0,95.7 472.0,95.7 476.0,95.5 480.0,95.4 484.0,94.4"/>
+<polyline class="s2" points="84.0,314.8 88.0,302.9 92.0,289.3 96.0,273.5 100.0,264.3 104.0,251.4 108.0,241.5 112.0,232.4 116.0,222.6 120.0,214.6 124.0,205.6 128.0,198.9 132.0,191.4 136.0,185.4 140.0,179.2 144.0,174.2 148.0,168.6 152.0,163.5 156.0,159.2 160.0,155.7 164.0,152.0 168.0,149.0 172.0,145.6 176.0,142.7 180.0,140.2 184.0,137.2 188.0,135.1 192.0,132.9 196.0,131.1 200.0,129.5 204.0,127.6 208.0,125.8 212.0,124.3 216.0,122.7 220.0,121.7 224.0,120.2 228.0,118.8 232.0,117.5 236.0,116.8 240.0,115.4 244.0,114.3 248.0,113.3 252.0,111.9 256.0,110.9 260.0,110.2 264.0,109.3 268.0,108.4 272.0,107.6 276.0,106.6 280.0,105.9 284.0,105.1 288.0,104.4 292.0,104.2 296.0,103.4 300.0,102.9 304.0,102.3 308.0,102.0 312.0,101.7 316.0,101.5 320.0,101.2 324.0,101.1 328.0,101.0 332.0,100.7 336.0,100.2 340.0,99.8 344.0,99.4 348.0,99.3 352.0,99.0 356.0,98.6 360.0,98.2 364.0,98.2 368.0,97.9 372.0,97.6 376.0,97.4 380.0,97.2 384.0,97.0 388.0,96.7 392.0,96.3 396.0,96.3 400.0,96.3 404.0,96.3 408.0,96.1 412.0,96.2 416.0,95.9 420.0,95.7 424.0,95.5 428.0,95.4 432.0,95.2 436.0,95.0 440.0,94.8 444.0,94.7 448.0,94.5 452.0,94.4 456.0,94.2 460.0,94.2 464.0,94.2 468.0,94.3 472.0,94.3 476.0,94.3 480.0,94.4 484.0,94.4"/>
+<rect class="k1" x="494" y="76.9" width="12" height="3" rx="1"/>
+<text class="label" x="512" y="82.4">X-learner</text>
+<rect class="k2" x="494" y="94.9" width="12" height="3" rx="1"/>
+<text class="label" x="512" y="100.4">Outcome-probability ranking</text>
+<line class="ref" x1="494" x2="506" y1="114.4" y2="114.4"/>
+<text class="label" x="512" y="118.4">Random ranking</text>
+<text class="label" x="284.0" y="370" text-anchor="middle">Share of customers targeted, highest score first</text>
+<text class="label" transform="translate(20,196.0) rotate(-90)" text-anchor="middle">Extra visits per customer</text>
+<text class="tick" x="84" y="406">No interval band: the log holds a 95% interval for the area only, not for each curve point.</text>
+</svg>
