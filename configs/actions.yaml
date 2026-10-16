@@ -1,0 +1,75 @@
+# Phase 7: actions and their assumed effects, registered before any optimizer run.
+# Committed alone. The level names "off" and "on" are quoted: bare, YAML reads them as booleans.
+# Costs, lead times, customer value and budget levels are added in
+# later commits, each before the runs that use them.
+#
+# Every effect below is an ASSUMPTION chosen by the user. None is an estimate: no
+# KKBox uplift estimate exists for any action, and no number here comes from KKBox
+# outcomes or from any other dataset. No value in this file is tuned after any
+# optimizer run is seen. A later change is a logged amendment, and the results under
+# the original values are reported alongside.
+
+label: "assumed effect: user choice, 2026-10-17, provisional, not estimates"
+effect_basis: assumed  # carried as a column and as Parquet metadata on every output
+source: user choice, 2026-10-17, provisional, not estimates
+tuned_after_results: never
+external_figures: none  # no figure from the public uplift datasets appears in this file or in any Phase 7 doc or README text
+
+risk_input:
+  probability: calibrated 30-day churn probability from classifier c01
+  reason: matches a monthly renewal; the 7-day and 30-day probabilities can disagree for some customers until the ordering fix
+
+segment:
+  name: auto_renew
+  column: last_is_auto_renew  # from the features at T, built only from rows dated before T
+  levels: {"off": 0, "on": 1}
+  missing: none  # counts-only check: no missing value on any 2016 snapshot (2016-11-01: 63,489 off, 166,797 on)
+  never_used: [age, gender, registered_via, tenure, city]  # never a segment, an eligibility rule, a lever or a reason
+
+actions:
+  reminder:
+    description: a renewal reminder sent before the paid expiry
+    eligible: ["off", "on"]
+  autorenew_prompt:
+    description: a prompt to switch auto-renew on
+    eligible: ["off"]  # not offered to customers whose auto-renew is already on
+  discount:
+    description: a price cut on the next renewal (depth set with the costs, before any run)
+    eligible: ["off", "on"]
+  none:
+    description: no action; effect 0 and cost 0 by definition
+    eligible: ["off", "on"]
+
+one_action_per_customer: true
+
+scenarios:
+  levels: [low, base, high]  # low is 0 everywhere, so "no action" can come out best
+  relative:
+    role: primary
+    form: relative cut of the calibrated 30-day probability; treated probability = p * (1 - cut)
+    weakness: assumes the effect grows with risk
+    cuts:  # fractions of p
+      reminder:
+        "off": {low: 0.0, base: 0.03, high: 0.08}
+        "on": {low: 0.0, base: 0.0, high: 0.02}
+      autorenew_prompt:
+        "off": {low: 0.0, base: 0.04, high: 0.10}
+      discount:
+        "off": {low: 0.0, base: 0.10, high: 0.25}
+        "on": {low: 0.0, base: 0.03, high: 0.10}
+  absolute:
+    role: registered alternative
+    form: absolute cut in percentage points, flat across risk; treated probability = max(p - cut / 100, 0), so the effect never exceeds p
+    weakness: assumes the effect is the same for a customer at 2% risk and one at 60% risk
+    cuts_pp:
+      reminder:
+        "off": {low: 0.0, base: 0.5, high: 1.5}
+        "on": {low: 0.0, base: 0.25, high: 0.75}  # half of the off values
+      autorenew_prompt:
+        "off": {low: 0.0, base: 1.0, high: 2.5}
+      discount:
+        "off": {low: 0.0, base: 2.0, high: 5.0}
+        "on": {low: 0.0, base: 1.0, high: 2.5}  # half of the off values
+
+wording:
+  sentence_prefix: "Under the assumed <scenario> <level> effect"  # every sentence that uses an effect carries it
