@@ -197,6 +197,24 @@ def fs1_columns() -> list[str]:
     return feature_set_columns(FS1_DROP)
 
 
+def earlier_discounts(analysed: pd.DataFrame, tx: pd.DataFrame) -> pd.DataFrame:
+    """Discounted rows (0 <= paid < list) in the 365 days before T, per analysed unit."""
+    con = duckdb.connect()
+    con.register("a", analysed[["msno", "snapshot_date", "treated"]])
+    con.register("tx", tx)
+    return con.sql(
+        """
+        select a.msno, a.snapshot_date, a.treated, tx.transaction_date,
+          tx.plan_list_price, tx.actual_amount_paid, tx.payment_method_id
+        from a join tx on tx.msno = a.msno
+        where tx.is_cancel = 0 and tx.plan_list_price > 0
+          and tx.actual_amount_paid < tx.plan_list_price
+          and tx.transaction_date < a.snapshot_date
+          and tx.transaction_date >= a.snapshot_date - interval 365 day
+        """
+    ).df()
+
+
 def discount_history(analysed: pd.DataFrame, tx: pd.DataFrame) -> pd.Series:
     """Days from the latest discounted row in the 365 days before T to T; NaN if none.
 

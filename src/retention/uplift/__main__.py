@@ -21,6 +21,7 @@ from dataclasses import asdict
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from retention.models.protocol import load_protocol
@@ -30,9 +31,32 @@ from retention.uplift import config, kkbox_units, public_data
 OUT = Path("data/interim/public")
 KKBOX = Path("data/processed/kkbox/sample_020")
 KKBOX_OUT = KKBOX / "uplift"
-# Figures quoted in the first paragraph of docs/causal_assumptions.md (from the counts run):
-# full-price or discounted first renewals, 2016-01 to 2016-11, all plan lengths.
+# Figures quoted in docs/causal_assumptions.md (from the counts runs). The recount stops if
+# any differs. First paragraph: full-price or discounted first renewals, 2016-01 to 2016-11.
 DOC_FIGURES_2016 = {"units": 1582100, "method_23": 3457, "customers": 233945, "m23_customers": 399}
+DOC_FACTS = {
+    # every first renewal below list on a priced plan, 2016-01 to 2016-11: method -> count
+    "below_list_by_method_2016": {"23": 234},
+    # distinct (list, paid) pairs among those rows
+    "below_list_pairs_2016": ["149->129", "149->99"],
+    # analysed discounted renewals by depth (1 - paid / list), rounded to 3 places
+    "analysed_treated_depths": {"0.134": 69, "0.336": 1},
+    # analysed units whose last transaction before T was discounted
+    "last_discount_ratio_above_0": 0,
+    "analysed_units": 620,
+    # units with a discounted row in the 365 days before T, by month and arm
+    "past_year_discount": {
+        "2016-08": {"treated": [0, 2], "untreated": [89, 308]},
+        "2016-09": {"treated": [65, 68], "untreated": [25, 242]},
+    },
+    # every such earlier row, as list -> paid on a method
+    "past_year_discount_rows": ["23:149->129"],
+    # month range of the earlier discounted row, September units, by arm
+    "past_year_discount_months_2016_09": {
+        "treated": ["2015-11", "2016-08"],
+        "untreated": ["2015-09", "2015-10"],
+    },
+}
 
 
 def _git(*args: str) -> str:
@@ -106,6 +130,52 @@ def _units(snapshots: list[date], tx: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(parts, ignore_index=True)
 
 
+def _doc_facts(year: pd.DataFrame, analysed: pd.DataFrame, tx: pd.DataFrame) -> dict:
+    """Pre-T facts quoted in the doc; reads no outcome."""
+    below = year[(year.plan_list_price > 0) & (year.actual_amount_paid < year.plan_list_price)]
+    below = below[below.actual_amount_paid > 0]
+    pair_iter = zip(below.plan_list_price, below.actual_amount_paid, strict=True)
+    pairs = sorted({f"{lp}->{ap}" for lp, ap in pair_iter})
+    treated = analysed[analysed.treated == 1]
+    depths = treated.depth.round(3).map("{:.3f}".format).value_counts().sort_index()
+    cov = kkbox_units.covariates(analysed, KKBOX / "features.parquet", tx)
+    month = pd.to_datetime(analysed.snapshot_date).dt.strftime("%Y-%m").to_numpy()
+    arm = np.where(analysed.treated.to_numpy() == 1, "treated", "untreated")
+    hist = cov.any_discount_365.to_numpy() == 1
+    past: dict = {}
+    for m in sorted(set(month)):
+        past[m] = {}
+        for a in ("treated", "untreated"):
+            sel = (month == m) & (arm == a)
+            past[m][a] = [int(hist[sel].sum()), int(sel.sum())]
+    rows = kkbox_units.earlier_discounts(analysed, tx)
+    kinds = sorted(
+        {
+            f"{pm}:{lp}->{ap}"
+            for pm, lp, ap in zip(
+                rows.payment_method_id, rows.plan_list_price, rows.actual_amount_paid, strict=True
+            )
+        }
+    )
+    sep = rows[pd.to_datetime(rows.snapshot_date) == pd.Timestamp("2016-09-01")]
+    months = {}
+    for a, flag in (("treated", 1), ("untreated", 0)):
+        d = pd.to_datetime(sep.transaction_date[sep.treated == flag])
+        months[a] = [d.min().strftime("%Y-%m"), d.max().strftime("%Y-%m")]
+    return {
+        "below_list_by_method_2016": {
+            str(k): int(v) for k, v in below.payment_method_id.value_counts().items()
+        },
+        "below_list_pairs_2016": pairs,
+        "analysed_treated_depths": {k: int(v) for k, v in depths.items()},
+        "last_discount_ratio_above_0": int((cov.last_discount_ratio.fillna(0) > 0).sum()),
+        "analysed_units": len(analysed),
+        "past_year_discount": past,
+        "past_year_discount_rows": kinds,
+        "past_year_discount_months_2016_09": months,
+    }
+
+
 def recount() -> dict:
     _require_clean()
     start = time.perf_counter()
@@ -124,6 +194,7 @@ def recount() -> dict:
         "customers": int(fd.msno.nunique()),
         "m23_customers": int(fd.msno[m23].nunique()),
     }
+    facts = _doc_facts(year, analysed, tx)
     log: dict = {
         "commit": _git("rev-parse", "--short", "HEAD").strip(),
         "registered": {k: registered[k] for k in asdict(counts)},
@@ -134,11 +205,15 @@ def recount() -> dict:
         },
         "doc_figures_2016": {"quoted": DOC_FIGURES_2016, "recounted": doc},
         "kinds_2016": year.kind.value_counts().to_dict(),
+        "doc_facts": {"quoted": DOC_FACTS, "recounted": facts},
     }
     try:
         kkbox_units.check_counts(counts, registered)
         if doc != DOC_FIGURES_2016:
             raise kkbox_units.CountMismatch(f"2016 doc figures differ: {doc}")
+        if facts != DOC_FACTS:
+            diff = sorted(k for k in DOC_FACTS if DOC_FACTS[k] != facts.get(k))
+            raise kkbox_units.CountMismatch(f"doc facts differ: {diff}")
         zero = log["share_with_zero_chance"]
         if zero["registered"] != zero["recounted"]:
             raise kkbox_units.CountMismatch("share_with_zero_chance differs")
