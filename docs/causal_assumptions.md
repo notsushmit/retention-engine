@@ -112,6 +112,28 @@ Results are added here from logged runs only.
 
 Under the rules registered in advance, every KKBox output carries the label "balance not met" and no KKBox estimate is reported as a finding. The reading registered before the outcome is read is "balance not met, assumptions unsupported", unless the registered checks show otherwise.
 
-### KKBox outcome
+### KKBox outcome (read once, logged run)
 
-Pending: not read when this page was written.
+Every result below carries the label "balance not met". The reading registered before the outcome was read applies: **balance not met, assumptions unsupported.** Nothing here says that discounts raise or lower churn. Intervals are 95% customer-bootstrap intervals with 1,000 resamples. They cover sampling variation given the trimmed set, not the uncertainty of the trimming itself.
+
+**Placebo (listening days in days 56 to 29 before the snapshot date; primary trimming, 62 discounted against 51 full price).**
+
+- The AIPW interval runs from -6048.6 to 5959.1 days (estimate 0.74). It is uninformative: in some resamples the refitted propensities come close to 0 or 1, and the weights explode.
+- The T-learner interval is -1.86 to 1.90 days (estimate -0.70), and the X-learner interval is -1.83 to 1.89 days (estimate -0.06). Both contain zero.
+- The placebo outcome's standard deviation on the kept group is 9.66 days. The registered power limit puts the smallest detectable difference at about 5 to 7 listening days (0.53 to 0.74 standard deviations). A placebo near zero is therefore weak evidence, as registered.
+- Three covariates read all listening history: days since the last listen, any listening before the snapshot date, and first listen inside the last 28 days. For 17 of the 113 kept renewals (7 full price, 10 discounted), they fix the placebo value or put a bound on it. This pulls the placebo toward zero and makes it weaker still.
+
+**Main estimate under primary and stricter trimming, and the sensitivity run without tenure and registration channel: no estimate was obtained.**
+
+- In each of these runs, all 10 of the 10 outcome models were degenerate, as were all 10,000 outcome models in each bootstrap. Every training arm in every fold had a single outcome value.
+- The naive difference on the primary trimmed set is exactly 0.
+- The logs imply that, within those groups, every kept renewal had the same churn outcome, so there is no difference for any method to estimate. The values the code produced are not results and are not quoted here.
+- The arm-level churn rates of the trimmed sets are not logged.
+
+**Untrimmed set (70 discounted against 550 full price): not computable, as registered.** The bootstrap stopped at its third resample, where a kept renewal had a propensity of exactly 0 or 1. The point estimates (AIPW 0.116, T-learner 0.0016, X-learner 0.0061) are reported only to show how much the extreme weights drive them: AIPW, which divides by the propensity, is about 19 times the X-learner average and about 73 times the T-learner average. That comparison is a measure of weight sensitivity only, not of any effect.
+
+**Naive difference on the analysed set (620 renewals, no adjustment):** interval -0.0301 to 0.0223, estimate -0.0075. The interval includes zero. This comparison is unadjusted and confounded by the September timing and discount history described above.
+
+**What this means for the rest of the project.** No per-customer KKBox effect exists. The customer groups (persuadable, stays anyway, lost cause, do-not-disturb) and the counterfactuals therefore cannot use KKBox effects. They are a demonstration of the method on the randomized public data (Hillstrom and Criteo).
+
+**Robustness criterion.** It is met in design: the placebo, trimming sensitivity and covariate sensitivity were registered before the outcome was read. It is not met in execution: the placebo ran, but no main estimate was obtained under primary or stricter trimming, and the untrimmed estimate was not computable, so there was no estimate to check.
