@@ -304,13 +304,13 @@ def propensity_step() -> dict:
             }
             table = balance.balance_table(xb[keep].reset_index(drop=True), tk, w)
             table.to_parquet(KKBOX_OUT / f"balance_{name}.parquet", index=False)
-            worst = table.loc[table.smd_after.abs().idxmax()]
+            worst = balance.tied_max(table.smd_after.abs(), table.column)
             r["balance"] = {
                 "columns": len(table),
                 "failing": int((~table.passes).sum()),
-                "max_abs_smd_after": round(float(abs(worst.smd_after)), 3),
+                "max_abs_smd_after": round(float(table.smd_after.abs().max()), 3),
                 "max_abs_smd_before": round(float(table.smd_before.abs().max()), 3),
-                "worst_column": worst.column,
+                "worst_columns": worst,
                 "passes": bool(table.passes.all()),
             }
             hist = keep & ~np.isnan(days)

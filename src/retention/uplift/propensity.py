@@ -102,10 +102,14 @@ def oof_propensity(x: pd.DataFrame, t: np.ndarray, fold_id: np.ndarray, c: float
     return e
 
 
-def pick_c(losses: dict[float, float]) -> float:
-    """Smallest mean loss; ties go to the smaller C (the stronger penalty)."""
+TIE_TOL = 1e-9
+
+
+def pick_c(losses: dict[float, float], tol: float = TIE_TOL) -> float:
+    """Smallest mean loss; losses within tol of the smallest are ties, which go to the
+    smaller C (the stronger penalty)."""
     best = min(losses.values())
-    return min(c for c, v in losses.items() if v == best)
+    return min(c for c, v in losses.items() if v <= best + tol)
 
 
 def choose_c(

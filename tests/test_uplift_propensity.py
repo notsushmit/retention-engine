@@ -44,6 +44,10 @@ def test_folds_keep_each_customer_together_and_are_deterministic():
 def test_pick_c_breaks_ties_toward_the_smaller_c():
     assert propensity.pick_c({0.01: 0.5, 0.1: 0.4, 1.0: 0.4, 10.0: 0.45}) == 0.1
     assert propensity.pick_c({0.01: 0.3, 0.1: 0.4}) == 0.01
+    # losses equal to within floating-point noise are ties, in either direction
+    assert propensity.pick_c({0.1: 0.4, 1.0: 0.4 - 1e-13}) == 0.1
+    assert propensity.pick_c({0.1: 0.4 - 1e-13, 1.0: 0.4}) == 0.1
+    assert propensity.pick_c({0.1: 0.4, 1.0: 0.4 - 1e-6}) == 1.0
 
 
 def test_oof_propensity_is_out_of_fold_and_learns_the_signal():
@@ -112,3 +116,15 @@ def test_balance_fill_uses_the_pooled_median_of_all_units():
     filled = balance.fill_for_balance(x)
     assert filled["a"].tolist() == [1.0, 3.0, 3.0, 10.0]  # median of 1, 3, 10
     assert filled["a_missing"].tolist() == [0.0, 1.0, 0.0, 0.0]
+
+
+def test_tied_max_names_every_tied_column_in_any_order():
+    a = 0.2732695862595
+    for vals, labels in (
+        ([a, -(a - 1e-13), 0.1], ["month_2016_09", "days_until_expiry", "other"]),
+        ([0.1, -(a - 1e-13), a], ["other", "days_until_expiry", "month_2016_09"]),
+        ([-(a + 1e-13), a, 0.1], ["days_until_expiry", "month_2016_09", "other"]),
+    ):
+        got = balance.tied_max(pd.Series(vals).abs(), pd.Series(labels))
+        assert got == ["days_until_expiry", "month_2016_09"]
+    assert balance.tied_max(pd.Series([0.3, 0.2]), pd.Series(["a", "b"])) == ["a"]

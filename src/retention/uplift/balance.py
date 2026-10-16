@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 
 PASS_ABS_SMD = 0.10
+# Values closer than this count as tied wherever a largest value is named.
+TIE_TOL = 1e-9
 
 
 def _wmean(x: np.ndarray, w: np.ndarray) -> float:
@@ -69,3 +71,14 @@ def fill_for_balance(x: pd.DataFrame) -> pd.DataFrame:
     never a training-fold median. The 0/1 null flags are already columns of `x`.
     """
     return x.fillna(x.median(numeric_only=True))
+
+
+def tied_max(values: pd.Series, labels: pd.Series, tol: float = TIE_TOL) -> list[str]:
+    """Every label whose value is within tol of the largest, in sorted order.
+
+    Naming one first maximum lets floating-point noise pick between tied columns;
+    returning all of them, sorted, gives the same list in any row order.
+    """
+    v = values.to_numpy(dtype=float)
+    top = np.nanmax(v)
+    return sorted(str(lab) for lab, x in zip(labels, v, strict=True) if x >= top - tol)
