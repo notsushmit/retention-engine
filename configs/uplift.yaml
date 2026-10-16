@@ -398,3 +398,35 @@ groups:  # registered before any group is built
     rule: within each group, the treated-minus-control difference in outcome rate on the evaluation half, with a Poisson customer bootstrap (1000 resamples, seed 0) 95% interval, interval before estimate
     expectation: the Persuadable group shows the largest difference
     if_fails: reported as found; no change to the thresholds or rules
+
+counterfactuals:  # registered before any counterfactual code is written
+  model: the frozen 30-day churn classifier (feature set fs1, candidate c01) as saved by the explanation step with its SHA-256, and its Platt calibration; never refit
+  rows: the explained rows (customers expiring within 30 days at 2016-10-01, 2016-11-01, 2017-01-01 and 2017-02-01); features only, no outcome
+  method: >
+    A constrained search with no new dependency. For each row, every allowed change is scored with the frozen
+    model; a change is kept only if it lowers the calibrated 30-day churn probability by at least
+    min_reduction. With one lever there is at most one change per row.
+  levers:
+    last_is_auto_renew: {from: 0, to: 1}  # never from 1 to 0
+  lever_support: >
+    Auto-renew is offered for a row only if, among the model's training rows (customers expiring within 30
+    days at 2016-08-01 and 2016-09-01), the comparable group has at least 10 rows with auto-renew on. The
+    comparable group shares plan length, list price and payment method, the listening-days band (0, 1-7,
+    8-20, 21-28) and the days-until-expiry band (0-6, 7-13, 14-20, 21-29). The run reports how many explained
+    rows have this support. An earlier count of 21,958 explained rows with at least ten comparable on-rows in
+    the same snapshot is coverage only, not the support rule.
+  min_reduction: 0.01
+  min_reduction_reason: one percentage point of calibrated 30-day probability; the user's own registered choice, not validated; about one fifth of the paid churn rate in reliable months (4.5 to 7.1 percent in the label checks)
+  rendered_meaning: every rendered counterfactual is the model's score under a changed input, not an effect; auto-renew may only mark customers who were staying anyway
+  coverage: reported by lever and snapshot - rows with a counterfactual that meets min_reduction, and rows without one by reason (no support for the lever; support but the reduction is below min_reduction)
+  dropped_levers:
+    plan_length: thin support - in the training rows only 353 (90 days), 944 (180 days) and 1,962 (410 days) rows hold the target plans, against a minimum of 200 rows per model leaf; plan length is also a choice the customer makes
+    usage: the listening columns are tightly linked (days, seconds, plays, ratios, slopes) and cannot be changed consistently from features alone
+  never_levers: [age, gender, registered_via, tenure_days, city, profile_blank]
+  not_levers:
+    price_and_discount: the KKBox discount effect could not be estimated, so a price counterfactual would invite a causal reading the data cannot support
+    payment_method: the customer's own choice, and tied to the method-23 discount pattern
+    history_calendar_state: days until expiry, days since the last transaction or listen, segment, paid state, last row kind and cancel flag describe the past or the calendar
+  deviations_from_the_project_plan: no dice-ml (a constrained search needs no new dependency); no usage lever; no plan lever
+  done_when_test: no counterfactual changes any feature outside the registered lever; auto-renew is never switched off
+  tests: deterministic search; a hand-made booster with a known best change; the support rule; coverage counts add up to the explained rows
