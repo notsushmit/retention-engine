@@ -203,3 +203,12 @@ def test_cross_check_against_sklift_curve_points():
     ref = dict(zip(x_ref, y_ref, strict=True))
     for k, value in zip(qini.cut_positions(len(y)), q, strict=True):
         assert value * len(y) == pytest.approx(ref[k])
+
+
+def test_progress_hook_sees_every_replicate_and_changes_nothing():
+    y, t, tau = synthetic(n=500)
+    seen = []
+    a = qini.bootstrap_area(y, t, tau, b=30, seed=0, progress=seen.append)
+    b = qini.bootstrap_area(y, t, tau, b=30, seed=0)
+    assert seen == list(range(1, 31))
+    assert np.array_equal(a.replicates, b.replicates)

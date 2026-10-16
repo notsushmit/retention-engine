@@ -19,6 +19,7 @@ model-training variation.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -106,9 +107,10 @@ def bootstrap_area(
     b: int = 1000,
     seed: int = 0,
     tie_seed: int = 0,
+    progress: Callable[[int], None] | None = None,
 ) -> Interval:
     """Qini area with a Poisson(1) customer bootstrap; the ranking is fixed."""
-    return bootstrap_area_difference(y, t, score, None, b, seed, tie_seed)
+    return bootstrap_area_difference(y, t, score, None, b, seed, tie_seed, progress)
 
 
 def bootstrap_area_difference(
@@ -119,8 +121,11 @@ def bootstrap_area_difference(
     b: int = 1000,
     seed: int = 0,
     tie_seed: int = 0,
+    progress: Callable[[int], None] | None = None,
 ) -> Interval:
-    """Area of `score`, or the paired difference A(score) - A(other) on the same weights."""
+    """Area of `score`, or the paired difference A(score) - A(other) on the same weights.
+
+    `progress(r)` is called after replicate r (1-based), for timing only."""
     y, t, score = (np.asarray(a, dtype=float) for a in (y, t, score))
     _check(y, t, score)
     cuts = cut_positions(len(y))
@@ -136,12 +141,24 @@ def bootstrap_area_difference(
         return areas[0] - areas[1] if other is not None else areas[0]
 
     estimate = stat(np.ones(len(y)))
-    reps = np.array([stat(w) for w in replicate_weights(len(y), b, seed)])
-    return _percentiles(estimate, reps)
+    return _percentiles(estimate, _replicates(stat, len(y), b, seed, progress))
+
+
+def _replicates(stat, n: int, b: int, seed: int, progress) -> np.ndarray:
+    out = []
+    for r, w in enumerate(replicate_weights(n, b, seed), start=1):
+        out.append(stat(w))
+        if progress is not None:
+            progress(r)
+    return np.array(out)
 
 
 def bootstrap_naive_difference(
-    y: np.ndarray, t: np.ndarray, b: int = 1000, seed: int = 0
+    y: np.ndarray,
+    t: np.ndarray,
+    b: int = 1000,
+    seed: int = 0,
+    progress: Callable[[int], None] | None = None,
 ) -> Interval:
     """Outcome rate of treated minus control, with the same Poisson(1) bootstrap."""
     y, t = np.asarray(y, dtype=float), np.asarray(t, dtype=float)
@@ -152,5 +169,4 @@ def bootstrap_naive_difference(
         return float(treated - control)
 
     estimate = stat(np.ones(len(y)))
-    reps = np.array([stat(w) for w in replicate_weights(len(y), b, seed)])
-    return _percentiles(estimate, reps)
+    return _percentiles(estimate, _replicates(stat, len(y), b, seed, progress))
