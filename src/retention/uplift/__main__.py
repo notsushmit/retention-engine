@@ -16,6 +16,11 @@ customer-grouped folds, out-of-fold propensities, the overlap check, the three t
 rules with stabilised weights and the balance table (registered fill), and the
 estimability mark under primary trimming. Writes propensity.json, propensity_scores.parquet
 and balance_<rule>.parquet under data/processed/kkbox/sample_020/uplift/.
+
+kept-composition: from the saved propensity scores and pre-T covariates (no refit, no
+outcome), the kept units per trimming rule by month, arm and past-year discount, and the
+mirror check of month_2016_09 against days_until_expiry in each balance table. Writes
+kept_composition.json.
 """
 
 from __future__ import annotations
@@ -351,7 +356,49 @@ def propensity_step() -> dict:
     return log
 
 
-COMMANDS = {"check-public": check_public, "recount": recount, "propensity": propensity_step}
+def kept_composition() -> dict:
+    _require_clean()
+    p = config.load()["kkbox"]["propensity"]
+    scores = pd.read_parquet(KKBOX_OUT / "propensity_scores.parquet")
+    tx = kkbox_units.read_transactions(KKBOX / "transactions.parquet")
+    analysed = kkbox_units.analysed_set(
+        kkbox_units.registered_set(_units(kkbox_units.SNAPSHOTS, tx))
+    )
+    cov = kkbox_units.covariates(analysed, KKBOX / "features.parquet", tx)
+    scores["snapshot_date"] = pd.to_datetime(scores.snapshot_date)
+    d = scores.merge(
+        cov[["msno", "snapshot_date", "any_discount_365"]],
+        on=["msno", "snapshot_date"],
+        validate="one_to_one",
+    )
+    d["month"] = d.snapshot_date.dt.strftime("%Y-%m")
+    d["arm"] = np.where(d.treated == 1, "treated", "untreated")
+    d["past_year_discount"] = np.where(d.any_discount_365 == 1, "yes", "no")
+    log: dict = {"commit": _git("rev-parse", "--short", "HEAD").strip(), "kept": {}, "mirror": {}}
+    for name in ("primary", "stricter", "none"):
+        band = p["trimming"][name]
+        kept = d[propensity.trim_mask(d.propensity.to_numpy(), band["low"], band["high"])]
+        groups = kept.groupby(["month", "arm", "past_year_discount"]).size()
+        log["kept"][name] = {"/".join(k): int(v) for k, v in groups.items()}
+        t = pd.read_parquet(KKBOX_OUT / f"balance_{name}.parquet").set_index("column")
+        m, e = t.loc["month_2016_09"], t.loc["days_until_expiry"]
+        log["mirror"][name] = {
+            "month_2016_09": [round(m.smd_before, 3), round(m.smd_after, 3)],
+            "days_until_expiry": [round(e.smd_before, 3), round(e.smd_after, 3)],
+            "mirror": bool(
+                abs(m.smd_before + e.smd_before) < 1e-9 and abs(m.smd_after + e.smd_after) < 1e-9
+            ),
+        }
+    (KKBOX_OUT / "kept_composition.json").write_text(json.dumps(log, indent=2) + "\n")
+    return log
+
+
+COMMANDS = {
+    "check-public": check_public,
+    "recount": recount,
+    "propensity": propensity_step,
+    "kept-composition": kept_composition,
+}
 
 
 def main() -> None:
