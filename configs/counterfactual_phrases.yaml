@@ -1,0 +1,30 @@
+# How a counterfactual is worded. Registered before any counterfactual code is written.
+#
+# A counterfactual says what the frozen churn model would score if one
+# input were recorded differently. It is the model's score under a changed
+# input, not the effect of any action. Only an uplift estimate may support a
+# claim about an action, and none exists for these customers, so no line here
+# makes one.
+#
+# Rules (the structure test enforces them on every value below):
+#   - No causal word: causes, because, due to, leads to, drives, results in.
+#   - No advice or lever word: should, turn on, switch, increase, improve,
+#     reduce, try, consider, enable, offer, give, ask, encourage, prompt,
+#     upgrade, move to, set up.
+#   - No action-claim word: help, helps, keep, keeps, retain, save, prevent,
+#     lower churn.
+#   - Digits only inside the fact fields {horizon}, {new}, {old} and {min_points}.
+#   - Nothing about age, gender, the registration channel, tenure or city.
+#   - The line reads correctly whether the new score is lower or higher than
+#     the old one ("would be {new} instead of {old}").
+
+counterfactual_line: "With auto-renew recorded as on, the model's {horizon}-day churn score would be {new} instead of {old}."
+caveat_line: "This is the model's score under a changed input, not the effect of any action; customers with auto-renew on may simply be customers who were staying anyway."
+no_counterfactual:
+  no_support: "No counterfactual: auto-renew is not recorded as on for enough comparable customers."
+  below_threshold: "No counterfactual: recording auto-renew as on would not move the model's {horizon}-day churn score by at least {min_points} percentage point."
+# Fact formats: scores are calibrated probabilities shown as percentages with
+# one decimal ("5.2%"); min_points is the registered minimum in percentage points;
+# horizon is the model's horizon in days.
+score_format: "{:.1%}"
+min_points_format: "{:g}"
