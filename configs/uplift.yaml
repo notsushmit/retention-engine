@@ -212,6 +212,15 @@ kkbox:
     timing: time per resample is measured on the first 10 resamples of each bootstrap; the run stops if the projected total for the whole step exceeds 3 hours
     sensitivity_without_members: if estimable but balance fails, the same "balance not met" label applies; if not estimable, it is reported as such
     reading: balance has failed under the registered rule and the label is never lifted, so the report reads "balance not met, assumptions unsupported" whatever the estimates show
+    # constant_fits: registered after the build, before the outcome command runs
+    constant_fits: >
+      If every training outcome in an arm and fold is the same value, that arm's prediction in that fold is the
+      value itself (0 or 1), and the fit is counted as degenerate (logged per fit). The output reports
+      "outcome models were degenerate in X of Y fits" for the main estimate and for the bootstrap (summed over
+      resamples). If more than 10% of the main estimate's fits are degenerate, or any cross-fitted fold of the
+      primary run is, the report says so next to the estimate and explains that the T- and X-learner effects
+      are then close to a single arm's predicted rate. The rule never changes the "balance not met" label and is
+      not a reason to rerun.
     recovery_tests:
       data: synthetic randomized set, n = 4000, seed 0, half treated, base rate 0.30, effect +0.10 where x1 > 0 and 0 otherwise, so the true average effect is 0.05
       pass_average: each of the T-learner, X-learner and AIPW averages within 0.05 +/- 0.04
