@@ -189,11 +189,13 @@ def test_covariates_carry_no_renewal_row_column(tmp_path):
     assert cov.any_discount_365.tolist() == [0.0, 1.0, 0.0]
 
 
-def test_no_outcome_column_name_appears_in_the_package():
+def test_no_outcome_column_name_appears_outside_the_outcome_reader():
+    # outcome.py is the one reader; tests/test_uplift_outcome.py checks it names only two columns
     pattern = re.compile("|".join(re.escape(p) for p in OUTCOME_LABEL_PREFIXES))
     for path in Path("src/retention/uplift").glob("*.py"):
-        code = path.read_text()
-        assert not pattern.search(code), f"{path} names an outcome column"
+        if path.name == "outcome.py":
+            continue
+        assert not pattern.search(path.read_text()), f"{path} names an outcome column"
 
 
 def test_count_check_stops_on_any_difference():
