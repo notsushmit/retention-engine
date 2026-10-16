@@ -41,8 +41,12 @@ the labels recorded by select). --output-dir writes elsewhere (for a second run)
 compare-archetype-select A B: whether two select runs (folders) are identical: the
 reports without time and memory, and the label tables after sorting by key.
 
-refit, contributions, hand-check and reasons refuse to run when a tracked file differs from HEAD, so
-the reports and the saved models tie to a commit.
+counterfactuals: the registered counterfactuals of the frozen 30-day booster for every
+explained row (configs/uplift.yaml, counterfactuals): features only, every labels read
+audited; writes counterfactuals.parquet and counterfactuals.json to
+data/processed/<sample>/explain/.
+refit, contributions, hand-check, reasons and counterfactuals refuse to run when a
+tracked file differs from HEAD, so the reports and the saved models tie to a commit.
 """
 
 from __future__ import annotations
@@ -399,6 +403,44 @@ def compare(args) -> int:
     return 0 if result["identical"] else 1
 
 
+def counterfactuals(args) -> int:
+    from retention.explain import counterfactuals as cf
+
+    repo = Path.cwd()
+    if tree_dirty(repo):
+        raise SystemExit("a tracked file differs from HEAD; commit first so the run ties to code")
+    t0 = time.time()
+    protocol = load_protocol()
+    settings = load_settings()
+    cfg = load_explain_config(settings.columns)
+    processed = processed_dir(args.fraction)
+    reads: list[dict] = []
+    audit_label_reads(reads)
+    log, table = cf.run(
+        processed,
+        explain_dir(args.fraction) / "model",
+        protocol,
+        settings,
+        list(cfg.snapshots),
+        cf.registered_min_reduction(),
+        cf.load_phrases(),
+    )
+    require_label_reads(reads)
+    out = processed / "explain"
+    table.to_parquet(out / "counterfactuals.parquet", index=False)
+    log |= {
+        "commit": head_commit(repo),
+        "labels_reads": reads,
+        "seconds": round(time.time() - t0, 1),
+        "peak_rss_gb": peak_rss_gb(),
+    }
+    (out / "counterfactuals.json").write_text(json.dumps(log, indent=2, default=str) + "\n")
+    print(
+        json.dumps({k: log[k] for k in ("support_by_snapshot", "seconds", "peak_rss_gb")}, indent=2)
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m retention.explain")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -425,6 +467,8 @@ def main(argv: list[str] | None = None) -> int:
     cr = sub.add_parser("compare-reasons", help="compare two reasons files")
     cr.add_argument("a")
     cr.add_argument("b")
+    cf = sub.add_parser("counterfactuals", help="registered counterfactuals of the 30-day model")
+    cf.add_argument("--fraction", type=float, default=None)
     k = sub.add_parser("compare-contributions", help="compare two contribution runs")
     k.add_argument("a")
     k.add_argument("b")
@@ -443,6 +487,8 @@ def main(argv: list[str] | None = None) -> int:
         return archetypes(args)
     if args.command == "compare-archetype-select":
         return compare_archetype_select(args)
+    if args.command == "counterfactuals":
+        return counterfactuals(args)
     if args.save and not args.expect_sha:
         parser.error("--save needs --expect-sha for every horizon")
     return refit(args)
