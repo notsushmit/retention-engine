@@ -60,3 +60,12 @@ def balance_table(
             }
         )
     return pd.DataFrame(rows)
+
+
+def fill_for_balance(x: pd.DataFrame) -> pd.DataFrame:
+    """Fill numeric nulls with the pooled median of all rows given (the analysed units).
+
+    The registered balance fill: one median over every analysed unit, before trimming,
+    never a training-fold median. The 0/1 null flags are already columns of `x`.
+    """
+    return x.fillna(x.median(numeric_only=True))

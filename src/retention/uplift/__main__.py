@@ -9,6 +9,13 @@ recount: rebuilds the KKBox renewal units (pre-T label columns and transactions 
 or before 2016-12-31 only; no outcome column) and compares every registered count, and the
 2016 figures quoted in docs/causal_assumptions.md, with the recount. Stops (exit code 1)
 if any differs. Writes recount.json under data/processed/kkbox/sample_020/uplift/.
+
+propensity: the KKBox propensity step only (no outcome is read): the recount check, the
+registered covariates and column rules, the penalty chosen on treatment with
+customer-grouped folds, out-of-fold propensities, the overlap check, the three trimming
+rules with stabilised weights and the balance table (registered fill), and the
+estimability mark under primary trimming. Writes propensity.json, propensity_scores.parquet
+and balance_<rule>.parquet under data/processed/kkbox/sample_020/uplift/.
 """
 
 from __future__ import annotations
@@ -23,10 +30,11 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from threadpoolctl import threadpool_limits
 
 from retention.models.protocol import load_protocol
 from retention.models.resources import peak_rss_gb
-from retention.uplift import config, kkbox_units, public_data
+from retention.uplift import balance, config, kkbox_units, propensity, public_data
 
 OUT = Path("data/interim/public")
 KKBOX = Path("data/processed/kkbox/sample_020")
@@ -228,11 +236,129 @@ def recount() -> dict:
     return log
 
 
+FOLDS, FOLD_SEED, THREADS, MIN_COUNT = 5, 0, 4, 5
+
+
+def _quantiles(v: np.ndarray) -> dict:
+    q = np.quantile(v, [0, 0.25, 0.5, 0.75, 1])
+    return dict(
+        zip(["min", "q25", "median", "q75", "max"], (round(float(x), 4) for x in q), strict=True)
+    )
+
+
+def _arm_counts(t: np.ndarray) -> dict:
+    return {"treated": int((t == 1).sum()), "untreated": int((t == 0).sum())}
+
+
+def propensity_step() -> dict:
+    _require_clean()
+    start = time.perf_counter()
+    k = config.load()["kkbox"]
+    reg_counts, p = k["counts_before_outcome"], k["propensity"]
+    tx = kkbox_units.read_transactions(KKBOX / "transactions.parquet")
+    reg = kkbox_units.registered_set(_units(kkbox_units.SNAPSHOTS, tx))
+    analysed = kkbox_units.analysed_set(reg)
+    kkbox_units.check_counts(kkbox_units.recount(reg, analysed), reg_counts)
+    cov = kkbox_units.covariates(analysed, KKBOX / "features.parquet", tx)
+    fs1 = kkbox_units.fs1_columns()
+    categorical = [c for c in fs1 if c in kkbox_units.CATEGORICAL]
+    numeric = [c for c in fs1 if c not in categorical] + ["month_2016_09", "any_discount_365"]
+    design = propensity.build_design(cov, numeric, categorical, MIN_COUNT)
+    t = analysed.treated.to_numpy()
+    groups = analysed.msno.to_numpy()
+    with threadpool_limits(limits=THREADS):
+        fold_id = propensity.folds(t, groups, FOLDS, FOLD_SEED)
+        c, losses = propensity.choose_c(design.x, t, fold_id, p["penalty"]["C_grid"])
+        e = propensity.oof_propensity(design.x, t, fold_id, c)
+    primary = p["trimming"]["primary"]
+    log: dict = {
+        "commit": _git("rev-parse", "--short", "HEAD").strip(),
+        "units": _arm_counts(t),
+        "inputs": list(design.x.columns),
+        "n_inputs": design.x.shape[1],
+        "dropped": design.dropped,
+        "C_losses": {str(k_): round(v, 5) for k_, v in losses.items()},
+        "C_chosen": c,
+        "overlap": {
+            "treated": _quantiles(e[t == 1]),
+            "untreated": _quantiles(e[t == 0]),
+            "outside_primary_band": _arm_counts(
+                t[~propensity.trim_mask(e, primary["low"], primary["high"])]
+            ),
+        },
+    }
+    xb = balance.fill_for_balance(design.x)
+    days = cov.days_since_last_discount.to_numpy()
+    rules = {}
+    KKBOX_OUT.mkdir(parents=True, exist_ok=True)
+    for name in ("primary", "stricter", "none"):
+        band = p["trimming"][name]
+        keep = propensity.trim_mask(e, band["low"], band["high"])
+        tk = t[keep]
+        r: dict = {"band": band, "kept": _arm_counts(tk)}
+        if min(r["kept"].values()) >= 2:
+            w = propensity.stabilised_weights(tk, e[keep])
+            r["kish_ess"] = {
+                "treated": round(propensity.kish_ess(w[tk == 1]), 1),
+                "untreated": round(propensity.kish_ess(w[tk == 0]), 1),
+            }
+            table = balance.balance_table(xb[keep].reset_index(drop=True), tk, w)
+            table.to_parquet(KKBOX_OUT / f"balance_{name}.parquet", index=False)
+            worst = table.loc[table.smd_after.abs().idxmax()]
+            r["balance"] = {
+                "columns": len(table),
+                "failing": int((~table.passes).sum()),
+                "max_abs_smd_after": round(float(abs(worst.smd_after)), 3),
+                "max_abs_smd_before": round(float(table.smd_before.abs().max()), 3),
+                "worst_column": worst.column,
+                "passes": bool(table.passes.all()),
+            }
+            hist = keep & ~np.isnan(days)
+            th = t[hist]
+            if min((th == 1).sum(), (th == 0).sum()) >= 2:
+                wh = propensity.stabilised_weights(th, e[hist])
+                r["diagnostic_days_since_last_discount"] = {
+                    "units_with_history": _arm_counts(th),
+                    "smd_before": round(balance.smd(days[hist], th), 3),
+                    "smd_after": round(balance.smd(days[hist], th, wh), 3),
+                }
+            else:
+                r["diagnostic_days_since_last_discount"] = {
+                    "units_with_history": _arm_counts(th),
+                    "note": "fewer than 2 units with history in an arm; not computable",
+                }
+        else:
+            r["note"] = "an arm has fewer than 2 units; weights and balance not computable"
+        rules[name] = r
+    log["trimming"] = rules
+    kept = rules["primary"]["kept"]
+    minimum = (
+        k["expectations"]["min_treated_after_trimming"],
+        k["expectations"]["min_untreated_after_trimming"],
+    )
+    log["estimability"] = {
+        "rule": "at least 30 treated and 30 untreated after primary trimming",
+        "kept_primary": kept,
+        "verdict": "estimable"
+        if kept["treated"] >= minimum[0] and kept["untreated"] >= minimum[1]
+        else "not estimable",
+    }
+    scores = analysed[["msno", "snapshot_date", "treated"]].assign(propensity=e, fold=fold_id)
+    scores.to_parquet(KKBOX_OUT / "propensity_scores.parquet", index=False)
+    log["seconds"] = round(time.perf_counter() - start, 1)
+    log["peak_rss_gb"] = peak_rss_gb()
+    (KKBOX_OUT / "propensity.json").write_text(json.dumps(log, indent=2, default=str) + "\n")
+    return log
+
+
+COMMANDS = {"check-public": check_public, "recount": recount, "propensity": propensity_step}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m retention.uplift")
-    parser.add_argument("command", choices=["check-public", "recount"])
+    parser.add_argument("command", choices=list(COMMANDS))
     args = parser.parse_args()
-    run = check_public if args.command == "check-public" else recount
+    run = COMMANDS[args.command]
     log = run()
     print(json.dumps(log, indent=2, default=str))
     if log.get("status") == "stopped":

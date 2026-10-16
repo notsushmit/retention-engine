@@ -105,3 +105,10 @@ def test_balance_table_marks_the_threshold():
     table = balance.balance_table(x, t, np.ones(6))
     assert table.set_index("column")["passes"].to_dict() == {"a": False, "b": True}
     assert table.set_index("column").loc["b", "smd_after"] == 0.0
+
+
+def test_balance_fill_uses_the_pooled_median_of_all_units():
+    x = pd.DataFrame({"a": [1.0, None, 3.0, 10.0], "a_missing": [0.0, 1.0, 0.0, 0.0]})
+    filled = balance.fill_for_balance(x)
+    assert filled["a"].tolist() == [1.0, 3.0, 3.0, 10.0]  # median of 1, 3, 10
+    assert filled["a_missing"].tolist() == [0.0, 1.0, 0.0, 0.0]
