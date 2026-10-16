@@ -347,3 +347,23 @@ validation:  # added in a fourth commit, before either public dataset is downloa
     - a random ranking gives an area near 0 over many seeds
     - a reversed ranking gives a negative area equal in size to the perfect ranking's on a hand case with equal treated and control counts in every cut (the curve's N_T / N_C scaling makes this exact only then)
     - a small hand case whose area is computed by hand
+  run:  # added before any validation code is written and before either public file is used for a model
+    hillstrom_coding: zip_code and channel one-hot coded (every level found in the training half); recency, history, mens, womens and newbie used as numbers; visit and conversion are 0/1 outcomes; segment defines the arm and is never a feature; history_segment dropped
+    criteo_coding: f0 to f11 used as numbers; treatment defines the arm; exposure is never a feature
+    x_learner_stage2_grid: >
+      Stage-2 regressors are chosen from the public grid by 5-fold cross-validated squared error on imputed effects
+      built from out-of-fold stage-1 predictions inside the training half (for Criteo, inside the 1,000,000-row grid
+      subsample), using the stage-1 settings already chosen.
+    baseline_grid: the outcome-probability classifier (pooled training half, treatment not a feature) uses the same grid, the same 5-fold selection by log loss and the same tie rule (fewer trees, then fewer leaves, then larger min_child_samples)
+    run_once: >
+      python -m retention.uplift validate runs once. A marker is written before the first model is fitted; once
+      validation.json exists, every further run refuses; a marker without a log (an attempt that did not finish)
+      needs a stated reason, recorded against the earlier attempt.
+    timing: the time of the first 10 bootstrap resamples of each cell is logged; the run stops if the projected total exceeds 6 hours
+    memory: the main process stays under 10 GB; the run is watched and stopped if it exceeds that or if swap grows
+    outputs:
+      log: data/processed/public/validation.json (splits, chosen grid points, Qini areas with intervals, pass marks per cell, sanity marks, timings, peak memory)
+      curves: Qini curve points per cell and ranking in data/processed/public/qini_curves.parquet; tracked figures are drawn later from this file only
+      uplift_scores: data/processed/public/uplift_scores.parquet holds evaluation-half scores of the two public datasets only (dataset, cell, row number, T-learner and X-learner uplift, outcome probability); no KKBox row can be written to it, and a test checks that
+    tests_before_the_run: hand cases for every pass-mark path, including (a) passing while (b) fails, (b) not judged, and the all-three Done-when rule
+    expected_case: Hillstrom's email effects are small and noisy and its features few, so a failing Hillstrom cell is plausible; the two Hillstrom cells share the No E-Mail control arm and are not independent
