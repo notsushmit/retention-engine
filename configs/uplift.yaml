@@ -179,6 +179,45 @@ kkbox:
       the KKBox effect is unlikely to be identified. The report reads "balance not met, assumptions unsupported"
       unless the registered checks show otherwise.
 
+  outcome_step:  # registered before any outcome-step code is written and before any KKBox outcome is read
+    unit_horizon: >
+      For every analysed unit, discounted or not, E is the expiry date on its own first renewal row after T
+      (for untreated units, the full-price renewal). With every plan exactly 30 days, the horizon from the
+      renewal to E has the same length in both arms, which is why plan length is restricted to 30 days. Units
+      whose E is on or after 2016-11-05 are not analysed; a hand-case test covers one.
+    bootstrap: >
+      1000 resamples, seed 0. Each resample draws customers with replacement from all 620 analysed units, and a
+      drawn customer brings all of their units. The propensity is refit on the resample with C = 1 on new
+      customer-grouped folds; the trimming membership of the original run is kept; the outcome models are refit
+      on the kept units.
+    interval_scope: the interval covers sampling variation given the trimmed set, not the uncertainty of the trimming itself; every output says so
+    not_computable: >
+      A resample in which a kept unit has a propensity of exactly 0 or 1, or in which a fold leaves an arm with
+      fewer than 2 units to train on, is not computable. If any resample is not computable, the interval is
+      labelled "not computable" with the reason and no interval is formed from the other resamples.
+    expected_not_computable: the untrimmed estimate is probably not computable (propensities near 0 and 1); that is a result, not a code failure
+    outcome_models: LightGBM classifiers for churn and LightGBM regressors for the placebo, at the fixed KKBox setting (learners.kkbox_fixed); the X-learner's second-stage models are cross-fitted on the same folds
+    placebo:
+      outcome: distinct days with a log row in days T-56 to T-29, inclusive
+      covariates: exactly as registered (same units, trimming and learners as the primary estimate)
+      window_test: the placebo window is disjoint from and adjacent to the 28-day window (T-28 to T-1) of every windowed feature; days_since_last_listen, has_any_log_before_T and first_log_in_window read all listening history and are named as known exceptions
+      leak: >
+        Those three covariates fix or bound the placebo value for 17 of the 113 kept units (7 full price,
+        10 discounted): never listened, first listen in the last 28 days, or last listen more than 56 days ago
+        fix it at 0; last listen 29 to 56 days ago bounds it at 1 or more. Adjustment removes any placebo
+        difference for those units mechanically, which pulls the placebo toward zero and makes an already weak
+        check (about 0.53 SD detectable by counts, 0.74 SD with weighting) weaker. A zero placebo is therefore
+        weak evidence. The count comes from a counts-only check of pre-T data; the placebo step logs it and stops
+        if it differs.
+    timing: time per resample is measured on the first 10 resamples of each bootstrap; the run stops if the projected total for the whole step exceeds 3 hours
+    sensitivity_without_members: if estimable but balance fails, the same "balance not met" label applies; if not estimable, it is reported as such
+    reading: balance has failed under the registered rule and the label is never lifted, so the report reads "balance not met, assumptions unsupported" whatever the estimates show
+    recovery_tests:
+      data: synthetic randomized set, n = 4000, seed 0, half treated, base rate 0.30, effect +0.10 where x1 > 0 and 0 otherwise, so the true average effect is 0.05
+      pass_average: each of the T-learner, X-learner and AIPW averages within 0.05 +/- 0.04
+      pass_heterogeneity: each learner's mean effect for x1 > 0 exceeds its mean for x1 <= 0 by at least 0.04
+      if_fails: reported as found; no retuning and no larger sample afterwards
+
   downstream:
     budget_optimizer: >
       KKBox cannot supply a customer-level effect for any action. The budget step treats
