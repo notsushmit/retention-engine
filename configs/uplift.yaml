@@ -156,6 +156,7 @@ kkbox:
     balance:
       smd: (weighted mean treated - weighted mean untreated) / sqrt((var treated + var untreated) / 2), variances unweighted, within the trimmed group
       zero_variance: if both arms' variances are 0 the SMD is 0 when the means are equal, otherwise the column fails
+      null_fill: numeric nulls are filled with the pooled median of all analysed units (before trimming), never a training-fold median; the 0/1 null flags are balance columns too; reason, balance describes the group as a whole, a fold median would fill the same value differently by fold, and one fill keeps the before-and-after and the three trimming rules comparable  # added after the balance code was written, before any propensity fit
       columns: every model input after preprocessing (each flag, each registered_via level, the month indicator, any_discount_365)
       pass: every |SMD| <= 0.10 after weighting
       reported: SMDs before weighting; variance ratios (not judged); the days_since_last_discount diagnostic
