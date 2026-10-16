@@ -78,7 +78,7 @@ It cannot show:
 
 ## Checks registered in advance
 
-- **Placebo: low power.** With 70 and 550 renewals, the smallest difference the placebo detects with 80% probability at the 5% level is about 0.36 standard deviations of the placebo outcome (2.8 × √(1/70 + 1/550)). That is before trimming and weighting, which make it larger. If trimming leaves about 65 against 25, the figure becomes about 0.67 standard deviations (2.8 × √(1/65 + 1/25)). Either is a large difference, so a placebo near zero is more likely a lack of power than an absence of confounding. The placebo outcome's standard deviation is reported with the result.
+- **Placebo: low power.** With 70 and 550 renewals, the smallest difference the placebo detects with 80% probability at the 5% level is about 0.36 standard deviations of the placebo outcome (2.8 × √(1/70 + 1/550)). That is before trimming and weighting, which make it larger. If trimming leaves about 65 against 25, the figure becomes about 0.66 standard deviations (2.8 × √(1/65 + 1/25)); an earlier version of this page said 0.67 in error. Either is a large difference, so a placebo near zero is more likely a lack of power than an absence of confounding. The placebo outcome's standard deviation is reported with the result.
 - **Placebo: design.**
   - The same estimate is repeated with an outcome that ended before the snapshot date: days with listening in days 56 to 29 before it. This outcome is kept out of the features, so the real discount, dated after it, cannot have changed it.
   - This outcome was chosen because it lies just outside the features' 28-day listening window and is measured for every customer. Past listening, however, is only a weak stand-in for the unrecorded things that drive churn, such as an offer, a contract or a support contact.
@@ -93,4 +93,25 @@ It cannot show:
 
 ## Results
 
-Pending. When this page was written, no propensity model had been fitted and no KKBox outcome had been read. Results are added here from logged runs only.
+Results are added here from logged runs only.
+
+### Propensity step (no outcome read)
+
+- **Group:** 620 analysed renewals, 70 discounted and 550 at full price. The registered column rules leave 37 model inputs, and the chosen penalty is C = 1.
+- **Overlap:** the median propensity is 0.66 for discounted renewals and 0.008 for full-price ones. Outside the primary band of 0.05 to 0.95 fall 8 discounted and 499 full-price renewals.
+- **Kept after trimming (discounted against full price):** 62 against 51 under the primary rule, 57 against 31 under the stricter rule, 70 against 550 with no trimming. The estimability mark (at least 30 in each group under the primary rule) is met, so the result is "estimable".
+- **The registered expectation was wrong.** It expected about 65 against 25; the step kept 62 against 51.
+  - The 51 full-price renewals kept are 24 September renewals with a discount in the past year, 16 September renewals without one, and 11 August renewals with one.
+  - The penalty in the propensity model shrinks the month term, so some August renewals stay inside the band.
+  - All 62 discounted renewals kept have a past-year discount.
+- **Balance is not met under any trimming rule.** After weighting, 21 of 37 inputs have a standardised mean difference above 0.10 under the primary rule (largest 0.46, the past-year discount), 17 under the stricter rule (largest 0.27), and 32 with no trimming (largest 2.03).
+- **Mirror columns.** In both kept groups, the snapshot month and the days until expiry have standardised mean differences equal in size and opposite in sign (0.37 and -0.37 under the primary rule, 0.27 and -0.27 under the stricter rule). That is one imbalance seen through two columns, which is why the stricter rule names both as its largest. They are not mirror images in the untrimmed group.
+- **Recency of the past discount** (a diagnostic, not a model input): standardised mean difference -1.10 before weighting and -1.41 after, among kept renewals with a past-year discount.
+- **Weighted effective sample sizes:** 26.5 discounted and 31.9 full price under the primary rule.
+- **Placebo power on the kept group:** the smallest detectable difference is about 0.53 standard deviations of the placebo outcome by counts, and about 0.74 by effective sample size.
+
+Under the rules registered in advance, every KKBox output carries the label "balance not met" and no KKBox estimate is reported as a finding. The reading registered before the outcome is read is "balance not met, assumptions unsupported", unless the registered checks show otherwise.
+
+### KKBox outcome
+
+Pending: not read when this page was written.
