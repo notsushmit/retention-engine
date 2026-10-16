@@ -104,3 +104,48 @@ Each learner's average predicted effect should fall inside the 95% interval of t
 - The method beats random in two of the three primary cells, and the first Done-when criterion is not met: it needs all three, and the men's Hillstrom cell fails both marks.
 - Where it beats random, it adds little or nothing over ranking by outcome probability.
 - These results test the method on other companies' data. They say nothing about KKBox customers. No KKBox per-customer effect exists (see `docs/causal_assumptions.md`).
+
+## Customer groups
+
+The groups below were built on the randomized public data only, in the two primary cells that met their marks. In both cells the X-learner added little over ranking by outcome probability, so the groups mostly separate customers by their baseline rate, not by the effect of the action. No KKBox customer is assigned to a group: KKBox has no per-customer effect. The men's Hillstrom cell was not built, because the cell did not beat random.
+
+**How the groups were made (registered in advance):**
+- The T-learner was refit on the training half with the settings the validation run chose. Its uplift for the evaluation half reproduced the logged scores exactly (largest difference 0.0).
+- The thresholds come from the training half:
+  - δ is half the naive treated-minus-control difference;
+  - m is the control group's outcome rate.
+- Each evaluation-half customer is then placed by the X-learner's predicted effect τ and the predicted outcome without the action:
+
+  | Group | Rule |
+  |---|---|
+  | Persuadable | τ ≥ δ |
+  | Do-not-disturb | τ ≤ −δ |
+  | Stays anyway | in between, and predicted outcome without the action at least m |
+  | Lost cause | in between, and predicted outcome without the action below m |
+
+- δ is the user's own choice and was not validated.
+
+The registered check: within each group, the treated-minus-control difference in visits on the evaluation half, with a 95% Poisson-bootstrap interval (1,000 resamples). The Persuadable group was expected to show the largest difference. The results are reported as found.
+
+### Hillstrom, women's email against no email (δ = 0.02172, m = 0.10711)
+
+| Group | Customers (treated / control) | Difference, 95% interval | Estimate |
+|---|---|---|---|
+| Persuadable | 14,664 (7,397 / 7,267) | 0.05061 to 0.07178 | 0.06075 |
+| Stays anyway | 4,132 (2,042 / 2,090) | -0.00671 to 0.03874 | 0.01566 |
+| Lost cause | 2,345 (1,155 / 1,190) | -0.00035 to 0.04407 | 0.02136 |
+| Do-not-disturb | 205 (99 / 106) | -0.10946 to 0.09054 | -0.00820 |
+
+### Criteo, treated against control (δ = 0.00517, m = 0.03816)
+
+| Group | Customers (treated / control) | Difference, 95% interval | Estimate |
+|---|---|---|---|
+| Persuadable | 1,369,285 (1,175,387 / 193,898) | 0.03604 to 0.03941 | 0.03778 |
+| Stays anyway | 212,331 (179,753 / 32,578) | 0.00219 to 0.00976 | 0.00620 |
+| Lost cause | 5,405,948 (4,584,279 / 821,669) | 0.00064 to 0.00096 | 0.00079 |
+| Do-not-disturb | 2,232 (1,908 / 324) | -0.02555 to 0.08802 | 0.03011 |
+
+- **The Persuadable group shows the largest difference in both cells**, as expected. This is reported as found.
+- **Criteo Do-not-disturb is uninformative:** the interval runs from -0.0256 to +0.0880 on 2,232 customers, only 324 of them in control. It cannot say whether this group's difference is negative.
+- **Hillstrom Do-not-disturb (205 customers)** has an interval of -0.10946 to 0.09054, which is also too wide to say anything.
+- The group files hold the public evaluation rows only. The uplift scores file (`uplift_scores.parquet`) also holds only Hillstrom and Criteo rows: 14,064,898 rows, no KKBox row.
