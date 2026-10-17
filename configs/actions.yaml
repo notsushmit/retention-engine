@@ -8,6 +8,8 @@
 # the fourth commit, before any run.
 # The wording rules, the fixed disclaimers and the run-time stop were added in the
 # fifth commit, before any code.
+# The exact check's time limit and its rules for an unproven solve were added in
+# the sixth commit, before any real step.
 #
 # Every effect below is an ASSUMPTION chosen by the user. None is an estimate: no
 # KKBox uplift estimate exists for any action, and no number here comes from KKBox
@@ -378,3 +380,23 @@ random_baseline_timing:
   projection: measured seconds per scenario-budget cell x 112 cells
   stop_hours: 3.0  # the plan step refuses to start above this projection
   recheck: after the first real cell, project again from its measured time; stop above 3 hours
+
+# --- the exact check's time limit -------------------------------------------------------
+exact_check:
+  label: "HiGHS time limit: user choice, 2026-10-17"
+  time_limit_seconds: 120  # per solve
+  threads: one requested; scipy.optimize.milp (1.17.1) has no thread option, so the run-twice check is the evidence
+  proven: HiGHS reports an optimal solution within the limit
+  budget_only_cells:
+    proven: the mark "HiGHS objective >= greedy objective - 1e-6" applies; a breach stops the run
+    unproven: 'greedy stays the plan; the cell is marked "exact_check: not proven" and greedy''s gap to the LP bound is reported'
+  contact_limit_cells:
+    proven: HiGHS's solution is the plan
+    unproven: 'HiGHS''s best feasible solution is the plan only if its net value is at least greedy''s; otherwise greedy''s (cut to the contact limit by the registered repair, lowest net per cost removed first); the cell is marked "exact_check: not proven"'
+  greedy_mark_applies_to: proven solves only
+  determinism_check: compared only when both solves are proven; otherwise reported as not checked
+  unproven_report:
+    count: the number of unproven cells out of the 112, always reported
+    statement_above_share: 0.10  # above this share the report states plainly that the exact check is limited (a finding, not a failure)
+  every_plan: never over budget or the contact limit, checked on every plan, proven or not
+  timing: the 3-hour projected stop stays; actual seconds per cell are logged
