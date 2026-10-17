@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import math
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -170,3 +171,54 @@ def projected_hours(seconds_per_cell: float, cells: int) -> float:
 def _min_count(a: int | None, b: int | None) -> int | None:
     vals = [v for v in (a, b) if v is not None]
     return min(vals) if vals else None
+
+
+@dataclass
+class TimeGuard:
+    """The registered projection rechecks (configs/actions.yaml, projection_rechecks).
+
+    Projection = elapsed seconds + mean solve seconds of the budget-limited cells so
+    far x remaining budget-limited cells + random-draw estimate x remaining cells.
+    Checked after the 1st and the 10th budget-limited cell; above the stop, the run
+    stops and reports the measured seconds. Cells are never skipped and the time
+    limit is never shortened.
+    """
+
+    stop_hours: float
+    random_seconds: float
+    budget_limited_total: int
+    cells_total: int
+    check_after: tuple[int, ...] = (1, 10)
+    elapsed: float = 0.0
+    cells_done: int = 0
+    solve_seconds: list[float] = field(default_factory=list)
+    checks: list[dict[str, Any]] = field(default_factory=list)
+
+    def record(
+        self, budget_limited: bool, solve_seconds: float, cell_seconds: float
+    ) -> dict[str, Any] | None:
+        """Log one finished cell; returns the check made after it, if any."""
+        self.cells_done += 1
+        self.elapsed += cell_seconds
+        if not budget_limited:
+            return None
+        self.solve_seconds.append(solve_seconds)
+        k = len(self.solve_seconds)
+        if k not in self.check_after:
+            return None
+        mean = sum(self.solve_seconds) / k
+        seconds = (
+            self.elapsed
+            + mean * (self.budget_limited_total - k)
+            + self.random_seconds * (self.cells_total - self.cells_done)
+        )
+        check = {
+            "after_budget_limited_cells": k,
+            "measured_solve_seconds": list(self.solve_seconds),
+            "mean_solve_seconds": mean,
+            "elapsed_seconds": self.elapsed,
+            "projected_hours": seconds / 3600.0,
+            "stop": seconds / 3600.0 > self.stop_hours,
+        }
+        self.checks.append(check)
+        return check

@@ -55,6 +55,7 @@ from retention.optimize.stability import (
     scored_net,
 )
 from retention.optimize.strategies import (
+    TimeGuard,
     baseline_choices,
     best_action,
     fill,
@@ -253,6 +254,9 @@ def value(args) -> int:
 # --- plan, observed, report ---------------------------------------------------------------
 
 
+clock = time.perf_counter  # replaced in tests to stub solve times
+
+
 def _label(b: float | None) -> str:
     return "no limit" if b is None else f"{b:,.0f}"
 
@@ -342,16 +346,24 @@ def plan(args) -> int:
     options: dict[tuple, object] = {}
     work = [(cfg.base.snapshot, name, sc) for name, sc in cfg.scenarios().items()]
     work += [(cfg.snapshots[0], "base", replace_snapshot(cfg.base, cfg.snapshots[0]))]
-    first_cell = True
+    budget_limited = sum(1 for _ in work for b in cfg.budgets if b is not None and b > 0)
+    guard = TimeGuard(
+        cfg.projection_stop_hours,
+        syn_seconds,
+        budget_limited,
+        len(work) * len(cfg.budgets),
+        cfg.projection_checks,
+    )
     for snapshot, name, sc in work:
         opts = build_options(by_snap[snapshot], cfg, sc)
         ordered = steps(opts)
         for budget in cfg.budgets:
-            c0 = time.time()
+            c0 = clock()
             limit = sc.contact_limit
             chk = {"snapshot": snapshot.isoformat(), "scenario": name, "budget": _label(budget)}
             try:
                 plan_, exact = checked_plan(opts, budget, limit, cfg.exact_time_limit, ordered)
+                solve_s = clock() - c0
             except ExactCheckError as e:
                 write_json(out / "plan_stopped.json", chk | {"reason": str(e)})
                 raise SystemExit(f"exact check failed: {e}") from e
@@ -365,7 +377,8 @@ def plan(args) -> int:
                     breach_log.append({**chk, "strategy": strat, "breaches": bad})
             rnd = random_draws(opts, budget, limit, plan_, cfg.random_draws, cfg.random_seed)
             summary_rows += cell_rows(opts, snapshot, sc, budget, choices, rnd)
-            chk["seconds"] = round(time.time() - c0, 2)
+            chk["seconds"] = round(clock() - c0, 2)
+            chk["solve_seconds"] = round(solve_s, 2)
             optimizer_choice[(snapshot, name, budget)] = plan_.choice
             options[(snapshot, name)] = opts
             if name == "base":
@@ -376,13 +389,18 @@ def plan(args) -> int:
                          cfg.action_order[choice[i]])
                         for i in idx
                     ]  # fmt: skip
-            if first_cell:
-                first_cell = False
-                recheck = projected_hours(time.time() - c0, cells)
-                timing["recheck_projected_hours"] = recheck
-                if recheck > cfg.timing_stop_hours:
-                    write_json(out / "plan_stopped.json", timing | {"reason": "recheck above stop"})
-                    raise SystemExit(f"recheck projected {recheck:.2f} h above the stop")
+            check = guard.record(budget is not None and budget > 0, solve_s, clock() - c0)
+            if check and check["stop"]:
+                timing["projection_checks"] = guard.checks
+                write_json(
+                    out / "plan_stopped.json",
+                    timing | {"reason": "projected time above the stop", "cells": checks},
+                )
+                raise SystemExit(
+                    f"projected {check['projected_hours']:.2f} h above {guard.stop_hours} h "
+                    f"after {check['after_budget_limited_cells']} budget-limited cells; "
+                    f"measured solve seconds {check['measured_solve_seconds']}"
+                )
         print(f"{snapshot} {name}: done ({time.time() - t0:.0f} s)", flush=True)
 
     # determinism of HiGHS on the base point at the headline budget
@@ -455,7 +473,7 @@ def plan(args) -> int:
     report = {
         "step": "plan",
         "headline_budget": "no_limit" if head_budget is None else head_budget,
-        "timing": timing,
+        "timing": timing | {"projection_checks": guard.checks},
         "solver_checks": checks,
         "solver_summary": {
             "cells": len(checks),

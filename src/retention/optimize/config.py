@@ -94,6 +94,8 @@ class ActionsConfig:
     external_exempt: tuple[str, ...]
     timing_stop_hours: float
     exact_time_limit: float  # seconds per HiGHS solve
+    projection_stop_hours: float
+    projection_checks: tuple[int, ...]
     unproven_statement_share: float
     reproduction_cells: tuple[tuple[int, date, tuple[str, ...]], ...]
     dt01_fit_snapshots: tuple[date, ...]
@@ -134,6 +136,15 @@ def _ranges(raw: dict[str, Any], scale: float, form: str) -> dict[str, dict[str,
                 )
             out[action][segment] = dict(zip(LEVELS, values, strict=True))
     return out
+
+
+def _projection_checks(texts: list[str]) -> tuple[int, ...]:
+    """(1, 10): after the first and after the first 10 budget-limited cells."""
+    if len(texts) != 2 or "first budget-limited cell" not in texts[0]:
+        raise ValueError(f"unexpected projection checks {texts!r}")
+    if "first 10 budget-limited cells" not in texts[1]:
+        raise ValueError(f"unexpected projection checks {texts!r}")
+    return (1, 10)
 
 
 def _scenario(name: str, raw: dict[str, Any]) -> Scenario:
@@ -267,6 +278,8 @@ def parse_actions_config(raw: dict[str, Any]) -> ActionsConfig:
         external_exempt=tuple(words["external_figures_ban"]["exempt"]),
         timing_stop_hours=float(raw["random_baseline_timing"]["stop_hours"]),
         exact_time_limit=float(raw["exact_check"]["time_limit_seconds"]),
+        projection_stop_hours=float(raw["projection_rechecks"]["stop_hours"]),
+        projection_checks=_projection_checks(raw["projection_rechecks"]["checks"]),
         unproven_statement_share=float(
             raw["exact_check"]["unproven_report"]["statement_above_share"]
         ),
