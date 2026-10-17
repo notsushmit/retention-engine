@@ -217,3 +217,17 @@ def test_value_step_source_never_builds_labels_or_unlocks():
             "score-test",
         ):
             assert banned not in src, (f, banned)
+
+
+def test_headline_level_is_the_rule_applied_to_the_logged_spend():
+    raw = yaml.safe_load(Path("configs/actions.yaml").read_text())
+    hb = raw["sensitivity"]["stability"]["headline_budget"]
+    spend = hb["level_source"]["no_limit_spend"]
+    assert spend == pytest.approx(9102.21, abs=0.005)
+    assert headline_level(spend, CFG.budgets) == hb["level"] == CFG.headline_budget_level == 5000
+    log = Path("data/processed/kkbox/sample_020/optimize/no_limit_spend.json")
+    if not log.exists():
+        pytest.skip("the value step's log is not here (CI); the registered spend is checked above")
+    logged = json.loads(log.read_text())
+    assert logged["no_limit_spend"] == spend and logged["snapshot"] == "2016-11-01"
+    assert logged["headline_level_by_rule"] == hb["level"]
