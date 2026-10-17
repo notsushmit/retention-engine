@@ -12,6 +12,8 @@
 # the sixth commit, before any real step.
 # The projection rechecks (superseding the first-cell recheck) were added in the
 # seventh commit, before any real step.
+# The headline budget level was registered in the eighth commit, after the value
+# step logged the base plan's no-limit spend and before any plan was run.
 #
 # Every effect below is an ASSUMPTION chosen by the user. None is an estimate: no
 # KKBox uplift estimate exists for any action, and no number here comes from KKBox
@@ -283,7 +285,10 @@ sensitivity:
       stricter_reading: {jaccard: 0.80, relative_regret: 0.05, role: "reported, not judged"}
     headline_budget:
       rule: the largest scan level strictly below the base plan's no-limit spend on 2016-11-01
-      level: not yet registered
+      level: 5000
+      level_source:
+        no_limit_spend: 9102.208543941491  # logged by the value step (no_limit_spend.json, 2016-11-01, base point)
+        registered: 2026-10-17, in its own commit, after the value step and before any variant or comparison
       procedure: >
         The no-limit spend needs customer value, which needs the dt01 refit, so it cannot
         be computed from counts before code exists. The value step computes and logs only
