@@ -153,16 +153,37 @@ def expected_days(surv: np.ndarray, ends: tuple[int, ...] = INTERVAL_ENDS_ALL) -
 # --- the customer table ------------------------------------------------------------------
 
 
+def as_date(values: pd.Series) -> pd.Series:
+    """Snapshot dates as datetime.date, whether they arrive as dates or timestamps.
+
+    Parquet date columns come back from DuckDB and pandas as datetime64; comparing
+    those with a datetime.date matches nothing, so every snapshot filter uses this.
+    """
+    return pd.Series(pd.to_datetime(values).dt.date, index=values.index)
+
+
 def read_p30(reasons: Path, snapshots: list[date]) -> pd.DataFrame:
     days = ", ".join(f"date '{t.isoformat()}'" for t in snapshots)
     con = duckdb.connect()
     try:
-        return con.sql(
+        out = con.sql(
             f"select msno, snapshot_date::date as snapshot_date, probability as p30 "
             f"from read_parquet('{reasons}') where horizon = 30 and snapshot_date in ({days})"
         ).df()
     finally:
         con.close()
+    return out.assign(snapshot_date=as_date(out.snapshot_date))
+
+
+def first_run_sha_failure(out_dir: Path, sha: str) -> str | None:
+    """With a kept first run (dt01_refit_first_run.json), the rerun's booster must match it."""
+    first = out_dir / "dt01_refit_first_run.json"
+    if not first.exists():
+        return None
+    expected = json.loads(first.read_text())["booster_sha256"]
+    if sha != expected:
+        return f"booster SHA-256 {sha} differs from the first run's {expected}"
+    return None
 
 
 def customer_table(
@@ -173,7 +194,7 @@ def customer_table(
     out = pd.DataFrame(
         {
             "msno": rows.msno.to_numpy(),
-            "snapshot_date": pd.to_datetime(rows.snapshot_date).dt.date.to_numpy(),
+            "snapshot_date": as_date(rows.snapshot_date).to_numpy(),
             "auto_renew": np.where(rows.last_is_auto_renew.to_numpy() == 1, "on", "off"),
             "days_until_paid_expiry": rows.days_until_paid_expiry.astype("Int32").to_numpy(),
             "dt01_lapse_30": 1 - surv[:, INTERVAL_ENDS_ALL.index(30)],
@@ -183,7 +204,7 @@ def customer_table(
     )
     for k, e in enumerate(INTERVAL_ENDS_ALL):
         out[f"s_{e}"] = surv[:, k]
-    p = p30.assign(snapshot_date=pd.to_datetime(p30.snapshot_date).dt.date)
+    p = p30.assign(snapshot_date=as_date(p30.snapshot_date))
     out = out.merge(p, on=["msno", "snapshot_date"], how="left", validate="one_to_one")
     pr = prices[["msno", "price_per_day", "has_price"]]
     out = out.merge(pr, on="msno", how="left", validate="one_to_one")

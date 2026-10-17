@@ -67,9 +67,11 @@ from retention.optimize.strategies import (
 from retention.optimize.value import (
     EXTRA_COLUMNS,
     INTERVAL_ENDS_ALL,
+    as_date,
     customer_table,
     disagreement,
     dt01_settings,
+    first_run_sha_failure,
     headline_level,
     read_p30,
     refit_dt01,
@@ -179,6 +181,10 @@ def value(args) -> int:
     if peak >= cfg.memory_ceiling_gb:
         failures.append(f"peak RSS {peak} GB at or above the {cfg.memory_ceiling_gb} GB ceiling")
     booster = model.model.booster.model_to_string()
+    sha = hashlib.sha256(booster.encode()).hexdigest()
+    mismatch = first_run_sha_failure(out, sha)
+    if mismatch:
+        failures.append(mismatch)
     report = {
         "step": "value: dt01 refit",
         "fit_rows": n_fit,
@@ -186,7 +192,7 @@ def value(args) -> int:
         "reproduction": table,
         "failures": failures,
         "passed": not failures,
-        "booster_sha256": hashlib.sha256(booster.encode()).hexdigest(),
+        "booster_sha256": sha,
         "library_versions": library_versions(),
         "threads": cfg.threads,
         "git_head": head_commit(repo),
@@ -208,7 +214,7 @@ def value(args) -> int:
     for t, r in rows.items():
         surv = 1 - model.lapse_probability(r, list(INTERVAL_ENDS_ALL))[0]
         prices = price_per_day(tx, r[["msno", "snapshot_date"]])
-        tab = customer_table(r, surv, p30[p30.snapshot_date == t], prices)
+        tab = customer_table(r, surv, p30, prices)  # joined on msno and snapshot
         tables.append(tab)
         per_snapshot[t.isoformat()] = {
             "customers": len(tab),
@@ -225,7 +231,7 @@ def value(args) -> int:
     pq.write_table(table_out, out / "value.parquet", compression="zstd")
 
     base = cfg.base
-    snap = customers[customers.snapshot_date == base.snapshot].reset_index(drop=True)
+    snap = customers[as_date(customers.snapshot_date) == base.snapshot].reset_index(drop=True)
     opts = build_options(snap, cfg, base)
     plan = greedy(opts, None)
     bad = breaches(opts, plan, None, None)
@@ -317,7 +323,7 @@ def plan(args) -> int:
         raise SystemExit("the dt01 refit did not pass; no plan is run")
     t0 = time.time()
     customers = pd.read_parquet(out / "value.parquet")
-    customers["snapshot_date"] = pd.to_datetime(customers.snapshot_date).dt.date
+    customers["snapshot_date"] = as_date(customers.snapshot_date)
     by_snap = {
         t: customers[customers.snapshot_date == t].reset_index(drop=True) for t in cfg.snapshots
     }
@@ -550,7 +556,7 @@ def observed_step(args) -> int:
     protocol = load_protocol()
     processed = processed_dir(args.fraction)
     customers = pd.read_parquet(out / "value.parquet")
-    customers["snapshot_date"] = pd.to_datetime(customers.snapshot_date).dt.date
+    customers["snapshot_date"] = as_date(customers.snapshot_date)
     plans = pd.read_parquet(out / "plans.parquet")
     head = cfg.headline_budget_level
     head_budget = None if head is None else float(head)
