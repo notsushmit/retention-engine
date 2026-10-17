@@ -248,3 +248,70 @@ def test_real_highs_reports_proof_status():
     opts = random_case(np.random.default_rng(5), 30)
     plan, chk = checked_plan(opts, 20.0, None, 120.0)
     assert chk["exact_check"] == "proven" and chk["highs"] >= chk["greedy"] - 1e-6
+
+
+class Res:
+    def __init__(self, status, x, message="m", dual=-10.0):
+        self.status, self.x, self.message, self.mip_dual_bound = status, x, message, dual
+
+
+def fake_milp(monkeypatch, res):
+    import retention.optimize.solve as solve_module
+
+    monkeypatch.setattr(solve_module, "milp", lambda **kw: res)
+
+
+STATUS_OPTS = make([[1, 0, 0], [1, 0, 0]], [[5, 0, 0], [4, 0, 0]])
+
+
+@pytest.mark.parametrize(
+    ("status", "has_x", "proven", "feasible"),
+    [(0, True, True, True), (1, True, False, True), (1, False, False, False)],
+)
+def test_handled_highs_statuses(monkeypatch, status, has_x, proven, feasible):
+    fake_milp(monkeypatch, Res(status, np.array([1.0, 0.0]) if has_x else None))
+    plan = highs(STATUS_OPTS, 10.0, None, 120.0)
+    assert plan.extra["proven"] is proven and plan.extra["feasible"] is feasible
+    if feasible:
+        assert plan.choice.tolist() == [0, NONE] and plan.extra["dual"] == 10.0
+    else:
+        assert plan.choice.tolist() == [NONE, NONE] and plan.net == -np.inf
+
+
+@pytest.mark.parametrize(
+    ("status", "has_x"), [(2, False), (3, False), (4, False), (4, True), (0, False), (7, True)]
+)
+def test_impossible_highs_statuses_stop(monkeypatch, status, has_x):
+    from retention.optimize.solve import HighsStatusError
+
+    fake_milp(monkeypatch, Res(status, np.array([1.0, 0.0]) if has_x else None))
+    with pytest.raises(HighsStatusError, match="status"):
+        highs(STATUS_OPTS, 10.0, None, 120.0)
+
+
+def no_solution_stub(opts, budget, contact_limit, time_limit):
+    c = np.full(opts.n, NONE, dtype=np.int64)
+    return Plan(c, 0.0, -np.inf, 0, "highs", extra={"proven": False, "feasible": False})
+
+
+def test_no_feasible_solution_budget_only_keeps_greedy():
+    from retention.optimize.solve import NO_SOLUTION
+
+    opts = make([[1, 0, 10], [1, 0, 0]], [[5, 0, 20], [2, 0, 0]])
+    plan, chk = checked_plan(opts, 11.0, None, 120.0, None, no_solution_stub)
+    assert plan.solver == "greedy" and plan.choice.tolist() == [2, 0]
+    assert chk["exact_check"] == NO_SOLUTION and chk["highs"] is None
+    assert not chk["highs_proven"] and not chk["highs_feasible"]
+
+
+def test_no_feasible_solution_contact_limit_uses_greedy_cut_to_the_limit():
+    from retention.optimize.solve import NO_SOLUTION
+
+    opts = make([[1, 0, 0], [1, 0, 0], [1, 0, 0]], [[5, 0, 0], [4, 0, 0], [3, 0, 0]])
+    plan, chk = checked_plan(opts, 10.0, 2, 120.0, None, no_solution_stub)
+    assert chk["plan_from"] == "greedy" and chk["exact_check"] == NO_SOLUTION
+    assert plan.choice.tolist() == [0, 0, NONE] and breaches(opts, plan, 10.0, 2) == []
+    # even when greedy's capped value is 0, the empty HiGHS stand-in is never chosen
+    zero = make([[1, 0, 0]], [[-1, 0, 0]])
+    plan, chk = checked_plan(zero, 10.0, 1, 120.0, None, no_solution_stub)
+    assert chk["plan_from"] == "greedy"

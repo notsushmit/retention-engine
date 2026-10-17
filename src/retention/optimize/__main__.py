@@ -33,6 +33,7 @@ from retention.optimize.observed import read_once, shares
 from retention.optimize.price import price_per_day, price_table, read_transactions
 from retention.optimize.report import REPORT, load_logs, render, wording_violations
 from retention.optimize.solve import (
+    NO_SOLUTION,
     NONE,
     ExactCheckError,
     Plan,
@@ -315,6 +316,9 @@ def plan(args) -> int:
     require_clean(repo)
     out = out_dir(args.fraction)
     run_once(out / "plan_report.json")
+    for earlier in ("plan_stopped.json", "plan_progress.jsonl"):
+        if (out / earlier).exists():
+            raise SystemExit(f"{earlier} exists from an earlier run; reset it by hand, logged")
     cfg = load_actions_config()
     if cfg.headline_budget_level == "not yet registered":
         raise SystemExit("register the headline budget level first (its own commit)")
@@ -367,12 +371,21 @@ def plan(args) -> int:
             c0 = clock()
             limit = sc.contact_limit
             chk = {"snapshot": snapshot.isoformat(), "scenario": name, "budget": _label(budget)}
+            progress(out, "start", chk, t0)
             try:
                 plan_, exact = checked_plan(opts, budget, limit, cfg.exact_time_limit, ordered)
                 solve_s = clock() - c0
             except ExactCheckError as e:
-                write_json(out / "plan_stopped.json", chk | {"reason": str(e)})
+                progress(out, "stopped", chk | {"seconds": round(clock() - c0, 2)}, t0)
+                write_json(out / "plan_stopped.json", chk | {"reason": str(e), "cells": checks})
                 raise SystemExit(f"exact check failed: {e}") from e
+            except Exception as e:
+                progress(out, "stopped", chk | {"seconds": round(clock() - c0, 2)}, t0)
+                write_json(
+                    out / "plan_stopped.json",
+                    chk | {"reason": f"{type(e).__name__}: {e}", "cells": checks},
+                )
+                raise
             repairs += plan_.repairs
             chk |= exact
             checks.append(chk)
@@ -396,6 +409,13 @@ def plan(args) -> int:
                         for i in idx
                     ]  # fmt: skip
             check = guard.record(budget is not None and budget > 0, solve_s, clock() - c0)
+            progress(
+                out,
+                "done",
+                {k: chk[k] for k in ("snapshot", "scenario", "budget", "seconds", "solve_seconds",
+                                     "exact_check")},
+                t0,
+            )  # fmt: skip
             if check and check["stop"]:
                 timing["projection_checks"] = guard.checks
                 write_json(
@@ -476,6 +496,7 @@ def plan(args) -> int:
     )  # fmt: skip
     diffs = [c["highs"] - c["greedy"] for c in checks if c["highs_proven"]]
     unproven = sum(1 for c in checks if not c["highs_proven"])
+    no_solution = sum(1 for c in checks if c["exact_check"] == NO_SOLUTION)
     report = {
         "step": "plan",
         "headline_budget": "no_limit" if head_budget is None else head_budget,
@@ -487,6 +508,7 @@ def plan(args) -> int:
             "proven": len(checks) - unproven,
             "unproven": unproven,
             "unproven_share": unproven / len(checks),
+            "no_feasible_solution": no_solution,
             "time_limit_seconds": cfg.exact_time_limit,
             "max_highs_minus_greedy": max(diffs) if diffs else 0.0,
             "breaches": len(breach_log),
@@ -530,6 +552,15 @@ EXPECTATIONS = [
     "whatever their risk)",
     "the margin and cost variants mostly change spend more than who is targeted",
 ]
+
+
+def progress(out: Path, event: str, cell: dict, t0: float) -> None:
+    """One line per cell event, printed and appended to plan_progress.jsonl at once."""
+    line = {"event": event, "elapsed": round(time.time() - t0, 1), **cell}
+    print(json.dumps(line, default=str), flush=True)
+    with (out / "plan_progress.jsonl").open("a") as f:
+        f.write(json.dumps(line, default=str) + "\n")
+        f.flush()
 
 
 def replace_snapshot(sc, snapshot: date):

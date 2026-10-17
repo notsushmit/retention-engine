@@ -247,7 +247,8 @@ def solver_lines(cfg: ActionsConfig, chk: dict[str, Any]) -> list[str]:
     limit = f"{chk['time_limit_seconds']:.0f} s"
     out = [
         f"Cells checked by HiGHS: {chk['cells']}; proven optimal within {limit}: {chk['proven']}; "
-        f"not proven: {chk['unproven']}. Largest HiGHS minus greedy on proven cells: "
+        f"not proven: {chk['unproven']}, of which with no feasible HiGHS solution: "
+        f"{chk.get('no_feasible_solution', 0)}. Largest HiGHS minus greedy on proven cells: "
         f"{num(chk['max_highs_minus_greedy'], 6)}. Budget or limit breaches: {chk['breaches']}; "
         f"repairs: {chk['repairs']}.",
         "",

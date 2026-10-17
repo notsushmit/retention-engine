@@ -4,11 +4,13 @@ import json
 from dataclasses import replace
 from datetime import date
 
+import numpy as np
 import pandas as pd
 import pytest
 
 import retention.optimize.__main__ as cli
 from retention.optimize.config import load_actions_config
+from retention.optimize.solve import NO_SOLUTION, NONE, Plan
 from retention.optimize.strategies import TimeGuard
 from test_optimize_report import synthetic_customers
 
@@ -58,7 +60,8 @@ class FakeClock:
         return self.t
 
 
-def run_plan(tmp_path, monkeypatch, solve_seconds: float) -> int:
+def run_plan(tmp_path, monkeypatch, solve_seconds: float, highs_for=None) -> int:
+    """highs_for(scenario, budget) may return a HiGHS stand-in for that cell."""
     out = tmp_path
     pd.concat(
         [
@@ -75,6 +78,9 @@ def run_plan(tmp_path, monkeypatch, solve_seconds: float) -> int:
     def stubbed(opts, budget, limit, time_limit, ordered=None):
         if budget is not None and budget > 0:
             fake.t += solve_seconds
+        stand_in = highs_for(opts.scenario.name, budget) if highs_for else None
+        if stand_in is not None:
+            return real_checked(opts, budget, limit, time_limit, ordered, stand_in)
         return real_checked(opts, budget, limit, time_limit, ordered)
 
     monkeypatch.setattr(cli, "clock", fake)
@@ -92,6 +98,10 @@ def test_plan_step_stops_at_120_s_and_reports_measured_seconds(tmp_path, monkeyp
         run_plan(tmp_path, monkeypatch, 120.0)
     stopped = json.loads((tmp_path / "plan_stopped.json").read_text())
     assert stopped["projection_checks"][0]["measured_solve_seconds"] == [120.0]
+    lines = [json.loads(x) for x in (tmp_path / "plan_progress.jsonl").read_text().splitlines()]
+    last = lines[-1]  # the cell that triggered the stop is logged before the stop
+    assert (last["event"], last["scenario"], last["budget"]) == ("done", "base", "1,000")
+    assert last["solve_seconds"] == 120.0
     assert not (tmp_path / "plan_report.json").exists()
 
 
@@ -102,3 +112,52 @@ def test_plan_step_runs_through_at_5_s(tmp_path, monkeypatch):
     assert [c["after_budget_limited_cells"] for c in checks] == [1, 10]
     assert not any(c["stop"] for c in checks)
     assert all("solve_seconds" in c for c in rep["solver_checks"])
+
+
+def no_solution(opts, budget, contact_limit, time_limit):
+    c = np.full(opts.n, NONE, dtype=np.int64)
+    extra = {"proven": False, "feasible": False, "dual": None, "message": "Time limit reached"}
+    return Plan(c, 0.0, -np.inf, 0, "highs", extra=extra)
+
+
+def test_plan_step_runs_through_a_cell_without_a_feasible_solution(tmp_path, monkeypatch):
+    def highs_for(scenario, budget):
+        if (scenario, budget) in (("absolute", 1000.0), ("contact_limit", 2500.0)):
+            return no_solution
+        return None
+
+    assert run_plan(tmp_path, monkeypatch, 5.0, highs_for) == 0
+    rep = json.loads((tmp_path / "plan_report.json").read_text())
+    s = rep["solver_summary"]
+    assert s["no_feasible_solution"] == 2 and s["unproven"] >= 2 and s["breaches"] == 0
+    marked = [c for c in rep["solver_checks"] if c["exact_check"] == NO_SOLUTION]
+    assert {(c["scenario"], c["budget"]) for c in marked} == {
+        ("absolute", "1,000"),
+        ("contact_limit", "2,500"),
+    }
+    lines = [json.loads(x) for x in (tmp_path / "plan_progress.jsonl").read_text().splitlines()]
+    assert (
+        sum(x["event"] == "start" for x in lines) == sum(x["event"] == "done" for x in lines) == 112
+    )
+
+
+def test_an_unexpected_error_keeps_the_failing_cell(tmp_path, monkeypatch):
+    def boom(opts, budget, contact_limit, time_limit):
+        raise ValueError("solver crashed")
+
+    def highs_for(scenario, budget):
+        return boom if (scenario, budget) == ("absolute", 1000.0) else None
+
+    with pytest.raises(ValueError, match="solver crashed"):
+        run_plan(tmp_path, monkeypatch, 5.0, highs_for)
+    stopped = json.loads((tmp_path / "plan_stopped.json").read_text())
+    assert (stopped["scenario"], stopped["budget"]) == ("absolute", "1,000")
+    assert stopped["reason"] == "ValueError: solver crashed"
+    last = json.loads((tmp_path / "plan_progress.jsonl").read_text().splitlines()[-1])
+    assert (last["event"], last["scenario"], last["budget"]) == ("stopped", "absolute", "1,000")
+
+
+def test_plan_step_refuses_to_start_over_an_earlier_run(tmp_path, monkeypatch):
+    (tmp_path / "plan_progress.jsonl").write_text("{}\n")
+    with pytest.raises(SystemExit, match="earlier run"):
+        run_plan(tmp_path, monkeypatch, 5.0)

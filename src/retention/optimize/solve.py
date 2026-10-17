@@ -34,6 +34,16 @@ from scipy.optimize import Bounds, LinearConstraint, milp
 from retention.optimize.effects import Options
 
 NONE = -1
+NO_SOLUTION = "not proven (no feasible solution)"
+
+
+class ExactCheckError(RuntimeError):
+    """A proven HiGHS optimum below greedy, or greedy outside its bound: a bug, the run stops."""
+
+
+class HighsStatusError(ExactCheckError):
+    """A HiGHS status that cannot occur for this problem (choosing nothing is always
+    feasible and every variable lies in [0, 1]): infeasible, unbounded or another error."""
 
 
 @dataclass
@@ -168,7 +178,8 @@ def highs(
     choice = np.full(opts.n, NONE, dtype=np.int64)
     if m == 0:
         cost, net, contacts = totals(opts, choice)
-        return Plan(choice, cost, net, contacts, "highs", extra={"proven": True, "dual": 0.0})
+        extra = {"proven": True, "feasible": True, "dual": 0.0}
+        return Plan(choice, cost, net, contacts, "highs", extra=extra)
     netv = opts.net[cand_i, cand_j]
     costv = opts.cost[cand_i, cand_j]
     _, row = np.unique(cand_i, return_inverse=True)
@@ -195,11 +206,34 @@ def highs(
         ),
         options=options,
     )
-    if res.x is None:
-        raise RuntimeError(f"HiGHS found no solution: {res.message}")
+    return _from_result(opts, res, cand_i, cand_j, budget, contact_limit)
+
+
+def _from_result(opts, res, cand_i, cand_j, budget, contact_limit) -> Plan:
+    """Every status scipy.optimize.milp can return, handled:
+
+    0 optimal: proven. 1 time (or node) limit with a solution: not proven, the
+    solution kept. 1 with no solution: not proven, no HiGHS plan
+    (extra["feasible"] is False; the caller keeps greedy). 2 infeasible, 3
+    unbounded, 4 other: impossible for this problem, so HighsStatusError stops the run.
+    """
+    choice = np.full(opts.n, NONE, dtype=np.int64)
+    if res.status in (2, 3, 4) or (res.status == 0 and res.x is None):
+        raise HighsStatusError(f"HiGHS status {res.status}: {res.message}")
+    if res.status != 0 and res.status != 1:
+        raise HighsStatusError(f"unknown HiGHS status {res.status}: {res.message}")
+    if res.x is None:  # status 1 with no feasible solution
+        extra = {"proven": False, "feasible": False, "dual": None, "message": res.message}
+        return Plan(choice, 0.0, -math.inf, 0, "highs", status=res.message, extra=extra)
     take = res.x > 0.5
     choice[cand_i[take]] = cand_j[take]
-    extra = {"proven": res.status == 0, "dual": float(-res.mip_dual_bound), "message": res.message}
+    dual = getattr(res, "mip_dual_bound", None)
+    extra = {
+        "proven": res.status == 0,
+        "feasible": True,
+        "dual": None if dual is None else float(-dual),
+        "message": res.message,
+    }
     plan = Plan(choice, *totals(opts, choice), "highs", status=res.message, extra=extra)
     return repair(opts, plan, budget, contact_limit)
 
@@ -264,10 +298,6 @@ def solve(opts: Options, budget: float | None, contact_limit: int | None = None)
     return plan
 
 
-class ExactCheckError(RuntimeError):
-    """A proven HiGHS optimum below greedy, or greedy outside its bound: a bug, the run stops."""
-
-
 def checked_plan(
     opts: Options,
     budget: float | None,
@@ -283,6 +313,8 @@ def checked_plan(
     greedy's gap to the LP bound reported. With a contact limit: a proven HiGHS
     solution is the plan; an unproven one is the plan only if its net value is at
     least greedy's (greedy cut to the limit by the repair), otherwise greedy's.
+    No feasible HiGHS solution within the limit: "not proven (no feasible
+    solution)", greedy (cut to the limit when there is one) is the plan.
     """
     g = greedy(opts, budget, ordered)
     max_single = float(opts.net.max(initial=0.0))
@@ -290,11 +322,13 @@ def checked_plan(
         raise ExactCheckError(f"greedy {g.net} outside its bound {g.lp_bound} - {max_single}")
     h = highs_fn(opts, budget, contact_limit, time_limit)
     proven = bool(h.extra.get("proven"))
+    feasible = bool(h.extra.get("feasible", True))
     check = {
         "greedy": g.net,
-        "highs": h.net,
+        "highs": h.net if feasible else None,
         "highs_proven": proven,
-        "exact_check": "proven" if proven else "not proven",
+        "highs_feasible": feasible,
+        "exact_check": "proven" if proven else ("not proven" if feasible else NO_SOLUTION),
         "highs_dual": h.extra.get("dual"),
         "lp_bound": g.lp_bound,
         "greedy_gap_to_lp_bound": g.lp_bound - g.net,
@@ -306,7 +340,7 @@ def checked_plan(
         return g, check
     capped = repair(opts, g, budget, contact_limit)
     check["greedy"] = capped.net
-    if proven or h.net >= capped.net:
+    if feasible and (proven or h.net >= capped.net):
         check["plan_from"] = "highs"
         return h, check
     check["plan_from"] = "greedy"
