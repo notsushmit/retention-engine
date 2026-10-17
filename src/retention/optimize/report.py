@@ -238,14 +238,28 @@ def render(cfg: ActionsConfig, logs: dict[str, Any]) -> str:
         L.append("")
 
     L += ["## Solver checks", ""]
-    chk = plan["solver_summary"]
-    L += [
-        f"Greedy solves checked by HiGHS: {chk['checked']}; HiGHS proven optimal: {chk['proven']}; "
-        f"largest HiGHS minus greedy: {num(chk['max_highs_minus_greedy'], 6)}; budget or limit "
-        f"breaches: {chk['breaches']}; repairs: {chk['repairs']}.",
+    L += solver_lines(cfg, plan["solver_summary"])
+    return "\n".join(L).rstrip() + "\n"
+
+
+def solver_lines(cfg: ActionsConfig, chk: dict[str, Any]) -> list[str]:
+    """The exact check's summary, with the unproven count always stated."""
+    limit = f"{chk['time_limit_seconds']:.0f} s"
+    out = [
+        f"Cells checked by HiGHS: {chk['cells']}; proven optimal within {limit}: {chk['proven']}; "
+        f"not proven: {chk['unproven']}. Largest HiGHS minus greedy on proven cells: "
+        f"{num(chk['max_highs_minus_greedy'], 6)}. Budget or limit breaches: {chk['breaches']}; "
+        f"repairs: {chk['repairs']}.",
         "",
     ]
-    return "\n".join(L).rstrip() + "\n"
+    if chk["unproven_share"] > cfg.unproven_statement_share:
+        out += [
+            f"The exact check is limited: in {chk['unproven']} of {chk['cells']} cells "
+            f"({pct(chk['unproven_share'])}) HiGHS did not prove the optimum within {limit}, so "
+            "the greedy plan there is checked only against its LP bound.",
+            "",
+        ]
+    return out
 
 
 def _none(x: Any) -> Any:

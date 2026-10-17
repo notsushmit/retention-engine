@@ -35,6 +35,7 @@ def test_real_config_loads_with_the_registered_values():
     assert (c.jaccard_min, c.regret_max, c.stricter) == (0.70, 0.10, (0.80, 0.05))
     assert c.random_draws == 1000 and c.random_seed == 20161001
     assert c.timing_stop_hours == 3.0
+    assert c.exact_time_limit == 120.0 and c.unproven_statement_share == 0.10
     assert len(c.variants) == 12
 
 

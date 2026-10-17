@@ -8,8 +8,10 @@ from retention.optimize.config import load_actions_config
 from retention.optimize.effects import Options
 from retention.optimize.solve import (
     NONE,
+    ExactCheckError,
     Plan,
     breaches,
+    checked_plan,
     customer_hull,
     greedy,
     highs,
@@ -187,3 +189,62 @@ def test_lp_bound_takes_the_misfit_in_part():
     opts = make([[2, 0, 0], [4, 0, 0]], [[4, 0, 0], [4, 0, 0]], [[1, 0, 0], [1, 0, 0]])
     assert lp_bound(opts, 4) == pytest.approx(4 + 4 * 2 / 4)
     assert math.isclose(greedy(opts, 4).net, 4)
+
+
+def stub(choice, proven, calls=None):
+    """A HiGHS stand-in returning a fixed selection and proof status."""
+
+    def fn(opts, budget, contact_limit, time_limit):
+        if calls is not None:
+            calls.append(time_limit)
+        c = np.array(choice)
+        return Plan(c, *totals(opts, c), "highs", extra={"proven": proven, "dual": 99.0})
+
+    return fn
+
+
+def test_checked_plan_passes_the_registered_time_limit():
+    calls = []
+    opts = make([[1, 0, 0]], [[2, 0, 0]])
+    checked_plan(
+        opts, 5.0, None, load_actions_config().exact_time_limit, None, stub([0], True, calls)
+    )
+    assert calls == [120.0]
+
+
+def test_budget_only_unproven_keeps_greedy_and_marks_the_cell():
+    opts = make([[1, 0, 10], [1, 0, 0]], [[5, 0, 20], [2, 0, 0]])
+    plan, chk = checked_plan(opts, 11.0, None, 120.0, None, stub([NONE, NONE], False))
+    assert plan.solver == "greedy" and plan.choice.tolist() == [2, 0]
+    assert chk["exact_check"] == "not proven" and chk["highs"] == 0  # below greedy, not a failure
+    assert chk["greedy_gap_to_lp_bound"] == pytest.approx(chk["lp_bound"] - plan.net)
+
+
+def test_budget_only_proven_below_greedy_stops():
+    opts = make([[1, 0, 10], [1, 0, 0]], [[5, 0, 20], [2, 0, 0]])
+    with pytest.raises(ExactCheckError, match="below greedy"):
+        checked_plan(opts, 11.0, None, 120.0, None, stub([NONE, NONE], True))
+
+
+def test_contact_limit_unproven_uses_highs_only_if_at_least_greedy():
+    opts = make([[1, 0, 0], [1, 0, 0], [1, 0, 0]], [[5, 0, 0], [4, 0, 0], [3, 0, 0]])
+    better = stub([0, 0, NONE], False)
+    plan, chk = checked_plan(opts, 10.0, 2, 120.0, None, better)
+    assert plan.solver == "highs" and chk["plan_from"] == "highs" and plan.net == 9
+    worse = stub([NONE, NONE, 0], False)
+    plan, chk = checked_plan(opts, 10.0, 2, 120.0, None, worse)
+    assert chk["plan_from"] == "greedy" and chk["exact_check"] == "not proven"
+    assert plan.choice.tolist() == [0, 0, NONE] and plan.contacts == 2  # greedy cut to the limit
+    assert breaches(opts, plan, 10.0, 2) == []
+
+
+def test_contact_limit_proven_highs_is_the_plan():
+    opts = make([[1, 0, 0], [1, 0, 0]], [[5, 0, 0], [4, 0, 0]])
+    plan, chk = checked_plan(opts, 10.0, 1, 120.0, None, stub([0, NONE], True))
+    assert chk["exact_check"] == "proven" and plan.choice.tolist() == [0, NONE]
+
+
+def test_real_highs_reports_proof_status():
+    opts = random_case(np.random.default_rng(5), 30)
+    plan, chk = checked_plan(opts, 20.0, None, 120.0)
+    assert chk["exact_check"] == "proven" and chk["highs"] >= chk["greedy"] - 1e-6

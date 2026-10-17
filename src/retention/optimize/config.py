@@ -93,6 +93,8 @@ class ActionsConfig:
     external_names: tuple[str, ...]
     external_exempt: tuple[str, ...]
     timing_stop_hours: float
+    exact_time_limit: float  # seconds per HiGHS solve
+    unproven_statement_share: float
     reproduction_cells: tuple[tuple[int, date, tuple[str, ...]], ...]
     dt01_fit_snapshots: tuple[date, ...]
     dt01_labels_as_of: date
@@ -264,6 +266,10 @@ def parse_actions_config(raw: dict[str, Any]) -> ActionsConfig:
         external_names=tuple(words["external_figures_ban"]["names"]),
         external_exempt=tuple(words["external_figures_ban"]["exempt"]),
         timing_stop_hours=float(raw["random_baseline_timing"]["stop_hours"]),
+        exact_time_limit=float(raw["exact_check"]["time_limit_seconds"]),
+        unproven_statement_share=float(
+            raw["exact_check"]["unproven_report"]["statement_above_share"]
+        ),
         reproduction_cells=cells,
         dt01_fit_snapshots=(date(2016, 8, 1), date(2016, 9, 1)),
         dt01_labels_as_of=_date(refit["labels_as_of"]),

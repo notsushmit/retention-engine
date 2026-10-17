@@ -32,7 +32,16 @@ from retention.optimize.effects import build_options, missing_deadline_count
 from retention.optimize.observed import read_once, shares
 from retention.optimize.price import price_per_day, price_table, read_transactions
 from retention.optimize.report import REPORT, load_logs, render, wording_violations
-from retention.optimize.solve import NONE, Plan, breaches, greedy, highs, solve, steps
+from retention.optimize.solve import (
+    NONE,
+    ExactCheckError,
+    Plan,
+    breaches,
+    checked_plan,
+    greedy,
+    highs,
+    steps,
+)
 from retention.optimize.stability import (
     Comparison,
     action_ranks,
@@ -340,25 +349,14 @@ def plan(args) -> int:
         for budget in cfg.budgets:
             c0 = time.time()
             limit = sc.contact_limit
-            plan_ = solve(opts, budget, limit) if limit else greedy(opts, budget, ordered)
-            repairs += plan_.repairs
             chk = {"snapshot": snapshot.isoformat(), "scenario": name, "budget": _label(budget)}
-            if limit is None:
-                h = highs(opts, budget)
-                chk |= {
-                    "greedy": plan_.net,
-                    "highs": h.net,
-                    "highs_proven": h.extra.get("proven"),
-                    "highs_dual": h.extra.get("dual"),
-                    "lp_bound": plan_.lp_bound,
-                    "max_single_net": float(opts.net.max(initial=0.0)),
-                }
-                if h.net < plan_.net - 1e-6:
-                    write_json(out / "plan_stopped.json", chk | {"reason": "HiGHS below greedy"})
-                    raise SystemExit(f"HiGHS below greedy: {chk}")
-                if plan_.net < plan_.lp_bound - chk["max_single_net"] - 1e-9:
-                    write_json(out / "plan_stopped.json", chk | {"reason": "greedy outside bound"})
-                    raise SystemExit(f"greedy outside its bound: {chk}")
+            try:
+                plan_, exact = checked_plan(opts, budget, limit, cfg.exact_time_limit, ordered)
+            except ExactCheckError as e:
+                write_json(out / "plan_stopped.json", chk | {"reason": str(e)})
+                raise SystemExit(f"exact check failed: {e}") from e
+            repairs += plan_.repairs
+            chk |= exact
             checks.append(chk)
             choices = baseline_choices(opts, budget, limit, plan_, index)
             for strat, choice in choices.items():
@@ -367,6 +365,7 @@ def plan(args) -> int:
                     breach_log.append({**chk, "strategy": strat, "breaches": bad})
             rnd = random_draws(opts, budget, limit, plan_, cfg.random_draws, cfg.random_seed)
             summary_rows += cell_rows(opts, snapshot, sc, budget, choices, rnd)
+            chk["seconds"] = round(time.time() - c0, 2)
             optimizer_choice[(snapshot, name, budget)] = plan_.choice
             options[(snapshot, name)] = opts
             if name == "base":
@@ -389,11 +388,15 @@ def plan(args) -> int:
     # determinism of HiGHS on the base point at the headline budget
     nov = cfg.base.snapshot
     base_opts = options[(nov, "base")]
-    h1, h2 = highs(base_opts, head_budget), highs(base_opts, head_budget)
-    deterministic = bool((h1.choice == h2.choice).all())
-    if not deterministic:
-        write_json(out / "plan_stopped.json", {"reason": "HiGHS not deterministic"})
-        raise SystemExit("two HiGHS solves differ")
+    lim = cfg.exact_time_limit
+    h1, h2 = highs(base_opts, head_budget, None, lim), highs(base_opts, head_budget, None, lim)
+    if h1.extra["proven"] and h2.extra["proven"]:
+        determinism = "identical" if (h1.choice == h2.choice).all() else "different"
+    else:
+        determinism = "not checked: not proven"
+    if determinism == "different":
+        write_json(out / "plan_stopped.json", {"reason": "two proven HiGHS solves differ"})
+        raise SystemExit("two proven HiGHS solves differ")
 
     th, strict = (cfg.jaccard_min, cfg.regret_max), cfg.stricter
     for name, sc in cfg.variants.items():
@@ -447,15 +450,20 @@ def plan(args) -> int:
                                           "msno", "action"]),
         out / "plans.parquet",
     )  # fmt: skip
-    diffs = [c["highs"] - c["greedy"] for c in checks if "highs" in c]
+    diffs = [c["highs"] - c["greedy"] for c in checks if c["highs_proven"]]
+    unproven = sum(1 for c in checks if not c["highs_proven"])
     report = {
         "step": "plan",
         "headline_budget": "no_limit" if head_budget is None else head_budget,
         "timing": timing,
         "solver_checks": checks,
         "solver_summary": {
-            "checked": len(diffs),
-            "proven": sum(1 for c in checks if c.get("highs_proven")),
+            "cells": len(checks),
+            "checked": len(checks),
+            "proven": len(checks) - unproven,
+            "unproven": unproven,
+            "unproven_share": unproven / len(checks),
+            "time_limit_seconds": cfg.exact_time_limit,
             "max_highs_minus_greedy": max(diffs) if diffs else 0.0,
             "breaches": len(breach_log),
             "repairs": repairs,
@@ -463,7 +471,7 @@ def plan(args) -> int:
         "highs_deterministic": {
             "scenario": "base",
             "budget": _label(head_budget),
-            "identical": True,
+            "result": determinism,
         },
         "breaches": breach_log,
         "budget_curve": curve,

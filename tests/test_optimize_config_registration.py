@@ -18,6 +18,7 @@ REGISTRATIONS = {
     "e25e3b2": "108a70f2d7df2135cc91ccf8f112b58b5638eaa340b83eea05e49902845ab1b6",
     "78d747e": "3500f60e3cad80fa114facfcf3d37c7223d8fcbc30ed3de7293ac30903818243",
     "1728a9f": "8170ed5a02b7508f7a36a8ce386879d9665b75de5e67d4cec9e703ba868ef05b",
+    "e98299d": "7d8b2f3d0db89c7fbae912ad1b6fbf240141ab1a1fb4c10aa0373b727aba3b82",
 }
 PLANNED_CHANGE = ("sensitivity", "stability", "headline_budget", "level")
 

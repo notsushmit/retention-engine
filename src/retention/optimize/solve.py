@@ -262,3 +262,52 @@ def solve(opts: Options, budget: float | None, contact_limit: int | None = None)
     plan = highs(opts, budget, contact_limit)
     plan.lp_bound = None
     return plan
+
+
+class ExactCheckError(RuntimeError):
+    """A proven HiGHS optimum below greedy, or greedy outside its bound: a bug, the run stops."""
+
+
+def checked_plan(
+    opts: Options,
+    budget: float | None,
+    contact_limit: int | None,
+    time_limit: float | None,
+    ordered: list[Step] | None = None,
+    highs_fn=highs,
+) -> tuple[Plan, dict]:
+    """One cell's plan and its exact check (configs/actions.yaml, exact_check).
+
+    Budget only: greedy is the plan. A proven HiGHS optimum must be at least greedy's
+    net value minus 1e-6; an unproven one only marks the cell "not proven", with
+    greedy's gap to the LP bound reported. With a contact limit: a proven HiGHS
+    solution is the plan; an unproven one is the plan only if its net value is at
+    least greedy's (greedy cut to the limit by the repair), otherwise greedy's.
+    """
+    g = greedy(opts, budget, ordered)
+    max_single = float(opts.net.max(initial=0.0))
+    if g.net < g.lp_bound - max_single - 1e-9:
+        raise ExactCheckError(f"greedy {g.net} outside its bound {g.lp_bound} - {max_single}")
+    h = highs_fn(opts, budget, contact_limit, time_limit)
+    proven = bool(h.extra.get("proven"))
+    check = {
+        "greedy": g.net,
+        "highs": h.net,
+        "highs_proven": proven,
+        "exact_check": "proven" if proven else "not proven",
+        "highs_dual": h.extra.get("dual"),
+        "lp_bound": g.lp_bound,
+        "greedy_gap_to_lp_bound": g.lp_bound - g.net,
+        "max_single_net": max_single,
+    }
+    if contact_limit is None:
+        if proven and h.net < g.net - 1e-6:
+            raise ExactCheckError(f"proven HiGHS optimum {h.net} below greedy {g.net}")
+        return g, check
+    capped = repair(opts, g, budget, contact_limit)
+    check["greedy"] = capped.net
+    if proven or h.net >= capped.net:
+        check["plan_from"] = "highs"
+        return h, check
+    check["plan_from"] = "greedy"
+    return capped, check

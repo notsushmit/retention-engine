@@ -18,7 +18,13 @@ import yaml
 
 import retention.optimize.__main__ as cli
 from retention.optimize.config import load_actions_config
-from retention.optimize.report import REPORT, load_logs, render, wording_violations
+from retention.optimize.report import (
+    REPORT,
+    load_logs,
+    render,
+    solver_lines,
+    wording_violations,
+)
 
 CFG = load_actions_config()
 README_SENTENCE = (
@@ -211,3 +217,32 @@ def test_committed_report_equals_the_one_rebuilt_from_the_logs():
     if not (REPORT.exists() and (out / "plan_report.json").exists()):
         pytest.skip("no logged plan run here")
     assert render(CFG, load_logs(out)) == REPORT.read_text()
+
+
+def summary_with(unproven: int) -> dict:
+    return {"cells": 112, "proven": 112 - unproven, "unproven": unproven,
+            "unproven_share": unproven / 112, "time_limit_seconds": 120.0,
+            "max_highs_minus_greedy": 0.0, "breaches": 0, "repairs": 0}  # fmt: skip
+
+
+def test_unproven_count_is_always_reported():
+    text = "\n".join(solver_lines(CFG, summary_with(3)))
+    assert "not proven: 3" in text and "within 120 s" in text
+    assert "The exact check is limited" not in text  # 3 of 112 is under 10%
+    assert wording_violations(text, CFG) == []
+
+
+def test_above_ten_percent_the_limit_is_stated_plainly():
+    text = "\n".join(solver_lines(CFG, summary_with(12)))  # 10.7%
+    assert "The exact check is limited: in 12 of 112 cells (10.7%)" in text
+    assert wording_violations(text, CFG) == []
+    assert "The exact check is limited" not in "\n".join(solver_lines(CFG, summary_with(11)))
+
+
+def test_plan_report_counts_unproven_cells(run_dir):
+    out, cfg = run_dir
+    s = json.loads((out / "plan_report.json").read_text())["solver_summary"]
+    assert s["cells"] == 112 and s["proven"] + s["unproven"] == 112
+    assert s["time_limit_seconds"] == 120.0
+    checks = json.loads((out / "plan_report.json").read_text())["solver_checks"]
+    assert all("seconds" in c and c["exact_check"] in ("proven", "not proven") for c in checks)
