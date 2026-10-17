@@ -21,6 +21,7 @@ from retention.optimize.config import load_actions_config
 from retention.optimize.report import (
     REPORT,
     load_logs,
+    regret_notes,
     render,
     solver_lines,
     wording_violations,
@@ -219,6 +220,23 @@ def test_committed_report_equals_the_one_rebuilt_from_the_logs():
     assert render(CFG, load_logs(out)) == REPORT.read_text()
 
 
+def cell(scenario, budget, proven, greedy, highs, plan_from=None):
+    c = {"snapshot": "2016-11-01", "scenario": scenario, "budget": budget,
+         "highs_proven": proven, "greedy": greedy, "highs": highs}  # fmt: skip
+    if plan_from:
+        c["plan_from"] = plan_from
+    return c
+
+
+CELLS = [
+    cell("base", "5,000", True, 100.0, 101.194359),
+    cell("cost_high", "1,000", True, 50.0, 50.2),
+    cell("contact_limit", "10,000", True, 5416.451699, 5452.356605, "highs"),
+    cell("contact_limit", "2,500", False, 3000.0, 3001.0, "highs"),
+    cell("absolute", "1,000", False, 900.0, None),
+]
+
+
 def summary_with(unproven: int) -> dict:
     return {"cells": 112, "proven": 112 - unproven, "unproven": unproven,
             "unproven_share": unproven / 112, "time_limit_seconds": 120.0,
@@ -226,17 +244,17 @@ def summary_with(unproven: int) -> dict:
 
 
 def test_unproven_count_is_always_reported():
-    text = "\n".join(solver_lines(CFG, summary_with(3)))
+    text = "\n".join(solver_lines(CFG, summary_with(3), CELLS))
     assert "not proven: 3" in text and "within 120 s" in text
     assert "The exact check is limited" not in text  # 3 of 112 is under 10%
     assert wording_violations(text, CFG) == []
 
 
 def test_above_ten_percent_the_limit_is_stated_plainly():
-    text = "\n".join(solver_lines(CFG, summary_with(12)))  # 10.7%
+    text = "\n".join(solver_lines(CFG, summary_with(12), CELLS))  # 10.7%
     assert "The exact check is limited: in 12 of 112 cells (10.7%)" in text
     assert wording_violations(text, CFG) == []
-    assert "The exact check is limited" not in "\n".join(solver_lines(CFG, summary_with(11)))
+    assert "The exact check is limited" not in "\n".join(solver_lines(CFG, summary_with(11), CELLS))
 
 
 def test_plan_report_counts_unproven_cells(run_dir):
@@ -246,3 +264,76 @@ def test_plan_report_counts_unproven_cells(run_dir):
     assert s["time_limit_seconds"] == 120.0
     checks = json.loads((out / "plan_report.json").read_text())["solver_checks"]
     assert all("seconds" in c and c["exact_check"] in ("proven", "not proven") for c in checks)
+
+
+def test_highs_minus_greedy_is_split_by_cell_kind():
+    text = "\n".join(solver_lines(CFG, summary_with(3), CELLS))
+    assert (
+        "Largest HiGHS minus greedy on proven cells without a contact limit: 1.194359. "
+        "On proven contact-limit cells, against greedy cut to the limit: 35.904906."
+    ) in text
+
+
+def test_exact_check_sentence_names_the_unproven_contact_limit_cell():
+    text = "\n".join(solver_lines(CFG, summary_with(33), CELLS))
+    assert "Those cells keep greedy's plan, checked only against its LP bound, except the" in text
+    assert "where the plan is HiGHS's best feasible solution only if it is worth at least" in text
+    assert "Unproven contact-limit cells: 1: budget 2,500 (2016-11-01), plan from HiGHS." in text
+    closed = [c for c in CELLS if c["budget"] != "2,500"]
+    text = "\n".join(solver_lines(CFG, summary_with(33), closed))
+    assert "No contact-limit cell was left unproven." in text
+    assert wording_violations(text, CFG) == []
+
+
+def test_low_effect_loss_is_shown_to_two_decimals(run_dir):
+    out, cfg = run_dir
+    loss = json.loads((out / "plan_report.json").read_text())["verdict"]["low_effect_loss"]
+    text = render(cfg, load_logs(out))
+    assert f"the base plan spends {loss:,.2f} price units for nothing." in text
+
+
+def test_rounding_never_hides_a_limit_or_a_tie(run_dir):
+    out, cfg = run_dir
+    logs = load_logs(out)
+    rows = logs["summary"]
+    pick = (rows.strategy == "optimizer") & (rows.scenario == "base")
+    pick &= (rows.budget_label == "1,000") & (rows.snapshot == "2016-11-01")
+    i = rows.index[pick][0]
+    rows.loc[i, "expected_cost"] = 999.507  # just under the budget: never shown as 1,000
+    st = logs["stability"]
+    j = st.index[(st.variant == "contact_limit") & (st.budget_label == "1,000")][0]
+    st.loc[j, "loss"] = 0.137
+    logs["plan_report"]["verdict"]["ranked_by_loss"] = [
+        ["contact_limit", 0.137],
+        ["margin_high", 0.0],
+    ]
+    text = render(cfg, logs)
+    assert "| 999.51 |" in text and "| 1,000.00 |" not in text.split("## Budget curve")[0]
+    assert "contact_limit 0.14; margin_high 0.00." in text
+    assert "| contact_limit | 0.14 |" in text
+
+
+def test_observed_section_has_no_prose_but_its_label(run_dir):
+    out, cfg = run_dir
+    text = render(cfg, load_logs(out))
+    section = text.split("## Observed churn among targeted customers")[1].split("\n## ")[0]
+    prose = [ln for ln in section.splitlines() if ln.strip() and not ln.startswith("|")]
+    assert prose == [f"*{cfg.observed_label}.*"]
+    lower = section.lower()
+    for word in ("better", "worse", "higher", "lower", "aims", "more", "less", "outperform"):
+        assert not re.search(rf"\b{word}\b", lower), word
+
+
+def test_relative_regret_above_100_percent_is_explained_by_a_small_optimum():
+    at = pd.DataFrame(
+        {"variant": ["pessimistic", "absolute"], "loss": [3772.372466, 1410.92],
+         "relative_regret": [3772.372466 / 106.107910, 0.42]}
+    )  # fmt: skip
+    lines = regret_notes(at)
+    assert lines[0] == (
+        "Under the assumed pessimistic variant, relative regret is the loss divided by the "
+        "variant's own optimum, which is small here (106.11 price units), so a loss of "
+        "3,772.37 is 3555.22% of it."
+    )
+    assert len([ln for ln in lines if ln]) == 1  # 42% needs no note
+    assert wording_violations("\n".join(lines), CFG) == []

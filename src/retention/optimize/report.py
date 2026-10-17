@@ -42,6 +42,15 @@ def num(x: float, digits: int = 1) -> str:
     return f"{x:,.{digits}f}"
 
 
+def money2(x: float) -> str:
+    """Two decimals, so a figure never rounds onto a registered limit or a tie."""
+    return f"{x:,.2f}"
+
+
+def pct2(x: float | None) -> str:
+    return "not defined" if x is None else f"{100 * x:.2f}%"
+
+
 def pct(x: float | None) -> str:
     return "not defined" if x is None else f"{100 * x:.1f}%"
 
@@ -87,7 +96,7 @@ def comparison_table(cfg: ActionsConfig, rows: pd.DataFrame, fields: dict[str, A
         out.append(
             f"| {name} | {cell('contacted', lambda v: f'{v:,.0f}')} "
             f"| {cell('expected_retained_customers', num)} | {cell('expected_retained_value')} "
-            f"| {cell('expected_cost')} | {cell('net_value')} |"
+            f"| {cell('expected_cost', money2)} | {cell('net_value')} |"
         )
     out.append("")
     return out
@@ -173,11 +182,12 @@ def render(cfg: ActionsConfig, logs: dict[str, Any]) -> str:
     at = stab[stab.budget_label == head_label]
     for r in at.itertuples():
         L.append(
-            f"| {r.variant} | {money(r.loss)} | {pct(_none(r.relative_regret))} "
-            f"| {num(r.jaccard, 2)} "
+            f"| {r.variant} | {money2(r.loss)} | {pct2(_none(r.relative_regret))} "
+            f"| {num(r.jaccard, 3)} "
             f"| {pct(_none(r.action_agreement))} | {_yes(r.stable)} | {_yes(r.stable_stricter)} |"
         )
     L.append("")
+    L += regret_notes(at)
     L += [f"Overall verdict at the headline budget: {v['overall']}.", ""]
     if v["failed"]:
         L += [
@@ -185,13 +195,13 @@ def render(cfg: ActionsConfig, logs: dict[str, Any]) -> str:
             f"{', '.join(v['failed'])}.",
             "",
             "Assumptions ranked by loss (largest first): "
-            + "; ".join(f"{n} {money(x)}" for n, x in v["ranked_by_loss"])
+            + "; ".join(f"{n} {money2(x)}" for n, x in v["ranked_by_loss"])
             + ".",
             "",
         ]
     L += [
         f"{prefix(base.form, 'low')} (zero for every action), the base plan spends "
-        f"{money(v['low_effect_loss'])} price units for nothing.",
+        f"{money2(v['low_effect_loss'])} price units for nothing.",
         "",
         v["robust_core_sentence"],
         "",
@@ -238,26 +248,66 @@ def render(cfg: ActionsConfig, logs: dict[str, Any]) -> str:
         L.append("")
 
     L += ["## Solver checks", ""]
-    L += solver_lines(cfg, plan["solver_summary"])
+    L += solver_lines(cfg, plan["solver_summary"], plan["solver_checks"])
     return "\n".join(L).rstrip() + "\n"
 
 
-def solver_lines(cfg: ActionsConfig, chk: dict[str, Any]) -> list[str]:
-    """The exact check's summary, with the unproven count always stated."""
+def regret_notes(at: pd.DataFrame) -> list[str]:
+    """Why a relative regret above 100% can occur: a small optimum in the denominator."""
+    out = []
+    for r in at.itertuples():
+        rel = _none(r.relative_regret)
+        if rel is None or rel <= 1.0:
+            continue
+        optimum = r.loss / rel
+        out += [
+            f"Under the assumed {r.variant} variant, relative regret is the loss divided by the "
+            f"variant's own optimum, which is small here ({money2(optimum)} price units), so a "
+            f"loss of {money2(r.loss)} is {pct2(rel)} of it.",
+            "",
+        ]
+    return out
+
+
+def solver_lines(cfg: ActionsConfig, chk: dict[str, Any], cells: list[dict[str, Any]]) -> list[str]:
+    """The exact check's summary, with the unproven count always stated.
+
+    Cells with a contact limit are the ones that carry "plan_from"; their logged
+    greedy figure is greedy cut to the limit, so they are reported apart.
+    """
     limit = f"{chk['time_limit_seconds']:.0f} s"
+    proven = [c for c in cells if c["highs_proven"]]
+    plain = [c["highs"] - c["greedy"] for c in proven if "plan_from" not in c]
+    capped = [c["highs"] - c["greedy"] for c in proven if "plan_from" in c]
     out = [
         f"Cells checked by HiGHS: {chk['cells']}; proven optimal within {limit}: {chk['proven']}; "
         f"not proven: {chk['unproven']}, of which with no feasible HiGHS solution: "
-        f"{chk.get('no_feasible_solution', 0)}. Largest HiGHS minus greedy on proven cells: "
-        f"{num(chk['max_highs_minus_greedy'], 6)}. Budget or limit breaches: {chk['breaches']}; "
+        f"{chk.get('no_feasible_solution', 0)}. Budget or limit breaches: {chk['breaches']}; "
         f"repairs: {chk['repairs']}.",
+        "",
+        "Largest HiGHS minus greedy on proven cells without a contact limit: "
+        f"{num(max(plain), 6) if plain else 'none'}. On proven contact-limit cells, against "
+        f"greedy cut to the limit: {num(max(capped), 6) if capped else 'none'}.",
         "",
     ]
     if chk["unproven_share"] > cfg.unproven_statement_share:
+        open_cl = [c for c in cells if "plan_from" in c and not c["highs_proven"]]
+        named = "; ".join(
+            f"budget {c['budget']} ({c['snapshot']}), plan from "
+            f"{'HiGHS' if c['plan_from'] == 'highs' else 'greedy'}"
+            for c in open_cl
+        )
         out += [
             f"The exact check is limited: in {chk['unproven']} of {chk['cells']} cells "
-            f"({pct(chk['unproven_share'])}) HiGHS did not prove the optimum within {limit}, so "
-            "the greedy plan there is checked only against its LP bound.",
+            f"({pct(chk['unproven_share'])}) HiGHS did not prove the optimum within {limit}. "
+            "Those cells keep greedy's plan, checked only against its LP bound, except the "
+            "contact-limit cells, where the plan is HiGHS's best feasible solution only if it is "
+            "worth at least greedy's (greedy cut to the limit). "
+            + (
+                f"Unproven contact-limit cells: {len(open_cl)}: {named}."
+                if open_cl
+                else "No contact-limit cell was left unproven."
+            ),
             "",
         ]
     return out
