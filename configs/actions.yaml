@@ -10,6 +10,8 @@
 # fifth commit, before any code.
 # The exact check's time limit and its rules for an unproven solve were added in
 # the sixth commit, before any real step.
+# The projection rechecks (superseding the first-cell recheck) were added in the
+# seventh commit, before any real step.
 #
 # Every effect below is an ASSUMPTION chosen by the user. None is an estimate: no
 # KKBox uplift estimate exists for any action, and no number here comes from KKBox
@@ -400,3 +402,18 @@ exact_check:
     statement_above_share: 0.10  # above this share the report states plainly that the exact check is limited (a finding, not a failure)
   every_plan: never over budget or the contact limit, checked on every plan, proven or not
   timing: the 3-hour projected stop stays; actual seconds per cell are logged
+
+# --- projection rechecks ----------------------------------------------------------------
+projection_rechecks:
+  label: "projection rechecks: user choice, 2026-10-17"
+  supersedes: random_baseline_timing.recheck  # the first real cell (base point, budget 0) needs almost no solver work
+  budget_limited_cell: a cell whose budget is a positive scan level (not 0, not no limit); 84 of the 112 cells
+  solve_seconds: measured per cell for the plan and its exact check (greedy and HiGHS), apart from the random draws
+  random_draw_estimate: the synthetic random-baseline seconds per cell, measured before the run
+  projection: 'elapsed seconds + mean solve seconds of the budget-limited cells so far x remaining budget-limited cells + random-draw estimate x remaining cells (all kinds); the solve time of budget 0 and no-limit cells is left out (they need almost no solver work)'
+  checks:
+    - after the first budget-limited cell (base point, first non-zero budget), from its solve seconds
+    - after the first 10 budget-limited cells, from their mean solve seconds
+  stop_hours: 3.0  # either projection above this stops the run, and the measured seconds are reported
+  never: [skip cells, shorten the time limit]
+  options_after_a_stop: raise the stop, add OR-Tools, reduce the scan; each comes back to the user and none is applied automatically
