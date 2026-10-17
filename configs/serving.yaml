@@ -1,0 +1,94 @@
+# Phase 8: scoring service. Registered before any Phase 8 code or run.
+# Committed alone. The first commit registers the ordering fix and the 59-day
+# refit; later sections are added in their own commits, each before the code or
+# run it judges. No value here is changed after a result is seen: a later change
+# is a logged amendment, and results under the original values are reported too.
+#
+# Every pass mark is exact unless a tolerance is written next to it. If a
+# reproduction field differs, the step stops and reports the largest difference;
+# row order, library versions and thread count are examined first. No tolerance
+# is introduced afterwards.
+
+ordering:
+  # The ordering fix registered in Phase 3, unchanged.
+  horizons: [7, 30, 59]  # lapse by day 59, not 60 (a deviation from the phase plan's 60 days)
+  order: [calibrate, clip, pool_adjacent_violators, clip]
+  clip: [1.0e-6, 0.999999]
+  pav_weights: equal
+  property: "p7 <= p30 <= p59 on every row after the fix"
+
+  refit_59:
+    model: c01  # inherits the 30-day fold's choice; no fold chose settings at 59 days
+    feature_set: fs1
+    target: lapse by day 59
+    fit_snapshots: ["2016-08-01", "2016-09-01"]
+    fit_population: P2 main
+    labels_as_of: "2017-01-01"  # cached labels only; no label building
+    threads: 4
+    seed: 20161001
+    never: [read any 2017 outcome, construct TestUnlock, run score-test]
+    status: demonstration-grade  # no fold chose its settings; calibration judged only in the Phase 3 59-day demonstration
+
+  platt_59:
+    slice: calibration half of 2016-10-01, P2 main
+    labels_as_of: "2017-01-01"
+    caveat: >-
+      renewal windows run to 2016-12-29 and include the 2016-12-05 missing-renewal
+      day; a customer whose renewal was due that day can be counted as lapsed, so
+      these values may be slightly high (size not estimated)
+
+  pass_marks:
+    reproduction:
+      source: data/processed/kkbox/sample_020/rehearsal.json
+      source_sha256: 79cf47d49831d1e0cd0c1009816abd963d810d7867bf852431ba0bdb43a16ca6
+      key: "demonstration_59 / 59 days, 2016-11-01 / models / classifier / score_summary_raw"
+      snapshot: "2016-11-01"
+      population: P2 main
+      fields: 13  # mean, 9 deciles, min, max, distinct
+      tolerance: exact
+      expected:
+        mean: 0.06730564963246764
+        deciles:
+          - 0.011126644718503055
+          - 0.013732393068438547
+          - 0.016551046580978244
+          - 0.01875006284396744
+          - 0.023477007922971263
+          - 0.030022366348082582
+          - 0.03792667875747765
+          - 0.06816764329627534
+          - 0.16823298746746904
+        min: 0.008868385191557537
+        max: 0.9539826748681025
+        distinct: 93640
+    platt_59:
+      source: MLflow run 9bca205ae00b4017a440d16057fa60e8, artifact october.json, classifier_c01.platt.59
+      tolerance: exact
+      a: 0.02725170409239291
+      b: 1.0132027145157536
+    fix:
+      snapshot: "2016-11-01"
+      population: P2 main
+      rows: 169673
+      models: {7: saved booster, 30: saved booster, 59: refit}
+      rows_changed: 16444  # exact
+      max_change: 0.300535285645459
+      max_change_tolerance: 1.0e-12
+    determinism:
+      in_process_refits: 2  # identical booster string required
+      save: second run with the expected SHA-256 only
+      serving: refuse any model file whose SHA-256 differs from the registered one
+    monotone:
+      property_test: seeded random inputs; every row satisfies p7 <= p30 <= p59
+      real_check: every 2016-11-01 P2 main row after the fix; stop on any violation
+
+  descriptive:  # no pass mark
+    calibration_before_after_fix:
+      horizons: [7, 30]
+      slice: selection half of 2016-10-01, P2 main (72,395 rows)
+      labels_as_of: "2017-01-01"  # 2016 outcomes only
+      report: [slope, intercept]
+
+  reasons:
+    horizons: [7, 30]  # no reasons at 59 days
+    explain: the probability before the fix  # said next to the final probability wherever both are shown
