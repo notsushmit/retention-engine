@@ -13,6 +13,12 @@ calibration-table: the descriptive slope and intercept at 7 and 30 days before
 and after the fix, on the selection half of 2016-10-01 (2016 outcomes only), with
 the saved 59-day booster. Writes calibration_before_after.json. Runs once.
 
+save-dt01 --expect-sha <hex>: refit dt01 exactly as Phase 7 did, judge it by Phase
+7's registered reproduction cells (configs/actions.yaml, dt01_refit) and the
+expected booster SHA-256 (which Phase 7's saved dt01.txt must also have), then
+write dt01.txt and model_dt01.json to the service's model folder. Writes
+save_dt01_report.json. Runs once; saves nothing if anything fails.
+
 Every command refuses to run when a tracked file differs from HEAD, so each
 report ties to a commit.
 """
@@ -25,6 +31,7 @@ import sys
 import time
 from pathlib import Path
 
+from retention.api import dt01 as dt01_step
 from retention.api.config import load_serving, ordering_marks
 from retention.api.ordering import platt_from
 from retention.api.refit import (
@@ -41,10 +48,13 @@ from retention.models.protocol import load_protocol
 from retention.models.resources import peak_rss_gb
 from retention.models.stages import assert_no_label_building_code
 from retention.models.tracking import head_commit, tree_dirty
+from retention.optimize.config import load_actions_config
+from retention.optimize.value import dt01_settings
 
 REPORT = "refit59_report.json"
 REPORT_SAVE = "refit59_report_save.json"
 TABLE = "calibration_before_after.json"
+DT01_REPORT = "save_dt01_report.json"
 
 
 def out_dir(fraction: float | None) -> Path:
@@ -158,6 +168,43 @@ def table(args) -> int:
     return 0
 
 
+def save_dt01(args) -> int:
+    repo = Path.cwd()
+    require_clean(repo)
+    out = out_dir(args.fraction)
+    run_once(out / DT01_REPORT)
+    expected = args.expect_sha.strip()
+    t0 = time.time()
+    protocol = load_protocol()
+    cfg = load_actions_config()
+    s = dt01_settings()
+    report, model = dt01_step.run_save_check(
+        protocol,
+        processed_dir(args.fraction),
+        interim_dir(args.fraction) / "labels_asof",
+        s,
+        cfg,
+        expected,
+        interim_dir(args.fraction) / "optimize" / "model" / "dt01.txt",
+    )
+    assert_no_label_building_code()
+    report = stamp(report, repo, t0)
+    if report["peak_rss_gb"] >= cfg.memory_ceiling_gb:
+        report["failures"].append(
+            f"peak RSS {report['peak_rss_gb']} GB at or above {cfg.memory_ceiling_gb} GB"
+        )
+        report["passed"] = False
+    if report["passed"]:
+        report["saved"] = dt01_step.save(model, s, model_dir(args.fraction), expected)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / DT01_REPORT).write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps(report, indent=2))
+    if not report["passed"]:
+        print("SAVE-DT01 NOT MET; nothing saved:", *report["failures"], sep="\n  ")
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m retention.api")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -167,9 +214,14 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--expect-sha", action="append", default=[], metavar="59=SHA256")
     t = sub.add_parser("calibration-table", help="descriptive slopes before and after the fix")
     t.add_argument("--fraction", type=float, default=None)
+    d = sub.add_parser("save-dt01", help="refit dt01, check it, save it with its model JSON")
+    d.add_argument("--fraction", type=float, default=None)
+    d.add_argument("--expect-sha", required=True, metavar="SHA256")
     args = parser.parse_args(argv)
     if args.command == "calibration-table":
         return table(args)
+    if args.command == "save-dt01":
+        return save_dt01(args)
     if args.save and not args.expect_sha:
         parser.error("--save needs --expect-sha 59=SHA256")
     return refit59(args)
