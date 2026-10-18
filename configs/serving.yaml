@@ -11,6 +11,8 @@
 # refit59 run showed it was mis-specified, and verified by a reconciliation run.
 # The saved 59-day files' SHA-256 values were added in the fifth commit, after the
 # save run: an addition beyond the original marks.
+# The saved 7-day and 30-day model JSON hashes were added in the sixth commit, hashed
+# as the files stood on disk: an addition beyond the original marks.
 #
 # Every pass mark is exact unless a tolerance is written next to it. If a
 # reproduction field differs, the step stops and reports the largest difference;
@@ -135,6 +137,18 @@ ordering:
     files:
       booster_59d.txt: 21f7240dce242d3a53287cee502742431c1747b88d23d6259d7ab7709d81d13a
       model_59d.json: e1b4bbc70fb8183921b374cd9498f1e80249d52df4517e6e42d9d58a29734cb5
+
+  saved_7_30:
+    label: >-
+      an addition beyond the original marks: the model JSONs saved in Phase 4
+      (columns, category levels, Platt a and b), hashed as they stood on disk on
+      2026-10-18, not regenerated; the service refuses either file if its SHA-256
+      differs
+    directory: data/interim/kkbox/sample_020/explain/model
+    files:
+      model_7d.json: d317109cf938b6518e73be78887befe284f5e9790322933df0250024e8ea525a
+      model_30d.json: c78fbc8757ac3176a4ff780bf813cc1faee282ae8873de2c1549527e319fe7bb
+    boosters: registered in Phase 4 (booster_7d.txt e1c985c9...a0a26d, booster_30d.txt b967381d...9fcf35d)
 
   reasons:
     horizons: [7, 30]  # no reasons at 59 days
