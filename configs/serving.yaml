@@ -3,6 +3,8 @@
 # refit; later sections are added in their own commits, each before the code or
 # run it judges. No value here is changed after a result is seen: a later change
 # is a logged amendment, and results under the original values are reported too.
+# The scoring contract and the streaming pass marks were added in the second
+# commit, before any build.
 #
 # Every pass mark is exact unless a tolerance is written next to it. If a
 # reproduction field differs, the step stops and reports the largest difference;
@@ -92,3 +94,131 @@ ordering:
   reasons:
     horizons: [7, 30]  # no reasons at 59 days
     explain: the probability before the fix  # said next to the final probability wherever both are shown
+
+contract:
+  score_request:
+    endpoint: POST /score
+    fields: {msno: required, as_of: optional}
+    features_from: the service's own store  # callers never post feature values
+  store_date: >-
+    one date per loaded snapshot; during replay the store holds features for
+    exactly one date T, built from rows dated before T
+  population: P2 main  # in_exp30 and segment paid or discount100_only
+
+  scored:  # status "scored"
+    risk:
+      horizons: [7, 30, 59]
+      value: after the ordering fix, full precision, plus display text
+      grade_59: demonstration
+      flag: whether the ordering fix moved this customer's values
+    reasons:
+      horizons: [7, 30]
+      phrases: configs/reason_phrases.yaml
+      with: the probability before the fix
+      fixed_line: "Reasons explain the probability before the ordering fix."
+    lapse_free_days:
+      horizon: 60
+      model: dt01
+      labels:
+        - "uncalibrated between 7, 30 and 59 days"
+        - "near the ceiling for almost everyone; not a ranking signal"
+    archetype:
+      value: null
+      status: "none registered: no grouping held up across two months"  # a deviation from the phase plan
+    action:
+      basis: best action for this customer under the base scenario, no budget
+      fields: [action, retained_value, net_value, cost]
+      required:  # a test fails any response whose action block lacks one of these
+        effect_basis: assumed
+        scenario: [form, level, margin, cost_level, discount_cost_rule, value_horizon, budget]
+        instability_note: "The plan is unstable under 5 of 11 variants."
+        no_estimate_line: "No KKBox effect estimate exists; every effect is an assumption."
+      plan_membership: batch fact, returned by GET /at-risk
+    model_block: [model ids, model SHA-256, config SHA-256]
+
+  outside_population:  # HTTP 200; no probability, reason, lapse-free days or action
+    status: outside_population
+    codes: [segment_trial_only, segment_promo_only, expiry_beyond_30_days, "unseen_level:<feature>"]
+    unseen_level: refused, never guessed
+    with: next_expiry_in_days
+    null_feature_values: in population  # models trained with native missing values and the masking rule
+    limit: "customers expiring more than 30 days ahead (22% of active customers on 2016-11-01) get no score"
+  not_active:
+    status: not_active  # a known customer with no coverage at the store's date
+
+  december_2016:
+    scores: returned with a data warning about the 2016-12-05 missing-renewal day
+    reasons: withheld, code "2016-12 not explained"
+
+  errors:
+    404: unknown customer
+    422: malformed input
+    409: as_of differs from the store's date
+    503: not ready; a model checksum mismatch stops startup and /health says why
+
+  never_in_any_body: [age, gender, registered_via, tenure, city]  # scanned in every response, error bodies included
+
+streaming:
+  meaning: >-
+    replay of real 2016 rows in a fixed date order; events arrive one at a time;
+    the store's date moves only at snapshot boundaries, so scores change once per
+    snapshot (no live source; no daily store dates)
+  transport: valkey streams  # BSD-3; one container for stream and store; version pinned at the build plan
+  sources:
+    - data/interim/kkbox/sample_020/transactions.parquet
+    - data/interim/kkbox/sample_020/transactions_v2.parquet
+    - data/interim/kkbox/sample_020/user_logs.parquet
+  bootstrap:
+    snapshot: "2016-10-01"
+    built_from: rows dated before 2016-10-01 only
+  replay:
+    first_day: "2016-10-01"
+    last_day: "2016-10-31"
+    store_date_after: "2016-11-01"
+    stop_at_source: no row dated 2016-11-01 or later is read  # spy test on the source reader
+    never: [read any outcome column, construct TestUnlock, run score-test]
+    speed: configurable
+  tie_rule: >-
+    event date; source rank transactions, transactions_v2, user_logs; msno; then
+    every column of the row in file order, ascending, nulls first; the producer
+    numbers events in this order
+  consumer: >-
+    per event: 28-day ring of daily usage, first and last listen day, appended
+    transaction rows, touched set; at a store-date move: coverage state for touched
+    customers by the existing timeline code, cohort median over all customers with
+    coverage, date-relative features for everyone
+
+  pass_marks:  # any failure: not met, largest difference reported, no loosening
+    event_count:
+      recount: a logged step, run once before the replay is judged
+      expected: 3727472  # 3,511,773 user_logs + 212,092 transactions + 3,607 transactions_v2
+      produced_equals_recount: exact
+      consumed_equals_recount: exact
+    feature_parity:
+      snapshot: "2016-11-01"
+      rows: 230286  # every customer with coverage, not a sample
+      against: data/processed/kkbox/sample_020/features.parquet
+      exact: [integer, category, date, boolean, empty positions]
+      float_relative_tolerance: 1.0e-12  # above it: not met, largest difference reported
+      labels_state_failure: reported as a finding about Phase 2; the streaming side is not tuned to match
+    score_parity:
+      population: P2 main
+      rows: 169673
+      path: the scoring function the API uses
+      raw_scores: identical wherever features are identical
+      final_probability_tolerance: 1.0e-12
+      http_sample: {customers: 1000, seeded: true, answers: identical}
+    determinism:
+      runs: [full speed, throttled]
+      compare: feature table hash
+      required: identical
+    resources:
+      peak_rss_gb_max: 10  # every process
+      reported_only: [replay time, valkey memory]
+    latency:
+      endpoint: POST /score over HTTP to the running stack, this Mac
+      warmup_calls: 50
+      calls: 1000  # sequential, seeded customers of the training population
+      p95_ms_max: 100  # the user's own unvalidated choice, not based on any measurement
+      reported: [p50, p99]
+      ci: not measured
