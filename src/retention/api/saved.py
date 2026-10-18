@@ -1,9 +1,10 @@
-"""The saved classifier files, loaded only if every file matches its registered SHA-256.
+"""The saved model files, loaded only if every file matches its registered SHA-256.
 
 configs/serving.yaml registers, for 59 days (`ordering.saved_59`), the booster
-text and its model JSON (columns, category levels, Platt a and b), and for 7 and
-30 days (`ordering.saved_7_30`) the model JSONs saved in Phase 4; those boosters'
-hashes were registered in Phase 4 (retention.explain.contributions). Any file
+text and its model JSON (columns, category levels, Platt a and b), for 7 and 30
+days (`ordering.saved_7_30`) the model JSONs saved in Phase 4 (those boosters'
+hashes were registered in Phase 4, retention.explain.contributions), and for dt01
+(`ordering.saved_dt01`) its booster and model JSON. Any file
 with another hash is refused before anything is parsed, so a changed booster
 cannot pass by also editing the hash written inside its JSON, and a changed
 Platt value cannot pass at all.
@@ -103,3 +104,26 @@ def load_saved_7_30(
         load_saved_model(directory, h, settings, protocol, expected[booster_name(h)])
         for h in SAVED_HORIZONS
     ]
+
+
+def saved_dt01_registration(cfg: dict[str, Any] | None = None) -> tuple[Path, dict[str, str]]:
+    """The registered directory and {file name: SHA-256} of the saved dt01 files."""
+    from retention.api.dt01 import BOOSTER as DT01_BOOSTER
+    from retention.api.dt01 import META as DT01_META
+
+    reg = (cfg if cfg is not None else load_serving())["ordering"]["saved_dt01"]
+    files = dict(reg["files"])
+    if sorted(files) != sorted([DT01_BOOSTER, DT01_META]):
+        raise ValueError(f"saved_dt01 must register exactly {DT01_BOOSTER} and {DT01_META}")
+    return Path(reg["directory"]), files
+
+
+def load_saved_dt01(
+    protocol: Protocol, cfg: dict[str, Any] | None = None, directory: Path | None = None
+):
+    """dt01 rebuilt from its saved files, after both match their registered hashes."""
+    from retention.api.dt01 import load_dt01  # dt01 imports verify_files from here
+
+    registered_dir, expected = saved_dt01_registration(cfg)
+    directory = registered_dir if directory is None else directory
+    return load_dt01(directory, expected, protocol)

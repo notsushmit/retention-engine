@@ -41,7 +41,8 @@ import pandas as pd
 
 from retention.api.config import OrderingMarks, file_sha256
 from retention.api.ordering import final_probabilities, order_violations, platt_from
-from retention.explain.contributions import EXPECTED_SHA256, SavedModel, load_saved_model
+from retention.api.saved import load_saved_7_30
+from retention.explain.contributions import SavedModel
 from retention.explain.model import (
     LABEL_COLUMNS,
     SUMMARY_KEY,
@@ -217,11 +218,12 @@ def raw_probabilities(models: list, rows: pd.DataFrame) -> np.ndarray:
 
 
 def saved_models(model_dir: Path, settings: Settings, protocol: Protocol) -> list[SavedModel]:
-    """The saved 7-day and 30-day boosters, refused unless their registered hashes match."""
-    return [
-        load_saved_model(model_dir, h, settings, protocol, EXPECTED_SHA256[h])
-        for h in SAVED_HORIZONS
-    ]
+    """The saved 7-day and 30-day boosters and Platt parameters, after all four files pass.
+
+    Both boosters and both model JSONs are checked against their registered hashes
+    (retention.api.saved) before anything is parsed.
+    """
+    return load_saved_7_30(settings, protocol, directory=model_dir)
 
 
 # --- the whole check ---------------------------------------------------------------------
