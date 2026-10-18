@@ -85,8 +85,16 @@ class Settings:
     candidates: dict[int, dict[str, Any]]
 
 
-def load_settings(choices_path: Path = CHOICES, eval_path: Path = EVAL_CONFIG) -> Settings:
-    """The frozen classifier settings, assembled as the test stage assembles them."""
+def load_settings(
+    choices_path: Path = CHOICES,
+    eval_path: Path = EVAL_CONFIG,
+    horizons: tuple[int, ...] = HORIZONS,
+) -> Settings:
+    """The frozen classifier settings, assembled as the test stage assembles them.
+
+    `horizons` defaults to the explained ones; the scoring service also asks for 59
+    (the 59-day refit lives in retention.api, never here).
+    """
     raw = yaml.safe_load(eval_path.read_text())
     choices = yaml.safe_load(choices_path.read_text())["choices"]
     drop = raw["selection"]["feature_sets"][choices["feature_set"]]["drop"]
@@ -96,7 +104,7 @@ def load_settings(choices_path: Path = CHOICES, eval_path: Path = EVAL_CONFIG) -
         categorical=list(raw["classifier"]["categorical"]),
         fixed=dict(raw["classifier"]["fixed_params"]),
         candidates={
-            h: candidate_params(cands[choices["classifier_hyperparameters"][h]]) for h in HORIZONS
+            h: candidate_params(cands[choices["classifier_hyperparameters"][h]]) for h in horizons
         },
     )
 

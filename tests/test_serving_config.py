@@ -1,0 +1,105 @@
+"""configs/serving.yaml may only add keys after each registration, never change one."""
+
+import hashlib
+import json
+import subprocess
+from datetime import date
+from pathlib import Path
+
+import pytest
+import yaml
+
+from retention.api.config import file_sha256, load_serving, ordering_marks
+from retention.api.refit import SELECTION_ROWS
+from retention.models.metrics import CLIP
+
+REGISTRATIONS = {
+    "4911ff6": "7b8a09a38b6f62c0bf23f167423883e630fdf198989f954264b5036e770611b0",
+    "4c1f376": "b595ddc0b4e82c5806f438feb6c254039ae69cdc2533f611718ac1ca985439e8",
+    "4cb85af": "761f3b96f7e9bac06f676bcbbda8c6748af5256f4b1c2dad9b208511e88ada0d",
+}
+REHEARSAL = Path("data/processed/kkbox/sample_020/rehearsal.json")
+OCTOBER = Path("mlruns/artifacts/9bca205ae00b4017a440d16057fa60e8/artifacts/october.json")
+
+
+def leaves(d, path=()):
+    if isinstance(d, dict):
+        for k, v in d.items():
+            yield from leaves(v, (*path, k))
+    else:
+        yield path, d
+
+
+def registered_text(commit: str) -> str:
+    out = subprocess.run(
+        ["git", "show", f"{commit}:configs/serving.yaml"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return out.stdout
+
+
+@pytest.mark.parametrize("commit", list(REGISTRATIONS))
+def test_registered_blob_has_the_registered_hash(commit):
+    assert hashlib.sha256(registered_text(commit).encode()).hexdigest() == REGISTRATIONS[commit]
+
+
+@pytest.mark.parametrize("commit", list(REGISTRATIONS))
+def test_every_registered_value_is_unchanged(commit):
+    old = dict(leaves(yaml.safe_load(registered_text(commit))))
+    new = dict(leaves(load_serving()))
+    assert {p: v for p, v in old.items() if new.get(p, "<missing>") != v} == {}
+
+
+def test_ordering_marks_read_the_registered_values():
+    m = ordering_marks()
+    assert m.horizons == (7, 30, 59)
+    assert m.clip == (CLIP, 1 - CLIP)
+    assert m.fit_snapshots == (date(2016, 8, 1), date(2016, 9, 1))
+    assert m.labels_as_of == date(2017, 1, 1)
+    assert (m.threads, m.seed) == (4, 20161001)
+    assert m.snapshot == date(2016, 11, 1)
+    assert m.rehearsal_key[-1] == "score_summary_raw"
+    assert (m.fix_rows, m.fix_rows_changed) == (169_673, 16_444)
+    assert (m.fix_max_change, m.fix_max_change_tolerance) == (0.300535285645459, 1e-12)
+    assert (m.platt_a, m.platt_b) == (0.02725170409239291, 1.0132027145157536)
+
+
+def test_expected_summary_has_the_13_registered_fields():
+    s = ordering_marks().expected_summary
+    assert sorted(s) == ["deciles", "distinct", "max", "mean", "min"]
+    assert len(s["deciles"]) == 9 and isinstance(s["distinct"], int)
+    assert 3 + len(s["deciles"]) + 1 == 13
+
+
+def test_selection_rows_constant_matches_the_config_text():
+    text = load_serving()["ordering"]["descriptive"]["calibration_before_after_fix"]["slice"]
+    assert f"{SELECTION_ROWS:,}" in text
+
+
+def test_event_count_is_the_sum_of_its_parts():
+    assert load_serving()["streaming"]["pass_marks"]["event_count"]["expected"] == (
+        3_511_773 + 212_092 + 3_607
+    )
+
+
+@pytest.mark.skipif(not REHEARSAL.exists(), reason="needs the 20% sample's rehearsal.json")
+def test_rehearsal_has_the_registered_hash_and_summary():
+    m = ordering_marks()
+    assert file_sha256(REHEARSAL) == m.rehearsal_sha256
+    node = json.loads(REHEARSAL.read_text())
+    for key in m.rehearsal_key:
+        node = node[key]
+    assert node == m.expected_summary
+    fix = json.loads(REHEARSAL.read_text())["demonstration_59"]["59 days, 2016-11-01"]
+    assert fix["rows"] == m.fix_rows
+    assert fix["order_fix"]["classifier"]["rows_changed"] == m.fix_rows_changed
+    assert fix["order_fix"]["classifier"]["max_change"] == m.fix_max_change
+
+
+@pytest.mark.skipif(not OCTOBER.exists(), reason="needs the local MLflow artifacts")
+def test_platt_values_equal_the_logged_october_run():
+    m = ordering_marks()
+    logged = json.loads(OCTOBER.read_text())["classifier_c01"]["platt"]["59"]
+    assert (logged["a"], logged["b"]) == (m.platt_a, m.platt_b)
