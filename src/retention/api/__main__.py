@@ -19,6 +19,15 @@ expected booster SHA-256 (which Phase 7's saved dt01.txt must also have), then
 write dt01.txt and model_dt01.json to the service's model folder. Writes
 save_dt01_report.json. Runs once; saves nothing if anything fails.
 
+register: put the eight-file bundle (configs/serving.yaml, registry) in the MLflow
+registry as retention-scoring version 1 under the alias serving, after checking
+every file; then load it back through the alias with every check. Writes
+register_report.json. Runs once; refused if the model is already registered.
+
+verify-serving: load the models through the alias exactly as the service will
+(download, hash every file, check the manifest, parse). Writes
+verify_serving_report.json. Runs once.
+
 Every command refuses to run when a tracked file differs from HEAD, so each
 report ties to a commit.
 """
@@ -28,11 +37,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 from retention.api import dt01 as dt01_step
-from retention.api.config import load_serving, ordering_marks
+from retention.api import registry
+from retention.api.config import SERVING_CONFIG, file_sha256, load_serving, ordering_marks
 from retention.api.ordering import platt_from
 from retention.api.refit import (
     HORIZON,
@@ -55,6 +66,8 @@ REPORT = "refit59_report.json"
 REPORT_SAVE = "refit59_report_save.json"
 TABLE = "calibration_before_after.json"
 DT01_REPORT = "save_dt01_report.json"
+REGISTER_REPORT = "register_report.json"
+VERIFY_REPORT = "verify_serving_report.json"
 
 
 def out_dir(fraction: float | None) -> Path:
@@ -205,6 +218,81 @@ def save_dt01(args) -> int:
     return 0
 
 
+def loaded_summary(models: registry.ServingModels) -> dict:
+    return {
+        "version": models.version,
+        "manifest": models.manifest,
+        "c01_booster_sha256": {str(h): m.sha256 for h, m in models.c01.items()},
+        "c01_platt": {str(h): [m.platt_a, m.platt_b] for h, m in models.c01.items()},
+        "dt01_booster_sha256": dt01_step.text_sha256(dt01_step.booster_text(models.dt01)),
+    }
+
+
+def register_cmd(args) -> int:
+    repo = Path.cwd()
+    require_clean(repo)
+    out = out_dir(args.fraction)
+    run_once(out / REGISTER_REPORT)
+    t0 = time.time()
+    settings = registry.registry_settings(repo)
+    sources = registry.bundle_sources(settings)
+    protocol = load_protocol()
+    with tempfile.TemporaryDirectory() as tmp:
+        done = registry.register(
+            settings,
+            sources,
+            Path(tmp) / "bundle",
+            head_commit(repo),
+            file_sha256(SERVING_CONFIG),
+        )
+        models = registry.load_serving_models(
+            settings, load_settings(horizons=(7, 30, HORIZON)), protocol, Path(tmp) / "load"
+        )
+    report = stamp(
+        {
+            "registered_model": settings.name,
+            "alias": settings.alias,
+            "run_id": done["run_id"],
+            "registered_version": done["version"],
+            "loaded_back": loaded_summary(models),
+            "passed": True,
+        },
+        repo,
+        t0,
+    )
+    out.mkdir(parents=True, exist_ok=True)
+    (out / REGISTER_REPORT).write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps(report, indent=2))
+    return 0
+
+
+def verify_cmd(args) -> int:
+    repo = Path.cwd()
+    require_clean(repo)
+    out = out_dir(args.fraction)
+    run_once(out / VERIFY_REPORT)
+    t0 = time.time()
+    settings = registry.registry_settings(repo)
+    with tempfile.TemporaryDirectory() as tmp:
+        models = registry.load_serving_models(
+            settings, load_settings(horizons=(7, 30, HORIZON)), load_protocol(), Path(tmp)
+        )
+    report = stamp(
+        {
+            "registered_model": settings.name,
+            "alias": settings.alias,
+            "loaded": loaded_summary(models),
+            "passed": True,
+        },
+        repo,
+        t0,
+    )
+    out.mkdir(parents=True, exist_ok=True)
+    (out / VERIFY_REPORT).write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps(report, indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m retention.api")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -217,7 +305,15 @@ def main(argv: list[str] | None = None) -> int:
     d = sub.add_parser("save-dt01", help="refit dt01, check it, save it with its model JSON")
     d.add_argument("--fraction", type=float, default=None)
     d.add_argument("--expect-sha", required=True, metavar="SHA256")
+    g = sub.add_parser("register", help="register the eight-file bundle under the alias")
+    g.add_argument("--fraction", type=float, default=None)
+    v = sub.add_parser("verify-serving", help="load the models through the alias, checked")
+    v.add_argument("--fraction", type=float, default=None)
     args = parser.parse_args(argv)
+    if args.command == "register":
+        return register_cmd(args)
+    if args.command == "verify-serving":
+        return verify_cmd(args)
     if args.command == "calibration-table":
         return table(args)
     if args.command == "save-dt01":
