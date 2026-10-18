@@ -14,15 +14,18 @@ import pytest
 import yaml
 
 from retention.api import __main__ as cli
-from retention.api.config import ordering_marks
+from retention.api import refit as refit_module
+from retention.api.config import load_serving, ordering_marks
 from retention.api.ordering import platt_from
 from retention.api.refit import (
     CheckFailed,
     calibration_table,
     check_fix,
+    check_fix_all_p2,
     check_inputs,
     check_platt,
     check_rehearsal,
+    p2_all_rows,
     saved_models,
 )
 from retention.explain.contributions import EXPECTED_SHA256
@@ -129,10 +132,12 @@ IDENTITY = [platt_from(0.0, 1.0, SEED) for _ in range(3)]
 
 
 def marks_for(raw: np.ndarray, **change) -> object:
+    """MARKS with the fix numbers of `raw` as both the registered and the A1 count."""
     summary, _ = check_fix(raw, IDENTITY, MARKS)
     base = {
         "fix_rows": summary["rows"],
         "fix_rows_changed": summary["rows_changed"],
+        "main_rows_changed": summary["rows_changed"],
         "fix_max_change": summary["max_change"],
     }
     return dataclasses.replace(MARKS, **(base | change))
@@ -148,7 +153,7 @@ def test_fix_check_passes_on_its_own_numbers():
 
 def test_fix_check_fails_on_one_row_more_or_a_moved_max():
     raw = violating_raw(1_000, 37)
-    _, failures = check_fix(raw, IDENTITY, marks_for(raw, fix_rows_changed=38))
+    _, failures = check_fix(raw, IDENTITY, marks_for(raw, main_rows_changed=38))
     assert any("rows changed" in f for f in failures)
     m = marks_for(raw)
     _, failures = check_fix(
@@ -157,6 +162,110 @@ def test_fix_check_fails_on_one_row_more_or_a_moved_max():
     assert any("max change" in f for f in failures)
     _, failures = check_fix(raw, IDENTITY, dataclasses.replace(m, fix_rows=999))
     assert any("fix rows" in f for f in failures)
+
+
+def test_amendment_judges_rows_changed_and_reports_the_registered_mark_as_written():
+    raw = violating_raw(1_000, 37)
+    m = marks_for(raw, fix_rows_changed=16_444)  # the registered, mis-specified count
+    summary, failures = check_fix(raw, IDENTITY, m)
+    assert failures == []
+    assert summary["rows_changed_judged_by"] == "A1"
+    assert (summary["registered_rows_changed"], summary["registered_mark_as_written"]) == (
+        16_444,
+        "not met",
+    )
+
+
+def test_without_the_amendment_the_registered_count_is_judged():
+    raw = violating_raw(1_000, 37)
+    m = marks_for(raw, fix_rows_changed=16_444, amendment=None, main_rows_changed=None)
+    summary, failures = check_fix(raw, IDENTITY, m)
+    assert summary["rows_changed_judged_by"] == "the registered mark"
+    assert any("16444" in f for f in failures)
+
+
+def tie_marks(raw: np.ndarray, segment: np.ndarray, **change) -> object:
+    summary, _ = check_fix_all_p2(raw, IDENTITY, MARKS, segment)
+    tie = {
+        k: summary[k]
+        for k in (
+            "rows",
+            "rows_changed",
+            "share_changed",
+            "mean_change_changed_rows",
+            "max_change",
+            "order_violations_after_fix",
+        )
+    }
+    return dataclasses.replace(MARKS, all_p2=tie | change)
+
+
+def test_all_p2_tie_passes_on_its_own_numbers_and_counts_by_segment():
+    raw = violating_raw(1_000, 37)
+    segment = np.array(["paid"] * 900 + ["trial_only"] * 100)
+    segment[:10] = "trial_only"
+    summary, failures = check_fix_all_p2(raw, IDENTITY, tie_marks(raw, segment), segment)
+    assert failures == []
+    assert summary["by_segment"]["trial_only"] == {"rows": 110, "changed": 10}
+    assert summary["by_segment"]["paid"] == {"rows": 890, "changed": 27}
+
+
+@pytest.mark.parametrize("key", ["share_changed", "mean_change_changed_rows"])
+def test_all_p2_tie_is_exact_for_share_and_mean_change(key):
+    raw = violating_raw(1_000, 37)
+    segment = np.array(["paid"] * 1_000)
+    m = tie_marks(raw, segment)
+    m = dataclasses.replace(m, all_p2=m.all_p2 | {key: np.nextafter(m.all_p2[key], 1.0)})
+    _, failures = check_fix_all_p2(raw, IDENTITY, m, segment)
+    assert any(key in f for f in failures)
+
+
+def test_all_p2_tie_fails_on_another_count():
+    raw = violating_raw(1_000, 37)
+    segment = np.array(["paid"] * 1_000)
+    _, failures = check_fix_all_p2(raw, IDENTITY, tie_marks(raw, segment, rows_changed=36), segment)
+    assert any("rows_changed" in f for f in failures)
+
+
+def test_all_p2_rows_read_only_columns_known_at_t(monkeypatch):
+    calls = {}
+
+    def labels_spy(path, snapshots, columns, protocol, unlock=None):
+        calls["columns"], calls["unlock"] = list(columns), unlock
+        return pd.DataFrame()
+
+    def join_spy(features, labels, snapshots, columns, protocol, population):
+        calls["population"] = population
+        return pd.DataFrame()
+
+    monkeypatch.setattr(refit_module, "load_labels", labels_spy)
+    monkeypatch.setattr(refit_module, "_join", join_spy)
+    p2_all_rows(Path("x"), date(2016, 11, 1), ["a"], P)
+    assert calls == {"columns": ["in_exp30", "segment"], "unlock": None, "population": "p2_all"}
+
+
+def test_the_registered_amendment_is_parsed():
+    assert MARKS.fix_rows_changed == 16_444  # the registered value is not edited
+    assert (MARKS.amendment, MARKS.main_rows_changed) == ("A1", 7_632)
+    assert MARKS.all_p2 == {
+        "rows": 178_594,
+        "rows_changed": 16_444,
+        "share_changed": 0.09207476175011478,
+        "mean_change_changed_rows": 0.014105477095603738,
+        "max_change": 0.300535285645459,
+        "order_violations_after_fix": 0,
+    }
+    a1 = load_serving()["ordering"]["amendments"][0]["reconciliation"]
+    assert (
+        a1["main_rows_changed"] + a1["out_of_population_rows_changed"] == a1["all_p2_rows_changed"]
+    )
+
+
+def test_two_amendments_of_the_fix_mark_are_refused():
+    cfg = load_serving()
+    cfg["ordering"]["amendments"] = cfg["ordering"]["amendments"] * 2
+    with pytest.raises(ValueError, match="more than one"):
+        ordering_marks(cfg)
 
 
 # --- the descriptive table --------------------------------------------------------------------

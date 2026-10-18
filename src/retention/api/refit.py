@@ -11,9 +11,13 @@ for 59 days) and judged by configs/serving.yaml, `ordering.pass_marks`:
    registered 13 fields exactly (rehearsal.json is checked against its
    registered SHA-256 first, and its logged summary against the config);
 3. Platt at 59 days equals the registered a and b exactly;
-4. the fix: saved 7-day and 30-day boosters plus the refit give the registered
+4. the fix: saved 7-day and 30-day boosters plus the refit give the expected
    rows changed exactly and max change within its tolerance; every row then
-   satisfies p7 <= p30 <= p59;
+   satisfies p7 <= p30 <= p59. The registered count (16,444) was mis-specified:
+   it covers all P2 rows. Amendment A1 (registered after the first run, verified
+   by a reconciliation) judges the training population against 7,632 and ties
+   the logged figures on all 178,594 P2 rows exactly; the registered mark is
+   still reported as written;
 5. determinism: two refits in one process give the identical booster string and
    Platt parameters; the booster is saved only by a run given its SHA-256.
 
@@ -28,6 +32,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +43,7 @@ from retention.api.config import OrderingMarks, file_sha256
 from retention.api.ordering import final_probabilities, order_violations, platt_from
 from retention.explain.contributions import EXPECTED_SHA256, SavedModel, load_saved_model
 from retention.explain.model import (
+    LABEL_COLUMNS,
     SUMMARY_KEY,
     Refit,
     Settings,
@@ -49,7 +55,8 @@ from retention.explain.model import (
     refit_horizon,
 )
 from retention.models.classifier import score_summary
-from retention.models.frames import fit_rows, half_mask
+from retention.models.data import column_kind, load_labels
+from retention.models.frames import _join, fit_rows, half_mask
 from retention.models.metrics import CLIP, calibration_slope
 from retention.models.protocol import Protocol
 
@@ -114,12 +121,10 @@ def check_platt(a: float, b: float, marks: OrderingMarks) -> list[str]:
     return failures
 
 
-def check_fix(
-    raw: np.ndarray, calibrators: list, marks: OrderingMarks
-) -> tuple[dict[str, Any], list[str]]:
-    """The registered order on rows x (7, 30, 59) raw probabilities, judged by the marks."""
+def fix_summary(raw: np.ndarray, calibrators: list) -> tuple[dict[str, Any], np.ndarray]:
+    """The registered order on rows x (7, 30, 59) raw probabilities; summary and changed rows."""
     res = final_probabilities(raw, calibrators)
-    violations = order_violations(res["final"])
+    changed = np.abs(res["final"] - res["before_fix"]).max(axis=1) > 1e-12
     summary = {
         "rows": int(raw.shape[0]),
         "clipped": int(res["clipped"]),
@@ -127,25 +132,83 @@ def check_fix(
         "share_changed": res["share_changed"],
         "mean_change_changed_rows": res["mean_change_changed_rows"],
         "max_change": res["max_change"],
-        "max_change_difference": abs(res["max_change"] - marks.fix_max_change),
-        "order_violations_after_fix": violations,
+        "order_violations_after_fix": order_violations(res["final"]),
+    }
+    return summary, changed
+
+
+def check_fix(
+    raw: np.ndarray, calibrators: list, marks: OrderingMarks
+) -> tuple[dict[str, Any], list[str]]:
+    """The fix on the training population, judged by the marks.
+
+    Rows changed is judged against amendment A1's count when it is registered; the
+    registered count (mis-specified) is then reported as written, met or not met.
+    """
+    summary, _ = fix_summary(raw, calibrators)
+    expected = marks.main_rows_changed if marks.amendment else marks.fix_rows_changed
+    as_written = summary["rows_changed"] == marks.fix_rows_changed
+    summary |= {
+        "max_change_difference": abs(summary["max_change"] - marks.fix_max_change),
+        "rows_changed_expected": expected,
+        "rows_changed_judged_by": marks.amendment or "the registered mark",
+        "registered_rows_changed": marks.fix_rows_changed,
+        "registered_mark_as_written": "met" if as_written else "not met",
     }
     failures = []
     if summary["rows"] != marks.fix_rows:
         failures.append(f"fix rows {summary['rows']} differ from the registered {marks.fix_rows}")
-    if summary["rows_changed"] != marks.fix_rows_changed:
+    if summary["rows_changed"] != expected:
         failures.append(
-            f"rows changed {summary['rows_changed']} differ from the registered "
-            f"{marks.fix_rows_changed}"
+            f"rows changed {summary['rows_changed']} differ from the expected {expected} "
+            f"({summary['rows_changed_judged_by']})"
         )
     if not summary["max_change_difference"] <= marks.fix_max_change_tolerance:
         failures.append(
             f"max change {summary['max_change']!r} differs from the registered "
             f"{marks.fix_max_change!r} by {summary['max_change_difference']:.3e}"
         )
-    if violations:
-        failures.append(f"{violations} rows break p7 <= p30 <= p59 after the fix")
+    if summary["order_violations_after_fix"]:
+        failures.append(
+            f"{summary['order_violations_after_fix']} rows break p7 <= p30 <= p59 after the fix"
+        )
     return summary, failures
+
+
+def check_fix_all_p2(
+    raw: np.ndarray, calibrators: list, marks: OrderingMarks, segment: np.ndarray
+) -> tuple[dict[str, Any], list[str]]:
+    """Amendment A1's tie: the logged figures recomputed on every P2 row, exactly."""
+    tie = marks.all_p2
+    if tie is None:
+        raise CheckFailed("no amendment registers the all-P2 tie")
+    summary, changed = fix_summary(raw, calibrators)
+    summary["max_change_difference"] = abs(summary["max_change"] - float(tie["max_change"]))
+    summary["by_segment"] = {
+        s: {"rows": int((segment == s).sum()), "changed": int((changed & (segment == s)).sum())}
+        for s in sorted(set(segment))
+    }
+    failures = []
+    for key in ("rows", "rows_changed", "order_violations_after_fix"):
+        if summary[key] != int(tie[key]):
+            failures.append(f"all P2: {key} {summary[key]} differs from {tie[key]}")
+    for key in ("share_changed", "mean_change_changed_rows"):
+        if summary[key] != float(tie[key]):
+            failures.append(f"all P2: {key} {summary[key]!r} differs from {tie[key]!r}")
+    if not summary["max_change_difference"] <= marks.fix_max_change_tolerance:
+        failures.append(f"all P2: max change differs by {summary['max_change_difference']:.3e}")
+    return summary, failures
+
+
+def p2_all_rows(
+    processed: Path, snapshot: date, columns: list[str], protocol: Protocol
+) -> pd.DataFrame:
+    """Every P2 row of one snapshot, trial-only and promo-only included (no outcome read)."""
+    for c in LABEL_COLUMNS:
+        if column_kind(c) != "pre_t":
+            raise PermissionError(f"labels column {c!r} is not known at T")
+    labels = load_labels(processed / "labels.parquet", [snapshot], list(LABEL_COLUMNS), protocol)
+    return _join(processed / "features.parquet", labels, [snapshot], columns, protocol, "p2_all")
 
 
 def raw_probabilities(models: list, rows: pd.DataFrame) -> np.ndarray:
@@ -215,8 +278,16 @@ def run_check(
         report["failures"].append(f"59 days {marks.snapshot}: summary differs in {bad}")
 
     calibrators = [platt_from(s.platt_a, s.platt_b, protocol.seed) for s in saved]
-    report["fix"], fix_failures = check_fix(raw, [*calibrators, first.platt], marks)
+    cals = [*calibrators, first.platt]
+    report["fix"], fix_failures = check_fix(raw, cals, marks)
     report["failures"] += fix_failures
+    report["amendment"] = marks.amendment
+    if marks.all_p2 is not None:
+        all_rows = p2_all_rows(processed, marks.snapshot, settings.columns, protocol)
+        raw_all = raw_probabilities([s.model for s in saved] + [first.model], all_rows)
+        segment = all_rows.segment.astype(str).to_numpy()
+        report["fix_all_p2"], tie_failures = check_fix_all_p2(raw_all, cals, marks, segment)
+        report["failures"] += tie_failures
     report["saved_boosters"] = {str(s.horizon): s.sha256 for s in saved}
     report["passed"] = not report["failures"]
     report["library_versions"] = library_versions()
