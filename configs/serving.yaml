@@ -5,6 +5,8 @@
 # is a logged amendment, and results under the original values are reported too.
 # The scoring contract and the streaming pass marks were added in the second
 # commit, before any build.
+# The API labels and the wording rules were added in the third commit, before any
+# build.
 #
 # Every pass mark is exact unless a tolerance is written next to it. If a
 # reproduction field differs, the step stops and reports the largest difference;
@@ -222,3 +224,73 @@ streaming:
       p95_ms_max: 100  # the user's own unvalidated choice, not based on any measurement
       reported: [p50, p99]
       ci: not measured
+
+api:
+  # Every label below is a required fixed-value field in the response schemas; a
+  # response missing one fails as a 500, never as a partial answer.
+  models:
+    source: MLflow registry
+    alias: serving
+    registered: [c01 7 days, c01 30 days, c01 59 days, dt01, calibration files]  # by a logged step after the 59-day refit passes
+    checksum: SHA-256 of every file against this config; any mismatch refuses startup
+
+  at_risk:
+    endpoint: GET /at-risk
+    horizon: {allowed: [7, 30, 59], default: 30}
+    limit: {default: 50, max: 1000}
+    offset: true
+    filters: [auto_renew, in_plan]  # nothing else
+    order: final probability at the horizon, descending; ties by msno
+    plan_cell: {strategy: optimizer, scenario: base, budget: 5000}
+    plan_label: "plan built from the 30-day probability before the ordering fix"  # on every plan field
+    replanning: none in this phase
+    header_note: "Ranking uses the final probability; plan membership comes from the Phase 7 plan."
+    header_counts: [scored, outside_population by code, not_active]
+    no_plan_status: "no plan for this date"
+
+  alerts:
+    endpoint: GET /alerts
+    kinds: [trend, event]
+    trend:
+      source: data/processed/kkbox/sample_020/trends/alerts_run.json
+      knowable_rule: week start + 37 days on or before the store's date
+      hidden_dimensions: [city, registration_channel, tenure]  # removed from top segments and dimension totals; the number hidden is shown
+      labels:
+        - "exploratory"
+        - "false-alarm rate not validated"
+        - "detected in hindsight on the series through 2016-12-19"
+      keep: stored data-quality flags
+    event:
+      what: each cancel row from a customer scored at the store's date, during replay
+      label: "a cancel row, not a change in risk"
+      rescoring: none until the next store-date move
+
+  health:
+    endpoint: GET /health
+    fields: [ready, store_date, replay_progress, model_checksums_match, config_sha256, valkey_reachable]
+    replay_expected_events: 3727472
+    not_ready: 503
+
+wording:
+  extends: configs/actions.yaml wording_rules  # the Phase 7 list and prefix stay in force
+  scope: [README.md section Scoring service, docs/scoring_api.md, reports/serving_parity.md, every fixed string in API responses]
+  fixed_disclaimers:  # used verbatim
+    - "The service replays 2016 KKBox data; there is no live source."
+    - "Customers expiring more than 30 days ahead (22% of active customers on 2016-11-01) get no score."
+    - "Plans exist for two dates only (2016-10-01 and 2016-11-01) and were built from the 30-day probability before the ordering fix."
+    - "KKBox backtest figures are model estimates under assumed effects, not observed outcomes."
+  banned_words:  # whole words, case-insensitive, in addition to the Phase 7 list
+    - real-time
+    - production
+    - live
+    - identical
+  live_exception: "The service replays 2016 KKBox data; there is no live source."  # exact string only; a second use of "live" fails
+  identical_exception: raw scores where features are identical  # the registered mark; banned for any other float comparison
+  horizon_59:
+    say: "59 days"
+    never: "60 days"  # except in the one sentence stating the deviation from the phase plan
+    probability_carries: "demonstration"
+  parity_sentence: "the same scores as batch within the registered tolerance"  # names the tolerance
+  latency_sentence: "p95 on this Mac, one run of 1,000 calls"  # never a general speed claim
+  latency_threshold_label: "my unvalidated choice"  # wherever the 100 ms threshold appears
+  never_used: [age, gender, registered_via, tenure, city]  # never a segment, filter or reason in any doc
