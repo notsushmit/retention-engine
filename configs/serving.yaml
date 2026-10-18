@@ -13,6 +13,8 @@
 # save run: an addition beyond the original marks.
 # The saved 7-day and 30-day model JSON hashes were added in the sixth commit, hashed
 # as the files stood on disk: an addition beyond the original marks.
+# Contract amendment A2 (the misnamed lapse-free days field) was added in the
+# seventh commit, before any code serves the field.
 #
 # Every pass mark is exact unless a tolerance is written next to it. If a
 # reproduction field differs, the step stops and reports the largest difference;
@@ -216,6 +218,32 @@ contract:
     503: not ready; a model checksum mismatch stops startup and /health says why
 
   never_in_any_body: [age, gender, registered_via, tenure, city]  # scanned in every response, error bodies included
+
+  amendments:
+    - id: A2
+      date: "2026-10-18"
+      label: >-
+        a misnamed field corrected before any code serves it: the registered
+        lapse_free_days text named a quantity that does not exist in the project;
+        the figures it cited are Phase 7's days_30_90; not a tuned result
+      amends: scored.lapse_free_days  # the registered entry is kept, not edited
+      field: expected_paid_days_31_90
+      name: "expected paid days in days 31 to 90, given no lapse by day 30"
+      definition: >-
+        from dt01's raw survival curve S(t) at the interval ends 30 to 90: the
+        trapezoid sum of S(t) / S(30) over (30, 90], as Phase 7's expected_days
+        computes days_30_90; 0 when S(30) is 0
+      model: dt01
+      labels:
+        - "expected paid days in days 31 to 90, given no lapse by day 30"
+        - "dt01 raw survival curve, shape only, no calibration"
+        - "near the ceiling for almost everyone; not a ranking signal"
+      parity:
+        against: data/processed/kkbox/sample_020/optimize/value.parquet, column days_30_90
+        snapshots: ["2016-10-01", "2016-11-01"]  # the only snapshots Phase 7 computed
+        rows: {"2016-10-01": 144996, "2016-11-01": 169673}
+        path: the service's scoring function on batch features, same customer and snapshot
+        tolerance: exact
 
 streaming:
   meaning: >-
