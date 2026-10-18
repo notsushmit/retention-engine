@@ -15,6 +15,8 @@
 # as the files stood on disk: an addition beyond the original marks.
 # Contract amendment A2 (the misnamed lapse-free days field) was added in the
 # seventh commit, before any code serves the field.
+# The saved dt01 hashes, the registry section and the step 4 reload marks were
+# added in the eighth commit, before any registry or scoring code.
 #
 # Every pass mark is exact unless a tolerance is written next to it. If a
 # reproduction field differs, the step stops and reports the largest difference;
@@ -151,6 +153,15 @@ ordering:
       model_7d.json: d317109cf938b6518e73be78887befe284f5e9790322933df0250024e8ea525a
       model_30d.json: c78fbc8757ac3176a4ff780bf813cc1faee282ae8873de2c1549527e319fe7bb
     boosters: registered in Phase 4 (booster_7d.txt e1c985c9...a0a26d, booster_30d.txt b967381d...9fcf35d)
+
+  saved_dt01:
+    label: >-
+      an addition beyond the original marks, registered after the save-dt01 run;
+      the service refuses either file if its SHA-256 differs
+    directory: data/interim/kkbox/sample_020/serving/model
+    files:
+      dt01.txt: 6d2edd153b89ba149c46de3f647c0b8900a4e22a66fd365d9c927714c2a7338d  # = Phase 7's optimize/model/dt01.txt
+      model_dt01.json: c809fba302b62463756027cada619956f6128044d36b527ce885be9ee68a81a9
 
   reasons:
     horizons: [7, 30]  # no reasons at 59 days
@@ -379,3 +390,67 @@ wording:
   latency_sentence: "p95 on this Mac, one run of 1,000 calls"  # never a general speed claim
   latency_threshold_label: "my unvalidated choice"  # wherever the 100 ms threshold appears
   never_used: [age, gender, registered_via, tenure, city]  # never a segment, filter or reason in any doc
+
+registry:
+  label: registered before any registry code
+  tracking_uri: >-
+    MLFLOW_TRACKING_URI when set; otherwise the project's store,
+    configs/evaluation.yaml tracking.uri (sqlite:///mlruns/mlflow.db)
+  registered_model: retention-scoring
+  alias: serving
+  versions_under_alias: 1  # one version holds every file; horizons are never mixed across versions
+  bundle:  # every file is checked against these hashes at registration and at every load
+    booster_7d.txt: e1c985c98c87280cf09bf451515e660f2f4b3fbae722cae97c93a02ed2b0a26d
+    model_7d.json: d317109cf938b6518e73be78887befe284f5e9790322933df0250024e8ea525a
+    booster_30d.txt: b967381d50a3e1f392b5db5281e2326a22799dde79dc8cdce66adb01b9fcf35d
+    model_30d.json: c78fbc8757ac3176a4ff780bf813cc1faee282ae8873de2c1549527e319fe7bb
+    booster_59d.txt: 21f7240dce242d3a53287cee502742431c1747b88d23d6259d7ab7709d81d13a
+    model_59d.json: e1b4bbc70fb8183921b374cd9498f1e80249d52df4517e6e42d9d58a29734cb5
+    dt01.txt: 6d2edd153b89ba149c46de3f647c0b8900a4e22a66fd365d9c927714c2a7338d
+    model_dt01.json: c809fba302b62463756027cada619956f6128044d36b527ce885be9ee68a81a9
+  manifest: >-
+    manifest.json beside the eight files, written at registration: each file's
+    SHA-256, the git head and this config's SHA-256; at load its file hashes must
+    equal the bundle above (the manifest itself is not hashed here, since it holds
+    the commit it was written at)
+  register: once, clean tree, refused if the alias already exists
+  load: >-
+    resolve retention-scoring@serving, download the version's files, hash all
+    eight against the bundle and check the manifest, then parse; any missing alias,
+    missing file or differing hash refuses startup
+
+step4:
+  pass_marks:  # registered before any scoring code; exact; any difference stops step 4
+    reload_classifier:
+      label: the c01 boosters loaded from the saved files through the checked loaders
+      snapshot: "2016-11-01"
+      population: P2 main
+      rows: 169673
+      source: data/processed/kkbox/sample_020/rehearsal.json  # SHA-256 registered in ordering.pass_marks.reproduction
+      cells:
+        - {horizon: 7, path: [primary, "7 days, 2016-11-01", models, classifier, score_summary_raw]}  # added beyond the request; Phase 4 already matched it (13 of 13)
+        - {horizon: 30, path: [primary, "30 days, 2016-11-01", models, classifier, score_summary_raw]}  # added beyond the request; Phase 4 already matched it (13 of 13)
+        - {horizon: 59, path: [demonstration_59, "59 days, 2016-11-01", models, classifier, score_summary_raw]}
+      fields: 13
+      tolerance: exact
+    reload_dt01:
+      label: dt01 loaded from the saved files through load_dt01 (real category levels through JSON tested here first)
+      snapshot: "2016-11-01"
+      population: P2 main
+      rows: 169673
+      source: data/processed/kkbox/sample_020/rehearsal.json
+      cells:
+        - {horizon: 7, path: [primary, "7 days, 2016-11-01", models, survival_dt01, score_summary_raw]}
+        - {horizon: 30, path: [primary, "30 days, 2016-11-01", models, survival_dt01, score_summary_raw]}
+        - {horizon: 59, path: [demonstration_59, "59 days, 2016-11-01", models, survival_dt01, score_summary_raw]}
+      fields: 13
+      tolerance: exact
+    paid_days_parity:
+      label: contract amendment A2's parity, restated here as a step 4 mark
+      quantity: expected_paid_days_31_90
+      against: data/processed/kkbox/sample_020/optimize/value.parquet, column days_30_90
+      against_sha256: a7a67dc7029ec9edbf4f9baf0e42746b8acf696e00e210b678d5a3aacfae2fa3
+      snapshots: {"2016-10-01": 144996, "2016-11-01": 169673}
+      path: the service's scoring function on batch features, dt01 loaded through load_dt01
+      match: same customer and snapshot, every row
+      tolerance: exact
