@@ -9,6 +9,8 @@
 # build.
 # Amendment A1 to the fix mark was added in the fourth commit, after the first
 # refit59 run showed it was mis-specified, and verified by a reconciliation run.
+# The saved 59-day files' SHA-256 values were added in the fifth commit, after the
+# save run: an addition beyond the original marks.
 #
 # Every pass mark is exact unless a tolerance is written next to it. If a
 # reproduction field differs, the step stops and reports the largest difference;
@@ -124,6 +126,15 @@ ordering:
           mean_change_changed_rows: 0.014105477095603738  # exact
           max_change: 0.300535285645459  # within the registered 1e-12
           order_violations_after_fix: 0
+
+  saved_59:
+    label: >-
+      an addition beyond the original marks, registered after the save run; the
+      service refuses either file if its SHA-256 differs
+    directory: data/interim/kkbox/sample_020/serving/model
+    files:
+      booster_59d.txt: 21f7240dce242d3a53287cee502742431c1747b88d23d6259d7ab7709d81d13a
+      model_59d.json: e1b4bbc70fb8183921b374cd9498f1e80249d52df4517e6e42d9d58a29734cb5
 
   reasons:
     horizons: [7, 30]  # no reasons at 59 days
