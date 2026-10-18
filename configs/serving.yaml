@@ -7,6 +7,8 @@
 # commit, before any build.
 # The API labels and the wording rules were added in the third commit, before any
 # build.
+# Amendment A1 to the fix mark was added in the fourth commit, after the first
+# refit59 run showed it was mis-specified, and verified by a reconciliation run.
 #
 # Every pass mark is exact unless a tolerance is written next to it. If a
 # reproduction field differs, the step stops and reports the largest difference;
@@ -92,6 +94,36 @@ ordering:
       slice: selection half of 2016-10-01, P2 main (72,395 rows)
       labels_as_of: "2017-01-01"  # 2016 outcomes only
       report: [slope, intercept]
+
+  amendments:
+    - id: A1
+      date: "2026-10-18"
+      label: >-
+        fixed after seeing the count; verified by the reconciliation; the original
+        fix mark was mis-specified and is reported as not met as written
+      amends: pass_marks.fix.rows_changed  # 16444 stays as registered; it is not edited
+      finding: >-
+        the logged 16444 covers all 178594 P2 rows of 2016-11-01, trial-only and
+        promo-only included; on the 169673 training-population rows the fix
+        changes 7632; the 8921 out-of-population rows account for the other 8812
+      reconciliation:  # one diagnostic run at 661e135, before this entry
+        all_p2_rows: 178594
+        all_p2_rows_changed: 16444
+        main_rows_changed: 7632
+        out_of_population_rows: 8921
+        out_of_population_rows_changed: 8812  # trial_only 8796 of 8890, promo_only 16 of 31
+        largest_change_row_segment: paid
+      mark:  # replaces only the rows-changed comparison; every other fix mark stands
+        training_population:
+          rows: 169673
+          rows_changed: 7632  # exact
+        all_p2_tie:  # the logged figures, recomputed on the row set they came from
+          rows: 178594
+          rows_changed: 16444  # exact
+          share_changed: 0.09207476175011478  # exact
+          mean_change_changed_rows: 0.014105477095603738  # exact
+          max_change: 0.300535285645459  # within the registered 1e-12
+          order_violations_after_fix: 0
 
   reasons:
     horizons: [7, 30]  # no reasons at 59 days
