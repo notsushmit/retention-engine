@@ -152,6 +152,13 @@ def test_register_sets_the_alias_on_version_1_and_loads_back(tmp_path, bundle_di
     assert np.array_equal(a, b)
 
 
+def test_loaded_summary_records_every_downloaded_file_hash(tmp_path, bundle_dir):
+    s, _ = registered(tmp_path, bundle_dir)
+    summary = cli.loaded_summary(reg.load_serving_models(s, SETTINGS, P, tmp_path / "load"))
+    assert summary["downloaded_files_sha256"] == dict(sorted(bundle_dir[1].items()))
+    assert len(summary["downloaded_files_sha256"]) == 8
+
+
 def test_a_second_registration_is_refused_and_creates_no_version(tmp_path, bundle_dir):
     s, _ = registered(tmp_path, bundle_dir)
     src, hashes = bundle_dir

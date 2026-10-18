@@ -222,6 +222,7 @@ def loaded_summary(models: registry.ServingModels) -> dict:
     return {
         "version": models.version,
         "manifest": models.manifest,
+        "downloaded_files_sha256": dict(sorted(models.files.items())),
         "c01_booster_sha256": {str(h): m.sha256 for h, m in models.c01.items()},
         "c01_platt": {str(h): [m.platt_a, m.platt_b] for h, m in models.c01.items()},
         "dt01_booster_sha256": dt01_step.text_sha256(dt01_step.booster_text(models.dt01)),

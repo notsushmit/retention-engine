@@ -197,9 +197,14 @@ def download_bundle(settings: RegistrySettings, workdir: Path) -> tuple[Path, An
     return Path(path), version
 
 
-def verify_bundle(folder: Path, settings: RegistrySettings) -> dict[str, Any]:
-    """Every bundle file present and unchanged, nothing extra, manifest equal to the bundle."""
-    verify_files(folder, settings.bundle)
+def verify_bundle(
+    folder: Path, settings: RegistrySettings
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Every bundle file present and unchanged, nothing extra, manifest equal to the bundle.
+
+    Returns the manifest and each downloaded file's SHA-256.
+    """
+    found = verify_files(folder, settings.bundle)
     extra = sorted({p.name for p in folder.iterdir()} - set(settings.bundle) - {MANIFEST})
     if extra:
         raise ModelRefused(f"unexpected files in the registered bundle: {extra}")
@@ -208,7 +213,7 @@ def verify_bundle(folder: Path, settings: RegistrySettings) -> dict[str, Any]:
     manifest = json.loads((folder / MANIFEST).read_text())
     if manifest.get("files") != dict(sorted(settings.bundle.items())):
         raise ModelRefused(f"{MANIFEST} lists other hashes than the registered bundle")
-    return manifest
+    return manifest, found
 
 
 @dataclass
@@ -217,6 +222,7 @@ class ServingModels:
     dt01: DiscreteTimeModel
     version: int
     manifest: dict[str, Any]
+    files: dict[str, str]  # SHA-256 of each downloaded file, after it matched the bundle
 
 
 def load_serving_models(
@@ -224,7 +230,7 @@ def load_serving_models(
 ) -> ServingModels:
     """c01 at 7, 30 and 59 days and dt01 from the alias's version, after every check."""
     folder, version = download_bundle(settings, workdir)
-    manifest = verify_bundle(folder, settings)
+    manifest, files = verify_bundle(folder, settings)
     c01 = {
         h: load_saved_model(
             folder, h, model_settings, protocol, settings.bundle[f"booster_{h}d.txt"]
@@ -236,4 +242,4 @@ def load_serving_models(
         {DT01_BOOSTER: settings.bundle[DT01_BOOSTER], DT01_META: settings.bundle[DT01_META]},
         protocol,
     )
-    return ServingModels(c01, dt01, int(version.version), manifest)
+    return ServingModels(c01, dt01, int(version.version), manifest, files)
