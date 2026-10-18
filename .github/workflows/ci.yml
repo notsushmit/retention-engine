@@ -8,15 +8,27 @@ on:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    services:
+      valkey:  # the store the API and replay tests use
+        image: valkey/valkey:9.1.2-alpine3.24@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+    env:
+      VALKEY_URL: redis://localhost:6379/0
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0  # full history: a test reads the registered config commit
       - uses: astral-sh/setup-uv@v10.3.0
-      - name: Install Python, dev and training dependencies
+      - name: Install Python, dev, training and api dependencies
         run: |
           uv python install 3.11
-          uv sync --group dev --group training --locked
+          uv sync --group dev --group training --group api --locked
       - name: Ruff
         run: |
           uv run ruff check .

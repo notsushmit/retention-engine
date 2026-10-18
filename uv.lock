@@ -2928,7 +2928,16 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
+api = [
+    { name = "fastapi" },
+    { name = "lightgbm" },
+    { name = "mlflow" },
+    { name = "redis" },
+    { name = "scikit-learn" },
+    { name = "uvicorn" },
+]
 dev = [
+    { name = "httpx" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "ruff" },
@@ -2980,7 +2989,16 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
+api = [
+    { name = "fastapi", specifier = ">=0.111" },
+    { name = "lightgbm", specifier = ">=4.3" },
+    { name = "mlflow", specifier = ">=2.14" },
+    { name = "redis", specifier = ">=5" },
+    { name = "scikit-learn", specifier = ">=1.5" },
+    { name = "uvicorn", specifier = ">=0.30" },
+]
 dev = [
+    { name = "httpx", specifier = ">=0.27" },
     { name = "pre-commit", specifier = ">=3.7" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.6" },
