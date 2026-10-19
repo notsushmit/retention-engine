@@ -23,6 +23,9 @@
 # before any reasons code.
 # Contract amendment A4 (how the action block reads) was added in the eleventh
 # commit, before any schema or label code.
+# Step 5's choices (known customers, the store, the ranking, the scan, the tests,
+# the pins and the generated docs) were added in the twelfth commit, before any
+# step 5 code.
 #
 # Every pass mark is exact unless a tolerance is written next to it. If a
 # reproduction field differs, the step stops and reports the largest difference;
@@ -615,3 +618,75 @@ step4:
       snapshots: ["2016-10-01", "2016-11-01"]
       horizons: [7, 30]
       comparison: exact float equality, no tolerance; the count of differing rows and the largest difference are reported
+
+step5:
+  label: approved by the user and registered before any step 5 code
+  known_customers:  # Q1 (a)
+    definition: a customer with at least one transaction dated before the store's date (data before T only)
+    unknown: >-
+      404 "unknown customer", including a customer registered in the members file
+      who never transacted before the store's date
+    not_active: a known customer with no coverage at the store's date
+    counts:  # 20% sample, counts only
+      "2016-11-01":
+        known: 425520
+        with_coverage: 230286  # every one of them is known
+        not_active: 195234  # 425,520 - 230,286
+        members_row_without_a_transaction_before_t: 1006400  # these get 404
+  store:  # Q2 (a): the real Valkey, through the redis client
+    url: VALKEY_URL
+    one_store_date: loading a snapshot replaces every key of the previous one
+    keys:
+      store_date: "rs:store_date"
+      customer: "rs:customer:<msno>"  # one JSON document: model, value and fact columns, status, next_expiry_in_days, price
+      known: "rs:known"  # set of known msno
+      rank: "rs:rank:<horizon>"  # sorted set of scored msno by final probability, horizons 7, 30, 59
+      counts: "rs:counts"  # the /at-risk header counts
+      events: "rs:events:cancel"  # cancel rows, filled by the replay in step 6; empty before it
+      replay: ["rs:replay:produced", "rs:replay:consumed"]
+    floats: written and read back exactly (a float survives the JSON round trip unchanged)
+  at_risk_ranking:  # Q3 (a)
+    computed: once per loaded snapshot, by the step 4 scoring function, stored as sorted sets
+    order: final probability at the horizon, descending; ties by msno ascending
+  equalities:  # tested, condition 2
+    score: a /score answer equals the batch scoring function's output for the same customer
+    at_risk: /at-risk rows equal the stored ranking
+  scan:  # Q4 (a)
+    where: tests over every endpoint's responses, error bodies included; then the step 8 HTTP sample of 1,000 customers
+    runtime_guard: none
+  tests:  # condition 1
+    valkey_backed: >-
+      marked as needing Valkey; in CI (CI=true) a skipped Valkey-backed test fails
+      the run; locally they skip only with a stated reason when VALKEY_URL is not
+      reachable
+  pins:
+    plans:
+      path: data/processed/kkbox/sample_020/optimize/plans.parquet
+      sha256: 93e35aecb65b3030961fe318f2b7128f37617a6b8664b42df74cdcef98da534c
+    alerts:
+      path: data/processed/kkbox/sample_020/trends/alerts_run.json
+      sha256: 1b0b16f912a0f3814e49d49d138945b6d59354d98635e859122534554833da9e
+  alerts:  # condition 4, as registered in api.alerts
+    trend_knowable_at_2016_11_01: 7  # of 10
+    shown: the number of segments hidden by rule, and the three registered labels, on every trend alert
+    event_label: "a cancel row, not a change in risk"
+  plan_fields:  # condition 3, as registered in api.at_risk
+    every_plan_field: "plan built from the 30-day probability before the ordering fix"
+    header_note: "Ranking uses the final probability; plan membership comes from the Phase 7 plan."
+  docs:
+    file: docs/scoring_api.md
+    generated_by: python -m retention.api write-docs, from configs/serving.yaml and the response schemas
+    test: the committed file equals the generated one and passes the wording rules
+    must_state:
+      - a customer registered in the members file who never transacted before the store's date gets 404
+      - 195,234 of the 425,520 known customers are not_active at 2016-11-01
+      - the action block is computed from the 30-day probability before the ordering fix, as in Phase 7, and can differ from the final probability for the 7,632 rows the fix moves on 2016-11-01
+      - expected paid days in days 31 to 90, given no lapse by day 30 (amendment A2)
+      - tenure is never shown as a reason; Phase 4's reasons file, docs and phrases stay untouched
+      - the self-check shows only that the masking matches Phase 4's own missing-tenure behaviour, not that the wording is validated
+      - 8,497 of 169,673 action blocks pay on 2016-11-01 and 9,410 of 144,996 on 2016-10-01 (amendment A4)
+      - three strings are derived in labels.py (the December 2016 withheld code and warning, and the status "scored")
+      - customers expiring more than 30 days ahead (22% of active customers on 2016-11-01) get no score
+      - every 59-day probability is a demonstration
+  smoke_5f:  # condition 6
+    status: not a mark; its numbers are never quoted as parity or latency
