@@ -28,6 +28,12 @@ verify-serving: load the models through the alias exactly as the service will
 (download, hash every file, check the manifest, parse). Writes
 verify_serving_report.json. Runs once.
 
+score-parity: judge every registered step 4 mark exactly, on 2016-10-01 and
+2016-11-01, with the models loaded through the registry alias (retention.api.parity).
+Stops on a population count that differs from the registered one or on a customer
+without a usable price who has an allowed action. Writes step4_report.json. Runs
+once; exits with an error if any mark is not met.
+
 Every command refuses to run when a tracked file differs from HEAD, so each
 report ties to a commit.
 """
@@ -39,10 +45,12 @@ import json
 import sys
 import tempfile
 import time
+from datetime import date
 from pathlib import Path
 
 from retention.api import dt01 as dt01_step
-from retention.api import registry
+from retention.api import parity, registry
+from retention.api.batch import snapshot_inputs
 from retention.api.config import SERVING_CONFIG, file_sha256, load_serving, ordering_marks
 from retention.api.ordering import platt_from
 from retention.api.refit import (
@@ -68,6 +76,7 @@ TABLE = "calibration_before_after.json"
 DT01_REPORT = "save_dt01_report.json"
 REGISTER_REPORT = "register_report.json"
 VERIFY_REPORT = "verify_serving_report.json"
+STEP4_REPORT = "step4_report.json"
 
 
 def out_dir(fraction: float | None) -> Path:
@@ -294,6 +303,93 @@ def verify_cmd(args) -> int:
     return 0
 
 
+def score_parity(args) -> int:
+    from retention.explain.config import load_explain_config
+    from retention.explain.reasons import PHRASES, Renderer
+    from retention.optimize.config import load_actions_config
+    from retention.optimize.value import EXTRA_COLUMNS
+
+    repo = Path.cwd()
+    require_clean(repo)
+    out = out_dir(args.fraction)
+    run_once(out / STEP4_REPORT)
+    t0 = time.time()
+    serving = load_serving()
+    step4 = serving["step4"]
+    processed = processed_dir(args.fraction)
+    report: dict = {
+        "original_reasons_parity": step4["amendments"][0]["original_mark"],
+        "self_check_scope": (
+            "the self-check shows only that the masking matches Phase 4's own "
+            "missing-tenure behaviour; it does not validate the wording"
+        ),
+    }
+    try:
+        parity.check_pinned(
+            processed / "explain" / "reasons.parquet",
+            step4["more_pass_marks"]["reasons_parity"]["against_sha256"],
+        )
+        parity.check_pinned(
+            processed / "optimize" / "value.parquet",
+            step4["pass_marks"]["paid_days_parity"]["against_sha256"],
+        )
+        parity.check_pinned(
+            processed / "rehearsal.json",
+            serving["ordering"]["pass_marks"]["reproduction"]["source_sha256"],
+        )
+        protocol = load_protocol()
+        settings = load_settings(horizons=(7, 30, HORIZON))
+        cfg = load_explain_config(settings.columns)
+        reasons, value = parity.read_inputs(processed)
+        pop = step4["more_pass_marks"]["population_counts"]
+        with tempfile.TemporaryDirectory() as tmp:
+            models = registry.load_serving_models(
+                registry.registry_settings(repo), settings, protocol, Path(tmp)
+            )
+        report["models"] = {
+            "version": models.version,
+            "downloaded_files_sha256": dict(sorted(models.files.items())),
+        }
+        ctx = parity.Context(
+            models=models,
+            explain_cfg=cfg,
+            renderer=Renderer.from_files(cfg),
+            phrases_sha256=file_sha256(PHRASES),
+            columns=settings.columns,
+            actions_cfg=load_actions_config(),
+            protocol=protocol,
+            reasons=reasons,
+            value=value,
+            rehearsal=json.loads((processed / "rehearsal.json").read_text()),
+            serving=serving,
+            population_expected=dict(pop["expected"]),
+            population_snapshot=date.fromisoformat(pop["snapshot"]),
+        )
+        cols = list(dict.fromkeys([*settings.columns, *EXTRA_COLUMNS]))
+        facts = sorted({c for cs in cfg.facts.values() for c in cs} | {"tenure_days"})
+        results = {}
+        for t in parity.SNAPSHOTS:
+            inputs = snapshot_inputs(processed, t, cols, facts, protocol)
+            results[t] = parity.snapshot_marks(ctx, inputs)
+        nov = ctx.population_snapshot
+        reload = parity.reload_marks(ctx, results[nov]["_rows"])
+        report["marks"] = parity.assemble_marks(results, reload, serving)
+        report["descriptive"] = parity.descriptive(results)
+        report["not_met"] = parity.overall(report)
+        report["passed"] = not report["not_met"]
+    except parity.StopRun as e:
+        report |= {"stopped": str(e), "passed": False}
+    assert_no_label_building_code()
+    report = stamp(parity.json_ready(report), repo, t0)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / STEP4_REPORT).write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps({k: report[k] for k in report if k not in ("marks", "descriptive")}, indent=2))
+    if not report["passed"]:
+        print("SCORE-PARITY NOT MET:", report.get("stopped") or report["not_met"], sep="\n  ")
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m retention.api")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -310,7 +406,11 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--fraction", type=float, default=None)
     v = sub.add_parser("verify-serving", help="load the models through the alias, checked")
     v.add_argument("--fraction", type=float, default=None)
+    sp = sub.add_parser("score-parity", help="judge every registered step 4 mark, once")
+    sp.add_argument("--fraction", type=float, default=None)
     args = parser.parse_args(argv)
+    if args.command == "score-parity":
+        return score_parity(args)
     if args.command == "register":
         return register_cmd(args)
     if args.command == "verify-serving":
