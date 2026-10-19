@@ -21,6 +21,8 @@
 # before any scoring code.
 # Amendment A3 (tenure never shown as a reason) was added in the tenth commit,
 # before any reasons code.
+# Contract amendment A4 (how the action block reads) was added in the eleventh
+# commit, before any schema or label code.
 #
 # Every pass mark is exact unless a tolerance is written next to it. If a
 # reproduction field differs, the step stops and reports the largest difference;
@@ -259,6 +261,43 @@ contract:
         rows: {"2016-10-01": 144996, "2016-11-01": 169673}
         path: the service's scoring function on batch features, same customer and snapshot
         tolerance: exact
+
+  action_reading:  # amendment A4; a new key, so the registered amendments list stays unchanged
+    id: A4
+    date: "2026-10-19"
+    label: >-
+      written before any schema or label code, after counting value.parquet
+      through Phase 7's best_action: it has no "none" choice and names the
+      allowed action with the highest net value even when that value is
+      negative, so an action field alone would read as a recommendation for
+      customers where no action pays
+    amends: scored.action  # the registered entry is kept, not edited
+    field: highest_net_value_action  # replaces the name "action"; never reads as a recommendation
+    definition: the allowed action with the highest net value under the base scenario, no budget (Phase 7's best_action, unchanged)
+    shown: [highest_net_value_action, expected_retained_value, net_value, cost, pays]
+    pays: true only when net_value > 0
+    reads_as_when_not_paying: "no action pays"
+    cases:
+      pays: an action is allowed and its net value is above 0; pays true; no reads_as
+      does_not_pay: >-
+        an action is allowed but the highest net value is 0 or below; pays false;
+        reads_as "no action pays"; the action and its values are still shown
+      none_allowed: >-
+        no action is allowed (eligibility, lead time, or no usable price);
+        highest_net_value_action "none" with expected retained value, net value
+        and cost 0; pays false; reads_as "no action pays"; a customer without a
+        usable price also carries D2's flag "no usable price"
+    never_in_a_block_that_does_not_pay: [recommend]  # a test fails any pays-false response containing it, any letter case
+    scenario_text:  # registered wording for the scenario values that had none
+      discount_cost_rule: "forgone price counted in full"
+      value_horizon: "expected paid days in days 31 to 90"
+      budget: "none: each customer's own best action"
+    docs_figures:  # from the count in the decision log on 2026-10-19 (value.parquet, Phase 7's code, base scenario)
+      "2016-11-01": {blocks_that_pay: 8497, blocks: 169673}
+      "2016-10-01": {blocks_that_pay: 9410, blocks: 144996}
+    score_parity:
+      recount: the blocks that pay, per snapshot, recomputed and reported next to these figures
+      no_price_rule: score-parity stops if a customer without a usable price has any allowed action
 
 streaming:
   meaning: >-
