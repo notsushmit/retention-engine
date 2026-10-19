@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import copy
+import dataclasses
 from datetime import date
 
 import numpy as np
@@ -12,6 +12,7 @@ import yaml
 
 from retention.api import scoring as sc
 from retention.api.config import load_serving
+from retention.api.labels import LABELS
 from retention.models.discrete_time import DiscreteTimeModel
 from retention.models.protocol import load_protocol
 from retention.optimize.config import load_actions_config
@@ -79,7 +80,7 @@ def test_paid_days_are_phase_7_s_expected_days(dt01):
     tab = sc.customers(r, surv, reasons_30, prices)
     assert np.array_equal(tab.days_30_90.to_numpy(), expected_days(surv).days_30_90.to_numpy())
     assert np.array_equal(tab.p30.to_numpy(), np.full(50, 0.05))
-    block = sc.paid_days_block(float(tab.days_30_90.iloc[0]), SERVING)
+    block = sc.paid_days_block(float(tab.days_30_90.iloc[0]))
     assert block["field"] == "expected_paid_days_31_90"
     assert block["name"] == "expected paid days in days 31 to 90, given no lapse by day 30"
     assert "near the ceiling for almost everyone; not a ranking signal" in block["labels"]
@@ -102,7 +103,8 @@ def test_actions_are_phase_7_s_best_action_under_the_base_scenario():
     assert np.array_equal(
         f.expected_retained_value.to_numpy()[i], opts.value[i] * opts.effect[i, best[i]]
     )
-    assert (f.action.to_numpy()[~chosen] == "none").all()
+    assert (f.highest_net_value_action.to_numpy()[~chosen] == "none").all()
+    assert np.array_equal(f.pays.to_numpy(), chosen & (f.net_value.to_numpy() > 0))
     assert (f.loc[~chosen, ["net_value", "cost", "expected_retained_value"]] == 0).all(axis=None)
 
 
@@ -112,20 +114,22 @@ def test_no_usable_price_offers_no_positive_net_action_and_says_so():
     no_price = ~tab.has_price.to_numpy()
     allowed_net = np.where(acts.opts.allowed, acts.opts.net, -np.inf)
     assert (allowed_net[no_price] <= 0).all()  # valued at 0: nothing can pay
-    blocks = sc.action_blocks(acts, SERVING, ACT.base)
+    blocks = sc.action_blocks(acts, ACT.base)
     for k in np.flatnonzero(no_price):
         assert blocks[k]["price"] == "no usable price"
         assert blocks[k]["reads_as"] == "no action pays"
         assert blocks[k]["net_value"] <= 0
+        assert blocks[k]["pays"] is False
     for k in np.flatnonzero(~no_price):
-        assert "price" not in blocks[k] and "reads_as" not in blocks[k]
+        assert "price" not in blocks[k]
+        assert ("reads_as" in blocks[k]) == (not blocks[k]["pays"])
 
 
 # --- labels on every block ------------------------------------------------------------------------
 
 
 def test_every_block_carries_the_four_fields_and_the_probability_basis():
-    blocks = sc.action_blocks(sc.actions(table(60), ACT), SERVING, ACT.base)
+    blocks = sc.action_blocks(sc.actions(table(60), ACT), ACT.base)
     req = SERVING["contract"]["scored"]["action"]["required"]
     for b in blocks:
         assert b["effect_basis"] == "assumed"
@@ -141,18 +145,18 @@ def test_every_block_carries_the_four_fields_and_the_probability_basis():
 
 @pytest.mark.parametrize("field", sc.REQUIRED_ACTION_FIELDS)
 def test_a_block_missing_any_registered_field_is_refused(field):
-    block = sc.action_blocks(sc.actions(table(5), ACT), SERVING, ACT.base)[0]
+    block = sc.action_blocks(sc.actions(table(5), ACT), ACT.base)[0]
     with pytest.raises(ValueError, match="lacks"):
         sc.check_action_block({k: v for k, v in block.items() if k != field})
 
 
 def test_an_effect_basis_other_than_assumed_is_refused():
-    block = sc.action_blocks(sc.actions(table(5), ACT), SERVING, ACT.base)[0]
+    block = sc.action_blocks(sc.actions(table(5), ACT), ACT.base)[0]
     with pytest.raises(ValueError, match="assumed"):
         sc.check_action_block(block | {"effect_basis": "estimated"})
 
 
-def test_the_scenario_comes_from_phase_7_s_base_scenario():
+def test_the_scenario_comes_from_phase_7_s_base_scenario_and_a4_text():
     s = sc.scenario_of(ACT.base)
     assert (s["form"], s["level"], s["margin"], s["cost_level"]) == (
         "relative",
@@ -160,17 +164,53 @@ def test_the_scenario_comes_from_phase_7_s_base_scenario():
         0.5,
         "base",
     )
-    assert s["value_horizon"] == "expected paid days in days 31 to 90"
-    cfg = copy.deepcopy(SERVING)
-    cfg["contract"]["scored"]["action"]["required"]["scenario"] = ["form"]
+    a4 = SERVING["contract"]["action_reading"]["scenario_text"]
+    assert {k: s[k] for k in a4} == a4
+    with pytest.raises(ValueError, match="wording is registered"):
+        sc.scenario_of(dataclasses.replace(ACT.base, value_horizon_days=365))
+    labels = dataclasses.replace(LABELS, scenario_keys=("form",))
     with pytest.raises(ValueError, match="scenario fields"):
-        sc.action_labels(cfg, ACT.base)
+        sc.action_labels(ACT.base, labels)
 
 
 def test_action_labels_are_read_from_the_registered_config():
     raw = yaml.safe_load(open("configs/serving.yaml"))
-    labels = sc.action_labels(raw, ACT.base)
-    assert (
-        labels["instability_note"]
-        == raw["contract"]["scored"]["action"]["required"]["instability_note"]
-    )
+    labels = sc.action_labels(ACT.base)
+    req = raw["contract"]["scored"]["action"]["required"]
+    assert labels["instability_note"] == req["instability_note"]
+    assert labels["no_estimate_line"] == req["no_estimate_line"]
+
+
+def test_the_three_a4_cases():
+    tab = table(400, seed=3, no_price_every=7)
+    acts = sc.actions(tab, ACT)
+    f = acts.frame()
+    blocks = sc.action_blocks(acts, ACT.base)
+    cases = {"pays": 0, "does_not_pay": 0, "none_allowed": 0}
+    for b, r in zip(blocks, f.to_dict("records"), strict=True):
+        if r["highest_net_value_action"] == "none":
+            cases["none_allowed"] += 1
+            assert not b["pays"] and b["reads_as"] == "no action pays"
+            assert (b["net_value"], b["cost"], b["expected_retained_value"]) == (0.0, 0.0, 0.0)
+        elif b["pays"]:
+            cases["pays"] += 1
+            assert b["net_value"] > 0 and "reads_as" not in b
+        else:
+            cases["does_not_pay"] += 1
+            assert b["net_value"] <= 0 and b["reads_as"] == "no action pays"
+    assert all(v > 0 for v in cases.values()), cases
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"pays": True, "net_value": -1.0},
+        {"pays": False, "net_value": 2.0},
+        {"pays": True, "net_value": 2.0, "reads_as": "no action pays"},
+    ],
+)
+def test_a_block_breaking_a4_is_refused(change):
+    block = sc.action_blocks(sc.actions(table(5), ACT), ACT.base)[0]
+    block = {k: v for k, v in block.items() if k != "reads_as"} | change
+    with pytest.raises(ValueError):
+        sc.check_action_block(block)

@@ -38,7 +38,9 @@ Expected paid days and the action block (Phase 7 code, unchanged):
 - a customer with no usable price is valued at 0 (D2) and carries the flag
   "no usable price", read as "no action pays".
 Every action block carries effect_basis "assumed", the scenario, the instability
-note and the no-estimate line, from configs/serving.yaml.
+note and the no-estimate line, from configs/serving.yaml. Amendment A4: the action
+is named highest_net_value_action; pays is true only when its net value is above
+0, and a block that does not pay reads "no action pays".
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from retention.api.labels import LABELS, Labels
 from retention.api.ordering import HORIZONS, final_probabilities, platt_from
 from retention.explain.build_reasons import caveat_flags, reason_rows
 from retention.explain.config import STRENGTHS, ExplainConfig
@@ -327,20 +330,24 @@ class Actions:
     has_price: np.ndarray
 
     def frame(self) -> pd.DataFrame:
-        """Per customer: action, expected retained value, net value, cost (0 for none)."""
+        """Per customer (amendment A4): the allowed action with the highest net value,
+        its expected retained value, net value and cost ("none" and 0 when no action
+        is allowed), and pays (true only when the net value is above 0)."""
         i = np.arange(self.opts.n)
         j = np.maximum(self.best, 0)
         chosen = self.best != NONE
         name = np.array([*self.opts.actions, "none"], dtype=object)
+        net = np.where(chosen, self.opts.net[i, j], 0.0)
         return pd.DataFrame(
             {
                 "msno": self.opts.msno,
-                "action": name[np.where(chosen, self.best, len(self.opts.actions))],
+                LABELS.action_field: name[np.where(chosen, self.best, len(self.opts.actions))],
                 "expected_retained_value": np.where(
                     chosen, self.opts.value * self.opts.effect[i, j], 0.0
                 ),
-                "net_value": np.where(chosen, self.opts.net[i, j], 0.0),
+                "net_value": net,
                 "cost": np.where(chosen, self.opts.cost[i, j], 0.0),
+                "pays": chosen & (net > 0),
                 "has_price": self.has_price,
             }
         )
@@ -352,75 +359,80 @@ def actions(table: pd.DataFrame, cfg: ActionsConfig) -> Actions:
     return Actions(opts, best_action(opts), table.has_price.to_numpy(dtype=bool))
 
 
-def scenario_of(sc: Scenario) -> dict[str, Any]:
-    """The registered scenario fields of an action block, from Phase 7's base scenario."""
+def scenario_of(sc: Scenario, labels: Labels = LABELS) -> dict[str, Any]:
+    """The scenario fields of an action block: Phase 7's base scenario and A4's text."""
+    if sc.discount_cost_scaled_by_margin or sc.value_horizon_days != 90:
+        raise ValueError("the scenario differs from the one whose wording is registered")
     return {
         "form": sc.form,
         "level": sc.level,
         "margin": sc.margin,
         "cost_level": sc.cost_level,
-        "discount_cost_rule": (
-            "forgone price times the margin"
-            if sc.discount_cost_scaled_by_margin
-            else "forgone price counted in full"
-        ),
-        "value_horizon": f"expected paid days in days 31 to {sc.value_horizon_days}",
-        "budget": "none: each customer's own best action",
+        "discount_cost_rule": labels.scenario_text["discount_cost_rule"],
+        "value_horizon": labels.scenario_text["value_horizon"],
+        "budget": labels.scenario_text["budget"],
     }
 
 
-def action_labels(serving: dict[str, Any], sc: Scenario) -> dict[str, Any]:
+def action_labels(sc: Scenario, labels: Labels = LABELS) -> dict[str, Any]:
     """The fixed fields every action block carries."""
-    req = serving["contract"]["scored"]["action"]["required"]
-    if req["scenario"] != list(scenario_of(sc)):
+    scenario = scenario_of(sc, labels)
+    if tuple(scenario) != labels.scenario_keys:
         raise ValueError("the registered scenario fields differ from the block's")
     return {
-        "effect_basis": req["effect_basis"],
-        "scenario": scenario_of(sc),
-        "instability_note": req["instability_note"],
-        "no_estimate_line": req["no_estimate_line"],
-        "probability_basis": serving["step4"]["decisions"]["action_probability"]["label"],
+        "effect_basis": labels.effect_basis,
+        "scenario": scenario,
+        "instability_note": labels.instability_note,
+        "no_estimate_line": labels.no_estimate_line,
+        "probability_basis": labels.probability_basis,
     }
 
 
 REQUIRED_ACTION_FIELDS = ("effect_basis", "scenario", "instability_note", "no_estimate_line")
 
 
-def action_blocks(acts: Actions, serving: dict[str, Any], sc: Scenario) -> list[dict[str, Any]]:
-    """One block per customer: the action fields, the fixed labels, and D2's flag."""
-    labels = action_labels(serving, sc)
-    d2 = serving["step4"]["decisions"]["no_usable_price"]
+def action_blocks(acts: Actions, sc: Scenario, labels: Labels = LABELS) -> list[dict[str, Any]]:
+    """One block per customer under amendment A4, with D1's label and D2's flag."""
+    fixed = action_labels(sc, labels)
     out = []
-    for r in acts.frame().itertuples(index=False):
+    for r in acts.frame().to_dict("records"):
         block = {
-            "action": r.action,
-            "expected_retained_value": float(r.expected_retained_value),
-            "net_value": float(r.net_value),
-            "cost": float(r.cost),
-            **labels,
+            labels.action_field: r[labels.action_field],
+            "expected_retained_value": float(r["expected_retained_value"]),
+            "net_value": float(r["net_value"]),
+            "cost": float(r["cost"]),
+            "pays": bool(r["pays"]),
+            **fixed,
         }
-        if not r.has_price:
-            block |= {"price": d2["flag"], "reads_as": d2["reads_as"]}
-        check_action_block(block)
+        if not block["pays"]:
+            block["reads_as"] = labels.reads_as
+        if not r["has_price"]:
+            block["price"] = labels.no_price_flag
+        check_action_block(block, labels)
         out.append(block)
     return out
 
 
-def check_action_block(block: dict[str, Any]) -> None:
-    """Refuse a block missing any of the four registered fields."""
+def check_action_block(block: dict[str, Any], labels: Labels = LABELS) -> None:
+    """Refuse a block missing a registered field or breaking A4's reading."""
     missing = [k for k in REQUIRED_ACTION_FIELDS if block.get(k) in (None, "", {})]
     if missing:
         raise ValueError(f"action block lacks {missing}")
     if block["effect_basis"] != "assumed":
         raise ValueError("an action block's effect_basis must be 'assumed'")
+    if block["pays"] != (block["net_value"] > 0):
+        raise ValueError("pays must be true exactly when the net value is above 0")
+    if block["pays"] == ("reads_as" in block):
+        raise ValueError("reads_as is shown exactly when no action pays")
+    if "price" in block and block["pays"]:
+        raise ValueError("a customer without a usable price cannot have an action that pays")
 
 
-def paid_days_block(days: float, serving: dict[str, Any]) -> dict[str, Any]:
+def paid_days_block(days: float, labels: Labels = LABELS) -> dict[str, Any]:
     """Amendment A2's field, with its name and labels."""
-    a2 = next(a for a in serving["contract"]["amendments"] if a["id"] == "A2")
     return {
-        "field": a2["field"],
+        "field": labels.paid_days_field,
         "value": float(days),
-        "name": a2["name"],
-        "labels": list(a2["labels"]),
+        "name": labels.paid_days_name,
+        "labels": list(labels.paid_days_labels),
     }
