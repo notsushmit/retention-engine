@@ -19,6 +19,8 @@
 # added in the eighth commit, before any registry or scoring code.
 # Step 4's design choices and five more marks were added in the ninth commit,
 # before any scoring code.
+# Amendment A3 (tenure never shown as a reason) was added in the tenth commit,
+# before any reasons code.
 #
 # Every pass mark is exact unless a tolerance is written next to it. If a
 # reproduction field differs, the step stops and reports the largest difference;
@@ -516,3 +518,61 @@ step4:
       command: score-parity
       once: true  # a second run is refused
       report: data/processed/kkbox/sample_020/serving/step4_report.json
+
+  amendments:
+    - id: A3
+      date: "2026-10-19"
+      label: >-
+        written before any reasons code, after a conflict between two registered
+        rules was found by counting reasons.parquet: Phase 4 registered tenure as a
+        reason group when known; the Phase 6 and Phase 7 handoffs and this
+        contract's never_in_any_body say tenure is never a reason; the later rule
+        is kept
+      amends: more_pass_marks.reasons_parity  # the registered entry is kept, not edited
+      original_mark: "amended before any run; not judged as written"
+      service_rule: >-
+        tenure is masked as not shown, through Phase 4's own shown_only_when_known
+        mechanism (the one it uses when tenure_days is missing); its contribution
+        goes into "other factors"; Phase 4's selection and renderer run unchanged
+      untouched: [configs/explain.yaml, configs/reason_phrases.yaml, data/processed/kkbox/sample_020/explain/reasons.parquet]
+      counts:  # reasons.parquet rows listing tenure as a reason (counts only, no outcome)
+        "2016-10-01": {"7": 526, "30": 5674}
+        "2016-11-01": {"7": 649, "30": 4519}
+        total_listed: 11368
+        total_rows: 629338
+        not_listed: 617970
+      mark:
+        parity_rows_without_tenure:
+          rows: 617970  # where Phase 4 listed no tenure reason
+          against: data/processed/kkbox/sample_020/explain/reasons.parquet  # SHA-256 as registered in reasons_parity
+          columns: every column of reasons.parquet (36)
+          tolerance: exact
+        self_check_rows_with_tenure:
+          rows: 11368  # where Phase 4 listed tenure
+          against: >-
+            Phase 4's own select and renderer run on the same rows with tenure
+            masked as not shown, computed separately in the run (no Phase 4 file
+            holds this output)
+          columns: every column of reasons.parquet (36)
+          tolerance: exact
+          name: self-check
+        zero_tenure:
+          tenure_slots: 0  # no raising or lowering slot holds the group tenure, in any served row
+          member_for_texts: 0  # no served reason text contains "member for"
+      expectation_unmeasured: >-
+        masking tenure should leave every row where Phase 4 did not list it
+        unchanged, because the selection picks only among listed groups and an
+        unlisted group already sits in "other factors"; this has not been measured
+        and the parity mark on the 617,970 rows is what tests it
+      rule: any difference is not met; no tolerance is added after a result is seen
+
+  descriptive:  # no pass mark; reported in step4_report.json
+    before_fix_paths:
+      what: >-
+        rows whose probability before the fix differs between the two registered
+        numeric paths (Phase 4's platt_probability on the raw log-odds, used by
+        reasons and the action block; Phase 3's calibrate on the predicted
+        probability, used by the final probabilities)
+      snapshots: ["2016-10-01", "2016-11-01"]
+      horizons: [7, 30]
+      comparison: exact float equality, no tolerance; the count of differing rows and the largest difference are reported
