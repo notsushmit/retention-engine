@@ -27,6 +27,18 @@ share no masking call:
   set to missing, so Phase 4's own shown_mask hides tenure.
 Their equality shows only that the masking matches Phase 4's own missing-tenure
 behaviour; it does not validate the wording.
+
+Expected paid days and the action block (Phase 7 code, unchanged):
+- dt01's survival curve at every interval end, as Phase 7's value step computes
+  it; Phase 7's customer_table turns it into expected paid days in days 31 to 90
+  given no lapse by day 30 (amendment A2's quantity, days_30_90);
+- the action: Phase 7's build_options and best_action under the base scenario,
+  no budget, from the 30-day probability before the fix (D1): the reasons
+  frame's probability column, the column Phase 7 read from reasons.parquet;
+- a customer with no usable price is valued at 0 (D2) and carries the flag
+  "no usable price", read as "no action pays".
+Every action block carries effect_basis "assumed", the scenario, the instability
+note and the no-estimate line, from configs/serving.yaml.
 """
 
 from __future__ import annotations
@@ -52,6 +64,11 @@ from retention.explain.reasons import Renderer, platt_probability, probability_t
 from retention.explain.selection import POSITIONS, select, strength_codes
 from retention.models.classifier import Classifier
 from retention.models.protocol import Protocol
+from retention.optimize.config import ActionsConfig, Scenario
+from retention.optimize.effects import Options, build_options
+from retention.optimize.solve import NONE
+from retention.optimize.strategies import best_action
+from retention.optimize.value import INTERVAL_ENDS_ALL, customer_table
 
 SCORED = "scored"
 OUTSIDE = "outside_population"
@@ -283,3 +300,127 @@ def self_check_reasons(
     return reason_rows(
         cfg, renderer, part, masked, horizon, snapshot, platt, protocol, phrases_sha256
     )
+
+
+# --- expected paid days and the action block -----------------------------------------------
+
+
+def survival(dt01, rows: pd.DataFrame) -> np.ndarray:
+    """S(t) at every interval end (rows x 12), as Phase 7's value step computes it."""
+    return 1 - dt01.lapse_probability(rows, list(INTERVAL_ENDS_ALL))[0]
+
+
+def customers(
+    rows: pd.DataFrame, surv: np.ndarray, reasons_30: pd.DataFrame, prices: pd.DataFrame
+) -> pd.DataFrame:
+    """Phase 7's customer table; p30 is the 30-day reasons frame's probability (D1)."""
+    p30 = reasons_30[["msno", "snapshot_date", "probability"]].rename(
+        columns={"probability": "p30"}
+    )
+    return customer_table(rows, surv, p30, prices)
+
+
+@dataclass
+class Actions:
+    opts: Options
+    best: np.ndarray  # index into opts.actions, NONE when no action is allowed
+    has_price: np.ndarray
+
+    def frame(self) -> pd.DataFrame:
+        """Per customer: action, expected retained value, net value, cost (0 for none)."""
+        i = np.arange(self.opts.n)
+        j = np.maximum(self.best, 0)
+        chosen = self.best != NONE
+        name = np.array([*self.opts.actions, "none"], dtype=object)
+        return pd.DataFrame(
+            {
+                "msno": self.opts.msno,
+                "action": name[np.where(chosen, self.best, len(self.opts.actions))],
+                "expected_retained_value": np.where(
+                    chosen, self.opts.value * self.opts.effect[i, j], 0.0
+                ),
+                "net_value": np.where(chosen, self.opts.net[i, j], 0.0),
+                "cost": np.where(chosen, self.opts.cost[i, j], 0.0),
+                "has_price": self.has_price,
+            }
+        )
+
+
+def actions(table: pd.DataFrame, cfg: ActionsConfig) -> Actions:
+    """Phase 7's per-customer best action under the base scenario, no budget."""
+    opts = build_options(table, cfg, cfg.base)
+    return Actions(opts, best_action(opts), table.has_price.to_numpy(dtype=bool))
+
+
+def scenario_of(sc: Scenario) -> dict[str, Any]:
+    """The registered scenario fields of an action block, from Phase 7's base scenario."""
+    return {
+        "form": sc.form,
+        "level": sc.level,
+        "margin": sc.margin,
+        "cost_level": sc.cost_level,
+        "discount_cost_rule": (
+            "forgone price times the margin"
+            if sc.discount_cost_scaled_by_margin
+            else "forgone price counted in full"
+        ),
+        "value_horizon": f"expected paid days in days 31 to {sc.value_horizon_days}",
+        "budget": "none: each customer's own best action",
+    }
+
+
+def action_labels(serving: dict[str, Any], sc: Scenario) -> dict[str, Any]:
+    """The fixed fields every action block carries."""
+    req = serving["contract"]["scored"]["action"]["required"]
+    if req["scenario"] != list(scenario_of(sc)):
+        raise ValueError("the registered scenario fields differ from the block's")
+    return {
+        "effect_basis": req["effect_basis"],
+        "scenario": scenario_of(sc),
+        "instability_note": req["instability_note"],
+        "no_estimate_line": req["no_estimate_line"],
+        "probability_basis": serving["step4"]["decisions"]["action_probability"]["label"],
+    }
+
+
+REQUIRED_ACTION_FIELDS = ("effect_basis", "scenario", "instability_note", "no_estimate_line")
+
+
+def action_blocks(acts: Actions, serving: dict[str, Any], sc: Scenario) -> list[dict[str, Any]]:
+    """One block per customer: the action fields, the fixed labels, and D2's flag."""
+    labels = action_labels(serving, sc)
+    d2 = serving["step4"]["decisions"]["no_usable_price"]
+    out = []
+    for r in acts.frame().itertuples(index=False):
+        block = {
+            "action": r.action,
+            "expected_retained_value": float(r.expected_retained_value),
+            "net_value": float(r.net_value),
+            "cost": float(r.cost),
+            **labels,
+        }
+        if not r.has_price:
+            block |= {"price": d2["flag"], "reads_as": d2["reads_as"]}
+        check_action_block(block)
+        out.append(block)
+    return out
+
+
+def check_action_block(block: dict[str, Any]) -> None:
+    """Refuse a block missing any of the four registered fields."""
+    missing = [k for k in REQUIRED_ACTION_FIELDS if block.get(k) in (None, "", {})]
+    if missing:
+        raise ValueError(f"action block lacks {missing}")
+    if block["effect_basis"] != "assumed":
+        raise ValueError("an action block's effect_basis must be 'assumed'")
+
+
+def paid_days_block(days: float, serving: dict[str, Any]) -> dict[str, Any]:
+    """Amendment A2's field, with its name and labels."""
+    a2 = next(a for a in serving["contract"]["amendments"] if a["id"] == "A2")
+    return {
+        "field": a2["field"],
+        "value": float(days),
+        "name": a2["name"],
+        "labels": list(a2["labels"]),
+    }
