@@ -34,6 +34,11 @@ Stops on a population count that differs from the registered one or on a custome
 without a usable price who has an allowed action. Writes step4_report.json. Runs
 once; exits with an error if any mark is not met.
 
+score-parity --dry-run: the same comparisons on one md5 bucket of 2016-11-01's
+customers, with no registered full-count mark judged and no stop rule stopping.
+Writes only step4_dry_run.json, refuses to overwrite it, and never reads or writes
+step4_report.json (the run-once guard of the real run is untouched).
+
 Every command refuses to run when a tracked file differs from HEAD, so each
 report ties to a commit.
 """
@@ -77,6 +82,7 @@ DT01_REPORT = "save_dt01_report.json"
 REGISTER_REPORT = "register_report.json"
 VERIFY_REPORT = "verify_serving_report.json"
 STEP4_REPORT = "step4_report.json"
+DRY_REPORT = "step4_dry_run.json"
 
 
 def out_dir(fraction: float | None) -> Path:
@@ -303,21 +309,17 @@ def verify_cmd(args) -> int:
     return 0
 
 
-def score_parity(args) -> int:
+def parity_report(processed: Path, repo: Path, dry: bool) -> dict:
+    """The score-parity report (the real run or the dry run); writes nothing."""
     from retention.explain.config import load_explain_config
     from retention.explain.reasons import PHRASES, Renderer
     from retention.optimize.config import load_actions_config
     from retention.optimize.value import EXTRA_COLUMNS
 
-    repo = Path.cwd()
-    require_clean(repo)
-    out = out_dir(args.fraction)
-    run_once(out / STEP4_REPORT)
-    t0 = time.time()
     serving = load_serving()
     step4 = serving["step4"]
-    processed = processed_dir(args.fraction)
     report: dict = {
+        "dry_run": dry,
         "original_reasons_parity": step4["amendments"][0]["original_mark"],
         "self_check_scope": (
             "the self-check shows only that the masking matches Phase 4's own "
@@ -367,6 +369,12 @@ def score_parity(args) -> int:
         )
         cols = list(dict.fromkeys([*settings.columns, *EXTRA_COLUMNS]))
         facts = sorted({c for cs in cfg.facts.values() for c in cs} | {"tenure_days"})
+        if dry:
+            t = parity.DRY_SNAPSHOT
+            inputs = parity.dry_subset(snapshot_inputs(processed, t, cols, facts, protocol))
+            report["dry"] = parity.dry_summary(parity.snapshot_marks(ctx, inputs, dry=True))
+            report["passed"] = report["dry"]["all_comparisons_equal"]
+            return report
         results = {}
         for t in parity.SNAPSHOTS:
             inputs = snapshot_inputs(processed, t, cols, facts, protocol)
@@ -379,13 +387,29 @@ def score_parity(args) -> int:
         report["passed"] = not report["not_met"]
     except parity.StopRun as e:
         report |= {"stopped": str(e), "passed": False}
+    return report
+
+
+def score_parity(args) -> int:
+    repo = Path.cwd()
+    require_clean(repo)
+    out = out_dir(args.fraction)
+    target = out / (DRY_REPORT if args.dry_run else STEP4_REPORT)
+    if args.dry_run:
+        if target.exists():
+            raise SystemExit(f"{target} exists: the dry run refuses to overwrite its report")
+    else:
+        run_once(target)
+    t0 = time.time()
+    report = parity_report(processed_dir(args.fraction), repo, args.dry_run)
     assert_no_label_building_code()
     report = stamp(parity.json_ready(report), repo, t0)
     out.mkdir(parents=True, exist_ok=True)
-    (out / STEP4_REPORT).write_text(json.dumps(report, indent=2) + "\n")
-    print(json.dumps({k: report[k] for k in report if k not in ("marks", "descriptive")}, indent=2))
+    target.write_text(json.dumps(report, indent=2) + "\n")
+    keep = ("marks", "descriptive", "dry")
+    print(json.dumps({k: report[k] for k in report if k not in keep}, indent=2))
     if not report["passed"]:
-        print("SCORE-PARITY NOT MET:", report.get("stopped") or report["not_met"], sep="\n  ")
+        print("SCORE-PARITY NOT MET:", report.get("stopped") or report.get("not_met"), sep="\n  ")
         return 1
     return 0
 
@@ -408,6 +432,7 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("--fraction", type=float, default=None)
     sp = sub.add_parser("score-parity", help="judge every registered step 4 mark, once")
     sp.add_argument("--fraction", type=float, default=None)
+    sp.add_argument("--dry-run", action="store_true", help="one md5 bucket, comparisons only")
     args = parser.parse_args(argv)
     if args.command == "score-parity":
         return score_parity(args)

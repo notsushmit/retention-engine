@@ -264,3 +264,117 @@ def test_score_parity_runs_once(monkeypatch, tmp_path):
     (tmp_path / cli.STEP4_REPORT).write_text("{}")
     with pytest.raises(SystemExit, match="runs once"):
         cli.main(["score-parity"])
+
+
+# --- the dry run --------------------------------------------------------------------------------
+
+
+def stub_report(processed, repo, dry):
+    return {"dry_run": dry, "passed": True}
+
+
+@pytest.fixture()
+def no_process_guard(monkeypatch):
+    """The label-code guard is about the real process; the test session has loaded that code."""
+    monkeypatch.setattr(cli, "assert_no_label_building_code", lambda: None)
+
+
+def test_dry_run_never_writes_the_real_report_and_ignores_its_guard(
+    monkeypatch, tmp_path, no_process_guard
+):
+    monkeypatch.setattr(cli, "tree_dirty", lambda repo: False)
+    monkeypatch.setattr(cli, "out_dir", lambda fraction: tmp_path)
+    monkeypatch.setattr(cli, "parity_report", stub_report)
+    (tmp_path / cli.STEP4_REPORT).write_text("kept")  # a real report already there
+    assert cli.main(["score-parity", "--dry-run"]) == 0
+    assert (tmp_path / cli.STEP4_REPORT).read_text() == "kept"
+    assert (tmp_path / cli.DRY_REPORT).exists()
+
+
+def test_dry_run_leaves_the_real_run_unblocked(monkeypatch, tmp_path, no_process_guard):
+    monkeypatch.setattr(cli, "tree_dirty", lambda repo: False)
+    monkeypatch.setattr(cli, "out_dir", lambda fraction: tmp_path)
+    monkeypatch.setattr(cli, "parity_report", stub_report)
+    assert cli.main(["score-parity", "--dry-run"]) == 0
+    assert not (tmp_path / cli.STEP4_REPORT).exists()
+    assert cli.main(["score-parity"]) == 0  # the real run's guard was never tripped
+    assert (tmp_path / cli.STEP4_REPORT).exists()
+
+
+def test_dry_run_refuses_to_overwrite_its_own_report(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "tree_dirty", lambda repo: False)
+    monkeypatch.setattr(cli, "out_dir", lambda fraction: tmp_path)
+    monkeypatch.setattr(cli, "parity_report", stub_report)
+    (tmp_path / cli.DRY_REPORT).write_text("{}")
+    with pytest.raises(SystemExit, match="refuses to overwrite"):
+        cli.main(["score-parity", "--dry-run"])
+
+
+def test_dry_run_refuses_a_dirty_tree(monkeypatch):
+    monkeypatch.setattr(cli, "tree_dirty", lambda repo: True)
+    with pytest.raises(SystemExit, match="commit first"):
+        cli.main(["score-parity", "--dry-run"])
+
+
+def test_dry_subset_keeps_one_bucket_in_each_table_s_order():
+    from retention.api.batch import SnapshotInputs
+    from retention.data.sample import bucket
+
+    ids = [f"customer{i:03d}" for i in range(400)][::-1]
+    df = pd.DataFrame({"msno": ids, "x": range(400)})
+    sub = pa.dry_subset(SnapshotInputs(NOV, df, df, df, df))
+    expected = [m for m in ids if bucket(m) == 0]
+    assert 0 < len(expected) < 400
+    for t in (sub.status_rows, sub.rows, sub.facts, sub.prices):
+        assert t.msno.tolist() == expected
+
+
+def test_the_dry_run_does_not_judge_population(monkeypatch):
+    class Reached(Exception):
+        pass
+
+    def reached(*a, **k):
+        raise Reached
+
+    monkeypatch.setattr(sc, "refuse_unseen", reached)
+    status_rows = pd.DataFrame(
+        {"msno": ["a"], "in_exp30": [True], "segment": ["paid"], "days_until_expiry": [3]}
+    )
+    inputs = SimpleNamespace(snapshot=NOV, status_rows=status_rows, rows=pd.DataFrame({"msno": []}))
+    ctx = SimpleNamespace(
+        models=SimpleNamespace(c01={}, dt01=None),
+        protocol=SimpleNamespace(main_segments=("paid", "discount100_only"), seed=1),
+        population_snapshot=NOV,
+        population_expected={"scored": 2},
+    )
+    with pytest.raises(Reached):  # past the population step: nothing judged there
+        pa.snapshot_marks(ctx, inputs, dry=True)
+    with pytest.raises(pa.StopRun):
+        pa.snapshot_marks(ctx, inputs, dry=False)
+
+
+def test_dry_summary_is_equal_only_when_every_comparison_is():
+    r = {
+        "parity_rows": 9,
+        "parity": {"equal": True},
+        "self_check_rows": 1,
+        "self_check": {"equal": True},
+        "zero_tenure": {"met": True},
+    }
+    res = {
+        "snapshot": "2016-11-01",
+        "rows": 10,
+        "population": {},
+        "unseen_level_rows": 0,
+        "probabilities": {"rows_changed": 1, "max_change": 0.1, "clipped": 0},
+        "reasons": {"7": r, "30": r},
+        "paid_days": {"equal": True},
+        "actions": {"equal": True},
+        "no_price_rule": {"met": True},
+        "before_fix_paths": {},
+        "paying_blocks": {"blocks": 10, "blocks_that_pay": 1},
+    }
+    assert pa.dry_summary(res)["all_comparisons_equal"]
+    assert not pa.dry_summary(res | {"actions": {"equal": False}})["all_comparisons_equal"]
+    bad = r | {"zero_tenure": {"met": False}}
+    assert not pa.dry_summary(res | {"reasons": {"7": bad, "30": r}})["all_comparisons_equal"]

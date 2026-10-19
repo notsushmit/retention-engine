@@ -215,15 +215,22 @@ class Context:
     population_snapshot: date
 
 
-def snapshot_marks(ctx: Context, inputs: SnapshotInputs) -> dict[str, Any]:
-    """Every per-snapshot mark; raises StopRun when a stop rule fires."""
+def snapshot_marks(ctx: Context, inputs: SnapshotInputs, dry: bool = False) -> dict[str, Any]:
+    """Every per-snapshot mark; raises StopRun when a stop rule fires.
+
+    dry: a subset of customers (the dry run). Population counts are recorded, not
+    judged; the no-price rule is reported, not stopping; the reference files are
+    narrowed to the subset's customers (in a full run they are not, so a missing
+    row is a difference).
+    """
     t = inputs.snapshot
     out: dict[str, Any] = {"snapshot": t.isoformat(), "rows": len(inputs.rows)}
     c01, dt01 = ctx.models.c01, ctx.models.dt01
     status = sc.population_status(inputs.status_rows, tuple(ctx.protocol.main_segments))
     out["population"] = sc.population_counts(status)
-    if t == ctx.population_snapshot:  # the stop rule fires before any long step
+    if t == ctx.population_snapshot and not dry:  # the stop rule fires before any long step
         judge_population(out["population"], ctx.population_expected)
+    subset = set(inputs.rows.msno) if dry else None
     _, keep = sc.refuse_unseen(status, inputs.rows, [m.model for m in c01.values()])
     out["unseen_level_rows"] = int((~keep).sum())
     rows = inputs.rows
@@ -236,6 +243,8 @@ def snapshot_marks(ctx: Context, inputs: SnapshotInputs) -> dict[str, Any]:
         args = (h, t, (c01[h].platt_a, c01[h].platt_b), ctx.protocol, ctx.phrases_sha256)
         s = sc.service_reasons(ctx.explain_cfg, ctx.renderer, part, inputs.facts, *args)
         ref = ctx.reasons[(ctx.reasons.snapshot_date == t) & (ctx.reasons.horizon == h)]
+        if subset is not None:
+            ref = ref[ref.msno.isin(subset)]
         ref = ref.reset_index(drop=True)
         listed = set(ref.msno[tenure_listed(ref)])
         mask = s.msno.isin(listed).to_numpy()
@@ -260,13 +269,21 @@ def snapshot_marks(ctx: Context, inputs: SnapshotInputs) -> dict[str, Any]:
     # paid days and actions
     surv = sc.survival(dt01, rows)
     table = sc.customers(rows, surv, served[30], inputs.prices)
-    vals = ctx.value[ctx.value.snapshot_date == t].reset_index(drop=True)
+    vals = ctx.value[ctx.value.snapshot_date == t]
+    if subset is not None:
+        vals = vals[vals.msno.isin(subset)]
+    vals = vals.reset_index(drop=True)
     paid = compare_frames(
         table[["msno", "days_30_90"]].reset_index(drop=True), vals[["msno", "days_30_90"]]
     )
     out["paid_days"] = paid
     acts = sc.actions(table, ctx.actions_cfg)
-    out["no_price_rule"] = no_price_rule(acts)
+    try:
+        out["no_price_rule"] = no_price_rule(acts)
+    except StopRun as e:
+        if not dry:
+            raise
+        out["no_price_rule"] = {"met": False, "found": str(e)}
     field = ctx.serving["contract"]["action_reading"]["field"]
     out["actions"] = judge_actions(acts.frame(), action_reference(vals, ctx.actions_cfg), field)
     docs = ctx.serving["contract"]["action_reading"]["docs_figures"][t.isoformat()]
@@ -374,3 +391,71 @@ def descriptive(results: dict[date, dict[str, Any]]) -> dict[str, Any]:
         }
         for t, res in results.items()
     }
+
+
+# --- the dry run --------------------------------------------------------------------------
+
+
+DRY_SNAPSHOT = date(2016, 11, 1)
+DRY_BUCKET = 0
+
+
+def dry_subset(inputs: SnapshotInputs, keep_bucket: int = DRY_BUCKET) -> SnapshotInputs:
+    """The inputs of one md5 bucket's customers, every table in its own order."""
+    from retention.data.sample import bucket
+
+    def only(df: pd.DataFrame) -> pd.DataFrame:
+        mask = np.array([bucket(m) == keep_bucket for m in df.msno.astype(str)], dtype=bool)
+        return df[mask].reset_index(drop=True)
+
+    return SnapshotInputs(
+        inputs.snapshot,
+        only(inputs.status_rows),
+        only(inputs.rows),
+        only(inputs.facts),
+        only(inputs.prices),
+    )
+
+
+def dry_summary(res: dict[str, Any]) -> dict[str, Any]:
+    """The dry run's comparisons only: no registered full-count mark is judged."""
+    out: dict[str, Any] = {
+        "snapshot": res["snapshot"],
+        "rows": res["rows"],
+        "population_recorded_not_judged": res["population"],
+        "unseen_level_rows": res["unseen_level_rows"],
+        "fix_on_subset": {
+            k: res["probabilities"][k] for k in ("rows_changed", "max_change", "clipped")
+        },
+        "reasons": {
+            h: {
+                "parity_rows": r["parity_rows"],
+                "parity_equal": r["parity"]["equal"],
+                "parity_differing": r["parity"].get("differing_by_column"),
+                "self_check_rows": r["self_check_rows"],
+                "self_check_equal": r["self_check"]["equal"],
+                "self_check_differing": r["self_check"].get("differing_by_column"),
+                "zero_tenure": r["zero_tenure"],
+            }
+            for h, r in res["reasons"].items()
+        },
+        "paid_days_equal": res["paid_days"]["equal"],
+        "paid_days_differing": res["paid_days"].get("differing_by_column"),
+        "actions_equal": res["actions"]["equal"],
+        "actions_differing": res["actions"].get("differing_by_column"),
+        "no_price_rule": res["no_price_rule"],
+        "before_fix_paths": res["before_fix_paths"],
+        "paying_blocks_on_subset": {
+            k: res["paying_blocks"][k] for k in ("blocks", "blocks_that_pay")
+        },
+    }
+    out["all_comparisons_equal"] = bool(
+        all(
+            r["parity_equal"] and r["self_check_equal"] and r["zero_tenure"]["met"]
+            for r in out["reasons"].values()
+        )
+        and out["paid_days_equal"]
+        and out["actions_equal"]
+        and out["no_price_rule"]["met"]
+    )
+    return out
