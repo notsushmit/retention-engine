@@ -16,6 +16,17 @@ clip, pool-adjacent-violators fix and clip (retention.api.ordering, which calls
 Phase 3's calibrate unchanged). A row "moved" when the fix changed any of its
 three values by more than 1e-12, the threshold calibrate counts with. Display
 text follows Phase 4's rule (one decimal; "under 0.1%" and "over 99.9%").
+
+Reasons (amendment A3): tenure is never shown as a reason. Two routes, which
+share no masking call:
+- the service route builds its mask from the config alone: hidden groups and
+  every group shown only when known (tenure) are hidden, whatever the row's
+  tenure_days; then Phase 4's select and Renderer run unchanged, and the output
+  frame is assembled column for column as Phase 4's reason_rows assembles it;
+- the self-check route calls Phase 4's unmodified reason_rows with tenure_days
+  set to missing, so Phase 4's own shown_mask hides tenure.
+Their equality shows only that the masking matches Phase 4's own missing-tenure
+behaviour; it does not validate the wording.
 """
 
 from __future__ import annotations
@@ -28,9 +39,19 @@ import numpy as np
 import pandas as pd
 
 from retention.api.ordering import HORIZONS, final_probabilities, platt_from
-from retention.explain.contributions import SavedModel
-from retention.explain.reasons import probability_text
+from retention.explain.build_reasons import caveat_flags, reason_rows
+from retention.explain.config import STRENGTHS, ExplainConfig
+from retention.explain.contributions import (
+    CheckFailed,
+    SavedModel,
+    chunk_contributions,
+    chunk_table,
+    group_sums,
+)
+from retention.explain.reasons import Renderer, platt_probability, probability_text
+from retention.explain.selection import POSITIONS, select, strength_codes
 from retention.models.classifier import Classifier
+from retention.models.protocol import Protocol
 
 SCORED = "scored"
 OUTSIDE = "outside_population"
@@ -133,3 +154,132 @@ def probabilities(c01: dict[int, SavedModel], rows: pd.DataFrame, seed: int) -> 
 
 def in_december_2016(snapshot: date) -> bool:
     return DECEMBER_2016[0] <= snapshot < DECEMBER_2016[1]
+
+
+# --- reasons (amendment A3) --------------------------------------------------------------
+
+
+def forced_hidden_mask(cfg: ExplainConfig, n: int) -> np.ndarray:
+    """rows x groups, from the config alone: hidden groups and every group shown only
+    when known (tenure) are never listed. No row value is read."""
+    mask = np.ones((n, len(cfg.groups)), dtype=bool)
+    for k, g in enumerate(cfg.group_names):
+        if g in cfg.hidden or g in cfg.shown_only_when_known:
+            mask[:, k] = False
+    return mask
+
+
+def contribution_part(
+    model: SavedModel, rows: pd.DataFrame, cfg: ExplainConfig, columns: list[str], horizon: int
+) -> pd.DataFrame:
+    """Phase 4's contributions part (raw score, base value, phi, group sums, d) for `rows`."""
+    raw, contrib = chunk_contributions(model.model, rows)
+    gsum = group_sums(contrib, columns, cfg.groups)
+    sel = select(cfg, gsum, raw - contrib[:, -1], model.platt_b, forced_hidden_mask(cfg, len(rows)))
+    table = chunk_table(
+        rows, horizon, raw, contrib, gsum, columns, cfg.group_names, sel, model.platt_b
+    )
+    return table.to_pandas()
+
+
+def service_reasons(
+    cfg: ExplainConfig,
+    renderer: Renderer,
+    part: pd.DataFrame,
+    facts: pd.DataFrame,
+    horizon: int,
+    snapshot: date,
+    platt: tuple[float, float],
+    protocol: Protocol,
+    phrases_sha256: str,
+) -> pd.DataFrame:
+    """The reasons the service shows: Phase 4's selection and wording with tenure hidden.
+
+    Columns and order are those of reasons.parquet; each is assembled exactly as
+    Phase 4's reason_rows assembles it, from Phase 4's own functions.
+    """
+    names = cfg.group_names
+    df = part.merge(facts, on="msno", how="left", validate="one_to_one")
+    if len(df) != len(part):
+        raise CheckFailed("facts do not match the contributions rows")
+    b = float(df.platt_b.iloc[0])
+    raw_minus_base = (df.raw_score - df.base_value).to_numpy()
+    sel = select(
+        cfg,
+        df[[f"g_{n}" for n in names]].to_numpy(),
+        raw_minus_base,
+        b,
+        forced_hidden_mask(cfg, len(df)),
+    )
+    prob = platt_probability(df.raw_score.to_numpy(), *platt)
+    flags = caveat_flags(df.msno, snapshot, protocol)
+    fact_cols = sorted({c for cs in cfg.facts.values() for c in cs})
+    records = df[fact_cols].astype(object).where(df[fact_cols].notna(), None).to_dict("records")
+    keys = list(flags)
+    texts, cancel = [], np.zeros(len(df), bool)
+    for i, f in enumerate(records):
+        caveats = tuple(k for k in keys if flags[k][i])
+        out = renderer.render(sel, i, f, horizon, float(prob[i]), caveats)
+        texts.append("\n".join(out.lines))
+        cancel[i] = out.partly_cancel
+    rows = np.arange(len(df))
+    pos_s = np.where(sel.position != 0, strength_codes(np.abs(sel.d), cfg.cutoffs()), 0)
+
+    def word(code):
+        return [STRENGTHS[k - 1] if k > 0 else None for k in code]
+
+    data: dict[str, Any] = {
+        "msno": df.msno.astype(str).to_numpy(),
+        "snapshot_date": np.full(len(df), snapshot),
+        "horizon": np.full(len(df), horizon, dtype=np.int16),
+        "raw_score": df.raw_score.to_numpy(),
+        "base_value": df.base_value.to_numpy(),
+        "platt_a": np.full(len(df), platt[0]),
+        "platt_b": np.full(len(df), b),
+        "d": sel.d,
+        "probability": prob,
+        "probability_text": [probability_text(float(p)) for p in prob],
+        "position": [POSITIONS[int(p) + 1] for p in sel.position],
+        "position_strength": word(pos_s),
+    }
+    for kind, idx, strength in (
+        ("raising", sel.raising, sel.raising_strength),
+        ("lowering", sel.lowering, sel.lowering_strength),
+    ):
+        for j in range(idx.shape[1]):
+            ok = idx[:, j] >= 0
+            data[f"{kind}_{j + 1}"] = [
+                names[k] if o else None for k, o in zip(idx[:, j], ok, strict=True)
+            ]
+            data[f"{kind}_{j + 1}_strength"] = word(strength[:, j])
+            data[f"{kind}_{j + 1}_c"] = np.where(ok, sel.c[rows, np.maximum(idx[:, j], 0)], np.nan)
+    data["other_direction"] = np.where(
+        sel.other_strength == 0, "small", np.where(sel.other > 0, "raises", "lowers")
+    )
+    data["other_strength"] = word(sel.other_strength)
+    data["other"] = sel.other
+    data["partly_cancel"] = cancel
+    data |= {f"caveat_{k}": v for k, v in flags.items()}
+    data["text"] = texts
+    data["phrases_sha256"] = np.full(len(df), phrases_sha256)
+    return pd.DataFrame(data)
+
+
+def self_check_reasons(
+    cfg: ExplainConfig,
+    renderer: Renderer,
+    part: pd.DataFrame,
+    facts: pd.DataFrame,
+    horizon: int,
+    snapshot: date,
+    platt: tuple[float, float],
+    protocol: Protocol,
+    phrases_sha256: str,
+) -> pd.DataFrame:
+    """Phase 4's unmodified reason_rows with every shown-only-when-known column missing."""
+    masked = facts.copy()
+    for column in cfg.shown_only_when_known.values():
+        masked[column] = pd.NA
+    return reason_rows(
+        cfg, renderer, part, masked, horizon, snapshot, platt, protocol, phrases_sha256
+    )
