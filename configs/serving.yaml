@@ -17,6 +17,8 @@
 # seventh commit, before any code serves the field.
 # The saved dt01 hashes, the registry section and the step 4 reload marks were
 # added in the eighth commit, before any registry or scoring code.
+# Step 4's design choices and five more marks were added in the ninth commit,
+# before any scoring code.
 #
 # Every pass mark is exact unless a tolerance is written next to it. If a
 # reproduction field differs, the step stops and reports the largest difference;
@@ -454,3 +456,63 @@ step4:
       path: the service's scoring function on batch features, dt01 loaded through load_dt01
       match: same customer and snapshot, every row
       tolerance: exact
+    rule: >-
+      every step 4 mark is exact; any difference is not met; no tolerance is added
+      after a result is seen
+
+  decisions:  # approved by the user before any scoring code
+    action_probability:
+      choice: the calibrated 30-day probability before the ordering fix, as Phase 7 used it
+      label: "computed from the 30-day probability before the ordering fix, as in Phase 7"
+      note: >-
+        the action block can differ from the final 30-day probability for the 7,632
+        training-population rows of 2016-11-01 that the fix moves; stated in the
+        response schema and the docs
+    no_usable_price:
+      choice: Phase 7's arithmetic unchanged (the customer is valued at 0)
+      flag: "no usable price"
+      reads_as: "no action pays"
+      counts: {"2016-10-01": 270, "2016-11-01": 343}  # value.parquet has_price false
+    in_exp30:
+      batch: labels.parquet, columns in_exp30 and segment only (known at T)
+      stream: derived by the consumer; judged by the streaming parity marks in step 6
+
+  more_pass_marks:  # registered before any scoring code; exact; see pass_marks.rule
+    reasons_parity:
+      against: data/processed/kkbox/sample_020/explain/reasons.parquet
+      against_sha256: 6355299aa931b29131933edb48a0cee54bf9387fcdd7602d868b4105250faac8
+      rows: {"2016-10-01": 144996, "2016-11-01": 169673}  # per horizon
+      horizons: [7, 30]
+      columns: every column of reasons.parquet (36)
+      match: same customer, snapshot and horizon; every row; floats equal as floats, text equal as text
+    final_probability_tie:
+      snapshot: "2016-11-01"
+      rows: 169673
+      rows_changed: 7632  # amendment A1, through the service path
+      max_change: 0.300535285645459
+      max_change_tolerance: 1.0e-12  # the registered fix tolerance, unchanged
+      order_violations_after_fix: 0
+    action_parity:
+      against: >-
+        Phase 7's build_options and best_action under the base scenario, no budget,
+        recomputed from value.parquet (pinned in pass_marks.paid_days_parity)
+      snapshots: {"2016-10-01": 144996, "2016-11-01": 169673}
+      fields: [action, retained_value, net_value, cost]
+      match: same customer and snapshot, every row
+    population_counts:
+      snapshot: "2016-11-01"
+      recomputed_in_run: true  # any difference stops the run
+      expected:
+        scored: 169673
+        outside_population_segment_trial_only: 8890
+        outside_population_segment_promo_only: 31
+        outside_population_expiry_beyond_30_days: 51692
+        total_with_coverage: 230286
+    unseen_levels:
+      snapshot: "2016-11-01"
+      population: P2 main
+      expected: 0  # every category feature
+    run:
+      command: score-parity
+      once: true  # a second run is refused
+      report: data/processed/kkbox/sample_020/serving/step4_report.json
