@@ -34,6 +34,12 @@ Stops on a population count that differs from the registered one or on a custome
 without a usable price who has an allowed action. Writes step4_report.json. Runs
 once; exits with an error if any mark is not met.
 
+load-snapshot --snapshot <date>: replace the Valkey store with one snapshot from the
+batch tables: every customer with coverage, the known customers, the ranking by
+final probability at 7, 30 and 59 days (models through the registry alias) and
+the /at-risk header counts; the store's date is written last. Writes
+load_snapshot_<date>.json. Runs once per snapshot.
+
 score-parity --dry-run: the same comparisons on one md5 bucket of 2016-11-01's
 customers, with no registered full-count mark judged and no stop rule stopping.
 Writes only step4_dry_run.json, refuses to overwrite it, and never reads or writes
@@ -52,6 +58,8 @@ import tempfile
 import time
 from datetime import date
 from pathlib import Path
+
+import pandas as pd
 
 from retention.api import dt01 as dt01_step
 from retention.api import parity, registry
@@ -414,6 +422,63 @@ def score_parity(args) -> int:
     return 0
 
 
+def load_snapshot_cmd(args) -> int:
+    from retention.api import scoring as sc
+    from retention.api import store
+    from retention.api.batch import known_customers
+    from retention.explain.config import load_explain_config
+    from retention.optimize.value import EXTRA_COLUMNS
+
+    repo = Path.cwd()
+    require_clean(repo)
+    snapshot = date.fromisoformat(args.snapshot)
+    out = out_dir(args.fraction)
+    report_path = out / f"load_snapshot_{snapshot.isoformat()}.json"
+    run_once(report_path)
+    t0 = time.time()
+    protocol = load_protocol()
+    settings = load_settings(horizons=(7, 30, HORIZON))
+    cfg = load_explain_config(settings.columns)
+    processed = processed_dir(args.fraction)
+    with tempfile.TemporaryDirectory() as tmp:
+        models = registry.load_serving_models(
+            registry.registry_settings(repo), settings, protocol, Path(tmp)
+        )
+    cols = list(dict.fromkeys([*settings.columns, *EXTRA_COLUMNS]))
+    facts = sorted({c for cs in cfg.facts.values() for c in cs} | {"tenure_days"})
+    columns = list(dict.fromkeys([*cols, *facts]))
+    inputs = snapshot_inputs(processed, snapshot, cols, facts, protocol)
+    status = sc.population_status(inputs.status_rows, tuple(protocol.main_segments))
+    status, keep = sc.refuse_unseen(status, inputs.rows, [m.model for m in models.c01.values()])
+    rows = inputs.rows[keep].reset_index(drop=True)
+    prices = inputs.prices[keep].reset_index(drop=True)
+    pr = sc.probabilities(models.c01, rows, protocol.seed)
+    finals = pd.DataFrame({"msno": rows.msno.astype(str)})
+    for k, h in enumerate((7, 30, HORIZON)):
+        finals[f"days_{h}"] = pr.final[:, k]
+    known = known_customers(snapshot)
+    counts = sc.population_counts(status) | {"not_active": len(known) - len(status)}
+    r = store.client()
+    written = store.load_snapshot(r, snapshot, status, rows, prices, columns, known, finals, counts)
+    assert_no_label_building_code()
+    report = stamp(
+        {
+            "snapshot": snapshot.isoformat(),
+            "models_version": models.version,
+            "counts": counts,
+            "written": written,
+            "valkey_used_memory_bytes": store.memory_used(r),
+            "passed": True,
+        },
+        repo,
+        t0,
+    )
+    out.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps(report, indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m retention.api")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -430,12 +495,17 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--fraction", type=float, default=None)
     v = sub.add_parser("verify-serving", help="load the models through the alias, checked")
     v.add_argument("--fraction", type=float, default=None)
+    ls = sub.add_parser("load-snapshot", help="replace the Valkey store with one snapshot")
+    ls.add_argument("--fraction", type=float, default=None)
+    ls.add_argument("--snapshot", required=True, metavar="YYYY-MM-DD")
     sp = sub.add_parser("score-parity", help="judge every registered step 4 mark, once")
     sp.add_argument("--fraction", type=float, default=None)
     sp.add_argument("--dry-run", action="store_true", help="one md5 bucket, comparisons only")
     args = parser.parse_args(argv)
     if args.command == "score-parity":
         return score_parity(args)
+    if args.command == "load-snapshot":
+        return load_snapshot_cmd(args)
     if args.command == "register":
         return register_cmd(args)
     if args.command == "verify-serving":

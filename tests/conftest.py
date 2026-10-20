@@ -8,6 +8,7 @@ import yaml
 
 from retention.data.clean import clean
 from retention.labels.config import parse_label_config
+from valkey_guard import pytest_configure, pytest_runtest_makereport, valkey  # noqa: F401
 
 CFG = parse_label_config(
     {
