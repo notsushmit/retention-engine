@@ -690,3 +690,17 @@ step5:
       - every 59-day probability is a demonstration
   smoke_5f:  # condition 6
     status: not a mark; its numbers are never quoted as parity or latency
+
+unseen_level_codes:  # amendment A5; a new key, so the registered contract stays unchanged
+  id: A5
+  date: "2026-10-21"
+  label: >-
+    written before step 6 and before any run that could produce it, after step 5c
+    found that the code "unseen_level:<feature>" would name registered_via, a
+    never-used attribute; registered count on 2016-11-01 is 0; not a tuned result
+  amends: contract.outside_population.codes  # the registered entry is kept, not edited
+  rule: >-
+    when the feature name contains a never-used attribute as a whole word (the
+    response scan's own test), the code reads the generic code; every other
+    feature keeps "unseen_level:<feature>"
+  generic_code: "unseen_level:hidden_feature"
