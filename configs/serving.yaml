@@ -734,3 +734,23 @@ msno_scan_exemption:  # amendment A6; a new key, so the registered scan entries 
       user_logs: 1046058
       user_logs_v2: 220457
     words: {age: 5, gender: 0, registered_via: 0, tenure: 0, city: 0}
+
+alerts_hidden_segments:  # amendment A7; a new key, so the registered api.alerts entries stay unchanged
+  id: A7
+  date: "2026-10-21"
+  label: >-
+    written before any 5d code, after a count by field of never-used whole words in the
+    pinned alerts file (counts only, at e317411): the registered hiding rule names top
+    segments and dimension totals, but too_small_segments also holds hidden dimensions;
+    not a tuned result
+  amends: api.alerts.trend.hidden_dimensions  # the registered entry is kept, not edited
+  rule: >-
+    the hidden dimensions are also removed from too_small_segments, and every segment
+    removed there is counted in the number hidden shown on the alert
+  pinned_file: unchanged  # data/processed/kkbox/sample_020/trends/alerts_run.json keeps its pinned SHA-256
+  filtering: at serving time, before the response is built; nothing is written back
+  counts:  # whole-word hits of the response scan, summed over the 10 trend alerts
+    top_segments: 4
+    dimension_totals: 10
+    too_small_segments: 65
+    every_other_field: 0
