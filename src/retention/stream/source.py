@@ -13,6 +13,13 @@ run; nothing here touches the label files.
 Order (streaming.tie_rule): event date; source rank transactions,
 transactions_v2, user_logs; msno; then every column of the row in file order,
 ascending, nulls first. Events are numbered from 1 in that order.
+
+Each transaction row also carries source_row, its 0-based row number in its
+interim file (DuckDB's file_row_number), as Phase 1's cleaning numbered it, so
+the move can drop identical rows and break the timeline's last ties exactly as
+Phase 1 did. source_row comes last in the sort, so it only orders rows that are
+equal in every column: the registered order is unchanged (D-215, found while
+planning the move, before any result).
 """
 
 from __future__ import annotations
@@ -55,6 +62,7 @@ class Source:
     path: Path
     date_column: str
     columns: tuple[str, ...]  # file order
+    row_number: bool = False  # add source_row (the transaction files)
 
 
 def sources(folder: Path, cfg: dict[str, Any] | None = None) -> list[Source]:
@@ -69,6 +77,7 @@ def sources(folder: Path, cfg: dict[str, Any] | None = None) -> list[Source]:
             folder / "transactions.parquet",
             "transaction_date",
             TRANSACTION_COLUMNS,
+            row_number=True,
         ),
         Source(
             "transactions_v2",
@@ -76,6 +85,7 @@ def sources(folder: Path, cfg: dict[str, Any] | None = None) -> list[Source]:
             folder / "transactions_v2.parquet",
             "transaction_date",
             TRANSACTION_COLUMNS,
+            row_number=True,
         ),
         Source("user_logs", 2, folder / "user_logs.parquet", "date", LOG_COLUMNS),
     ]
@@ -93,16 +103,24 @@ def check_bounds(lo: date | None, hi: date, ceiling: date = STORE_DATE) -> None:
         raise ValueError(f"empty date range [{lo}, {hi})")
 
 
+def fields(src: Source) -> tuple[str, ...]:
+    """The names of a read row: the file's columns, then source_row for transactions."""
+    return (*src.columns, "source_row") if src.row_number else src.columns
+
+
 def query(src: Source, lo: date | None, hi: date) -> str:
     """The one SQL statement a read runs: the window [lo, hi) of one file, in tie order."""
     cols = ", ".join(src.columns)
     where = f"{src.date_column} < {day_number(hi)}"
     if lo is not None:
         where = f"{src.date_column} >= {day_number(lo)} and {where}"
-    order = ", ".join(
-        [src.date_column, "msno", *(f"{c} asc nulls first" for c in src.columns if c != "msno")]
-    )
-    return f"select {cols} from read_parquet('{src.path}') where {where} order by {order}"
+    order = [src.date_column, "msno", *(f"{c} asc nulls first" for c in src.columns if c != "msno")]
+    reader = f"read_parquet('{src.path}')"
+    if src.row_number:
+        cols += ", file_row_number as source_row"
+        reader = f"read_parquet('{src.path}', file_row_number = true)"
+        order.append("source_row")
+    return f"select {cols} from {reader} where {where} order by {', '.join(order)}"
 
 
 def run(sql: str, batch_rows: int) -> Iterator[list[tuple]]:
@@ -129,7 +147,7 @@ def read(
         for row in rows:
             if row[date_at] >= day_number(ceiling):  # a second guard on what came back
                 raise PermissionError(f"a row dated {row[date_at]} came back")
-            yield dict(zip(src.columns, row, strict=True))
+            yield dict(zip(fields(src), row, strict=True))
 
 
 def sort_key(src: Source, row: dict[str, Any]) -> tuple:

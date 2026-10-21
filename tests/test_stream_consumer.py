@@ -45,7 +45,14 @@ def logs(*rows):
 
 
 def txs(*rows, name="transactions"):
-    return [{"seq": i, "source": name, **r} for i, r in enumerate(rows, start=1)]
+    """Transaction events with a source_row each (their position, as the reader gives it)."""
+    return [
+        {"seq": i, "source": name, **r, "source_row": i - 1} for i, r in enumerate(rows, start=1)
+    ]
+
+
+def with_row(row: dict, n: int) -> dict:
+    return row | {"source_row": n} if "transaction_date" in row else row
 
 
 # --- cleaning one row ---------------------------------------------------------------------------
@@ -174,8 +181,8 @@ def test_the_bootstrap_never_sees_a_row_dated_2016_10_01_or_later(consumer, fold
     days = sorted({k.decode().split(":")[0] for k in consumer.r.hkeys(cs.ring_key("a"))})
     assert days == ["20160930"]
     assert consumer.transactions("a") == [
-        [41, 30, 149, 149, 1, 20160801, 20160831, 0],
-        [36, 30, 149, 149, 1, 20160920, 20160950, 0],
+        [41, 30, 149, 149, 1, 20160801, 20160831, 0, "v1", 0],
+        [36, 30, 149, 149, 1, 20160920, 20160950, 0, "v2", 0],
     ]
     assert consumer.r.scard(cs.TOUCHED) == 0  # the bootstrap marks no one as touched
 
@@ -215,7 +222,10 @@ def test_the_state_does_not_depend_on_the_order_of_rows_within_a_day(valkey):
     for rows in (DAY, list(reversed(DAY)), DAY[3:] + DAY[:3]):
         valkey.flushdb()
         c = cs.Consumer(valkey, 15, REPLAY_STORE_DATE, is_scored=lambda m: m in SCORED)
-        c.apply({"seq": i, "source": s, **row} for i, (s, row) in enumerate(rows, start=1))
+        c.apply(
+            {"seq": i, "source": s, **with_row(row, k)}
+            for i, (k, (s, row)) in enumerate(((DAY.index(x), x) for x in rows), start=1)
+        )
         states.append(canonical(valkey))
     assert states[0] == states[1] == states[2]
     assert (
@@ -275,3 +285,23 @@ def test_every_produced_event_is_consumed_once_in_stream_order(consumer, valkey)
     assert int(valkey.get("rs:replay:consumed")) == 2_345
     assert consumer.consume() == 0  # nothing new after the cursor
     assert valkey.scard(cs.TOUCHED) == 2_345
+
+
+def test_a_stored_transaction_row_is_tx_stored_in_order(consumer):
+    assert cs.TX_STORED == (
+        "payment_method_id",
+        "payment_plan_days",
+        "plan_list_price",
+        "actual_amount_paid",
+        "is_auto_renew",
+        "transaction_date",
+        "membership_expire_date",
+        "is_cancel",
+        "source",
+        "source_row",
+    )
+    consumer.apply(txs(tx("s1", 20161005), tx("s1", 20161006, pm=36), name="transactions_v2"))
+    assert consumer.transactions("s1") == [
+        [41, 30, 149, 149, 1, 20161005, 20161035, 0, "v2", 0],
+        [36, 30, 149, 149, 1, 20161006, 20161036, 0, "v2", 1],
+    ]

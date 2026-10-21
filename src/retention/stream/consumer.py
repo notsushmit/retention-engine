@@ -4,7 +4,8 @@ configs/serving.yaml, streaming.consumer and step6. Per event:
 - a listening row adds to that day's totals in the customer's 28-day ring
   (milliseconds of listening, an invalid-seconds flag, plays, full plays, unique
   songs), and sets the first and last listening day;
-- a transaction row is appended to the customer's transaction rows;
+- a transaction row is appended to the customer's transaction rows, as TX_STORED
+  (the transaction columns without msno, then source v1 or v2 and source_row);
 - the customer joins the touched set (customers with an event since the last
   store-date move);
 - a cancel row (is_cancel = 1) from a customer scored at the store's date is
@@ -57,6 +58,12 @@ CURSOR = "rp:cursor"  # the last stream entry consumed
 DAY_FIELDS = ("ms", "x", "p", "f", "u")  # milliseconds, invalid flag, plays, full plays, unique
 LOG_FLOATS = ("total_secs",)
 LOG_COUNTS = ("num_25", "num_50", "num_75", "num_985", "num_100", "num_unq")
+
+
+# A stored transaction row: the transaction columns without msno, then Phase 1's source
+# tag (v1 or v2) and the row's number in its interim file (D-215).
+TX_STORED = (*(c for c in source.TRANSACTION_COLUMNS if c != "msno"), "source", "source_row")
+SOURCE_TAG = {"transactions": "v1", "transactions_v2": "v2"}
 
 
 def ring_key(msno: str) -> str:
@@ -138,8 +145,9 @@ class Consumer:
             if totals["x"]:
                 pipe.hset(ring_key(m), f"{day}:x", 1)
 
-    def _tx(self, pipe, row: dict[str, Any]) -> None:
+    def _tx(self, pipe, row: dict[str, Any], name: str) -> None:
         values = [row[c] for c in source.TRANSACTION_COLUMNS if c != "msno"]
+        values += [SOURCE_TAG[name], row["source_row"]]
         pipe.rpush(tx_key(row["msno"]), json.dumps(values, separators=(",", ":")))
 
     def apply(self, events: Iterable[dict[str, Any]], batch: int = 1_000) -> int:
@@ -153,7 +161,7 @@ class Consumer:
             if is_log:
                 self._log(pipe, e)
             else:
-                self._tx(pipe, e)
+                self._tx(pipe, e, e["source"])
                 if e["is_cancel"] == 1 and self.is_scored(e["msno"]):
                     event = {"msno": e["msno"], "date": as_date(day).isoformat()}
                     pipe.rpush(self.keys.events, json.dumps(event, separators=(",", ":")))
@@ -204,7 +212,7 @@ class Consumer:
                 pipe.execute()
         for name in ("transactions", "transactions_v2"):
             for row in source.bootstrap_rows(folder, name):
-                self._tx(pipe, row)
+                self._tx(pipe, row, name)
                 counts[name] += 1
                 if counts[name] % batch == 0:
                     pipe.execute()

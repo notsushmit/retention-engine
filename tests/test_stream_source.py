@@ -104,10 +104,11 @@ def test_no_row_dated_2016_11_01_or_later_is_requested_or_returned(folder, spy):
     }
     assert len(spy.sql) == 3
     assert all("< 20161101" in q and "20161102" not in q for q in spy.sql)
-    returned = [
-        r[source.TRANSACTION_COLUMNS.index("transaction_date")] for r in spy.rows if len(r) == 9
-    ]
-    assert max(returned) < 20161101
+    # Every row the reader got back, by its own date column (transactions carry source_row).
+    tx_dates = [r[6] for r in spy.rows if len(r) == len(source.TRANSACTION_COLUMNS) + 1]
+    log_dates = [r[1] for r in spy.rows if len(r) == len(source.LOG_COLUMNS)]
+    assert sorted(tx_dates) == [20161001, 20161001, 20161031, 20161031]
+    assert sorted(log_dates) == [20161001, 20161031]
 
 
 def test_a_read_past_the_store_date_is_refused_before_any_query(folder, spy):
@@ -259,3 +260,79 @@ def test_only_the_throttled_replay_pauses_once_per_1000_events(valkey, throttled
     slept = []
     producer.produce(valkey, numbered(2_500), throttled=throttled, sleep=slept.append)
     assert slept == pauses
+
+
+# --- source_row (D-215) ---------------------------------------------------------------------------
+
+
+def test_transaction_rows_carry_their_file_row_number_and_logs_do_not(tmp_path):
+    f = tmp_path / "rows"
+    # File order (rows 0 to 3); rows 1 and 3 are identical in every column.
+    write(
+        f,
+        "transactions",
+        [
+            tx("b", 20161005),
+            tx("a", 20161005, pm=41),
+            tx("a", 20161005, pm=None),
+            tx("a", 20161005, pm=41),
+        ],
+        TX_TYPES,
+    )
+    write(f, "transactions_v2", [tx("a", 20161005, pm=36)], TX_TYPES)
+    write(f, "user_logs", [log("a", 20161005)], USER_LOGS_TYPES)
+    got = [
+        (e["seq"], e["source"], e["msno"], e.get("payment_method_id"), e.get("source_row"))
+        for e in source.events(f)
+    ]
+    # Written out by hand: the registered order, then source_row only between the identical
+    # rows 1 and 3; the log row has no source_row.
+    assert got == [
+        (1, "transactions", "a", None, 2),
+        (2, "transactions", "a", 41, 1),
+        (3, "transactions", "a", 41, 3),
+        (4, "transactions", "b", 41, 0),
+        (5, "transactions_v2", "a", 36, 0),
+        (6, "user_logs", "a", None, None),
+    ]
+
+
+def test_source_row_does_not_change_the_registered_order(tmp_path):
+    """On files full of same-day ties and identical twins, the order of the events with
+    source_row equals the order the registered tie rule alone gives (rows that differ only
+    by source_row are the identical twins, and each twin carries the same content)."""
+    f = tmp_path / "ties"
+    write(
+        f,
+        "transactions",
+        [
+            tx("b", 20161005),
+            tx("a", 20161005, pm=41),
+            tx("a", 20161005, pm=None),
+            tx("a", 20161005, pm=41),
+            tx("a", 20161004, cancel=1),
+        ],
+        TX_TYPES,
+    )
+    write(f, "transactions_v2", [tx("a", 20161005, pm=36), tx("a", 20161005, pm=36)], TX_TYPES)
+    write(
+        f,
+        "user_logs",
+        [log("a", 20161005, 5.0), log("0", 20161005), log("z", 20161004), log("a", 20161005, None)],
+        USER_LOGS_TYPES,
+    )
+    with_rows = [
+        (e["source"], tuple(v for k, v in e.items() if k not in ("seq", "source", "source_row")))
+        for e in source.events(f)
+    ]
+    plain = [
+        source.Source(s.name, s.rank, s.path, s.date_column, s.columns) for s in source.sources(f)
+    ]
+    keyed = [
+        (source.sort_key(s, r), s.name, tuple(r.values()))
+        for s in plain
+        for r in source.read(s, source.FIRST_DAY, source.STORE_DATE)
+    ]
+    without = [(name, row) for _, name, row in sorted(keyed, key=lambda x: x[0])]
+    assert with_rows == without
+    assert len(with_rows) == 11
