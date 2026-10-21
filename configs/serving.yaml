@@ -912,3 +912,66 @@ step7_images:
     - >-
       The python:3.11.17-slim-bookworm tag was rebuilt on 2026-10-21 at 01:20 UTC,
       hours before it was pinned by digest; the pin freezes that build.
+
+step8:
+  label: registered before any step 8 code or run; every real run once, clean tree, caffeinate -i, docker stats sampled every 2 s, stopped if swap grows above 0
+  reload_database_0:
+    command: load-snapshot --snapshot 2016-11-01 --reload-reason "<reason>"  # from the host into 127.0.0.1:6379, database 0
+    preconditions: [clean tree, database 0 at 0 keys asked of the server, the earlier report load_snapshot_2016-11-01.json present]
+    earlier_report: renamed load_snapshot_2016-11-01_<its git head>.json, never overwritten; the reason recorded in the new report
+    without_reason: refused by the run-once guard
+    marks:  # exact; any difference is not met
+      scored: 169673
+      outside_population_segment_trial_only: 8890
+      outside_population_segment_promo_only: 31
+      outside_population_expiry_beyond_30_days: 51692
+      total_with_coverage: 230286
+      not_active: 195234
+      known: 425520
+      keys_database_0: 230294  # 230,286 documents + known set + 3 rankings + counts + 2 replay counters + store date (D-209)
+    after: GET /health answers 200, ready, store date 2016-11-01
+  http_score_parity:
+    implements: streaming.pass_marks.score_parity.http_sample  # 1,000 customers, seeded, answers the same
+    population: scored customers (P2 main) in the reloaded store
+    sample: 1000 IDs, numpy.random.default_rng(20161001) choice without replacement from the sorted scored IDs
+    compare: >-
+      each POST /score body over HTTP against svc.answer on the host (a context loaded
+      through the registry, reading the same store), both as canonical JSON with sorted
+      keys; the two strings must be equal
+    mark: 1000 of 1000 equal; anything less is not met and stops step 8 before the latency run
+  latency:
+    implements: streaming.pass_marks.latency  # 50 warm-up, 1,000 sequential, p95 <= 100 ms (the user's unvalidated choice), p50 and p99 reported
+    client: httpx.Client (dev group), one keep-alive connection, timeout 10 s
+    timing: perf_counter around sending the request and reading the whole body
+    warmup: 50 IDs from numpy.random.default_rng(20161002), drawn from the scored IDs outside the sample
+    calls: the 1,000 parity sample, in the draw's order, sequential
+    reported: [p50, p95, p99, mean, max]  # numpy.percentile default (linear)
+    mark: p95 at most 100 ms; a miss is not met, no tuning
+    includes: the readiness re-hash on every /score call (about 15 ms in-process at D-209, almost all of it plans.parquet)
+  api_memory:
+    sampled: docker stats for both containers every 2 s, from before the reload to after the last check
+    reported: [API peak, API after the first GET /at-risk (index built), Valkey peak]
+    memory_limit_rule: >-
+      decided by the user only after 8c, from the measured API peak; the proposal will be
+      a limit of about twice that peak, registered on its own and added to the compose
+      file as its own change, or no limit
+  checks:  # registered checks, not marks
+    mlflow_after_startup: mlflow.db and every file under mlruns hashed before and after step 8, all unchanged; in tests, the registry changed or removed after startup leaves answers and /health unchanged
+    serving_yaml_after_startup: /health config_sha256 equals the committed configs/serving.yaml SHA-256; the image holds its own copy, so a host edit needs a rebuild; in tests, an edit after startup leaves config_sha256 at its startup value
+    concurrency: 8 client threads send the 1,000 sample at once, plus 50 concurrent GET /at-risk; every answer equal to its sequential answer, no 5xx; not a latency figure
+    december_2016_over_http: POST /score with as_of 2016-12-01 answers 409 with no reasons and passes the never-used-word scan; no December store is ever loaded
+  docker_exec: none planned; asked before any
+  docs_notes:
+    - >-
+      ps showed the Docker VM process at 9.83 GB resident, above the VM's 7.75 GiB,
+      while free memory read 74% and swap 0 (D-238); unexplained and unverified.
+    - >-
+      The API image is listed at 1.47GB by docker images and at 322,050,115 bytes by
+      docker image inspect (D-238); the two sizes are not reconciled and unverified.
+    - >-
+      The latency figure is for this Mac only, over loopback, with one client and one
+      connection; the 100 ms threshold is the user's unvalidated choice.
+    - >-
+      The HTTP score parity compares the container and the host running the same scoring
+      code; it shows the HTTP path and the container's environment add no difference, not
+      that the scoring is right (steps 4 and 6 cover that).
