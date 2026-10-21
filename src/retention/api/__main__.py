@@ -45,6 +45,12 @@ customers, with no registered full-count mark judged and no stop rule stopping.
 Writes only step4_dry_run.json, refuses to overwrite it, and never reads or writes
 step4_report.json (the run-once guard of the real run is untouched).
 
+smoke --snapshot <date>: the step 5f smoke check of the loaded store (retention.api.smoke):
+the service started in-process on the store, each endpoint called once, the
+answers compared with what they should be, the index build and the readiness hash
+check timed. Not a mark; its numbers are never quoted as parity or latency. Writes
+smoke_<date>.json and nothing else; clean tree; runs once.
+
 write-docs: write docs/scoring_api.md from configs/serving.yaml and the response
 schemas (retention.api.docs); nothing else is written. It reads no data and is
 not a run, so it does not need a clean tree.
@@ -483,6 +489,33 @@ def load_snapshot_cmd(args) -> int:
     return 0
 
 
+def smoke_cmd(args) -> int:
+    from retention.api import service as svc
+    from retention.api import smoke, store
+
+    repo = Path.cwd()
+    require_clean(repo)
+    snapshot = date.fromisoformat(args.snapshot)
+    out = out_dir(args.fraction)
+    report_path = out / f"smoke_{snapshot.isoformat()}.json"
+    run_once(report_path)
+    a8 = load_serving()["alerts_knowable_count"]
+    if snapshot != date(2016, 11, 1):
+        raise SystemExit("the knowable alert count is registered for 2016-11-01 only (A8)")
+    t0 = time.time()
+    report = smoke.run(svc.default_context, store.client, snapshot, a8["knowable_at_2016_11_01"])
+    report = stamp(report, repo, t0)
+    out.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps(report, indent=2))
+    if report["unexpected"]:
+        print(
+            "SMOKE CHECK FOUND UNEXPECTED ANSWERS (not a mark):", *report["unexpected"], sep="\n  "
+        )
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m retention.api")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -506,7 +539,12 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--fraction", type=float, default=None)
     sp.add_argument("--dry-run", action="store_true", help="one md5 bucket, comparisons only")
     sub.add_parser("write-docs", help="write docs/scoring_api.md from the config and schemas")
+    sm = sub.add_parser("smoke", help="the 5f smoke check of the loaded store (not a mark)")
+    sm.add_argument("--fraction", type=float, default=None)
+    sm.add_argument("--snapshot", required=True, metavar="YYYY-MM-DD")
     args = parser.parse_args(argv)
+    if args.command == "smoke":
+        return smoke_cmd(args)
     if args.command == "write-docs":
         from retention.api import docs
 
