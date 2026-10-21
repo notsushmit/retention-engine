@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -244,6 +244,153 @@ class NotActive(Strict):
     status: Literal[NOT_ACTIVE]
     msno: str
     features_as_of: date
+
+
+# --- GET /at-risk ---------------------------------------------------------------------------------
+
+
+class PlanField(Strict):
+    """Plan membership, a batch fact from the Phase 7 plan for the store's date."""
+
+    in_plan: bool
+    action: Literal[ACTION_NAMES[:-1]] | None  # type: ignore[valid-type]
+    label: Literal[LABELS.plan_label]
+
+    @model_validator(mode="after")
+    def member_has_action(self) -> PlanField:
+        if self.in_plan != (self.action is not None):
+            raise ValueError("a plan action is shown exactly when the customer is in the plan")
+        return self
+
+
+class AtRiskRow(Strict):
+    rank: int = Field(ge=1)
+    msno: str
+    probability: float = Field(ge=0.0, le=1.0)
+    text: str
+    grade: Literal[LABELS.grade_59] | None = None
+    auto_renew: Literal["on", "off"]
+    plan: PlanField | None
+
+
+class AtRiskFilters(Strict):
+    auto_renew: Literal["on", "off"] | None
+    in_plan: bool | None
+
+
+class AtRiskCounts(Strict):
+    scored: int
+    outside_population: dict[str, int]
+    not_active: int
+
+
+class AtRiskPage(Strict):
+    store_date: date
+    horizon: Literal[7, 30, 59]
+    offset: int = Field(ge=0)
+    limit: int = Field(ge=1)
+    filters: AtRiskFilters
+    matching: int = Field(ge=0)
+    header_note: Literal[LABELS.at_risk_header_note]
+    plan_status: Literal[LABELS.plan_label, LABELS.no_plan_status]
+    counts: AtRiskCounts
+    rows: tuple[AtRiskRow, ...]
+
+    @model_validator(mode="after")
+    def reading(self) -> AtRiskPage:
+        if len(self.rows) > self.limit:
+            raise ValueError("more rows than the limit")
+        if [r.rank for r in self.rows] != list(
+            range(self.offset + 1, self.offset + 1 + len(self.rows))
+        ):
+            raise ValueError("ranks must follow the offset without gaps")
+        if any((r.grade is not None) != (self.horizon == 59) for r in self.rows):
+            raise ValueError("every 59-day probability, and only it, is a demonstration")
+        no_plan = self.plan_status == LABELS.no_plan_status
+        if any((r.plan is None) != no_plan for r in self.rows):
+            raise ValueError("plan fields are shown exactly when a plan exists for the date")
+        p = [r.probability for r in self.rows]
+        if any(a < b for a, b in zip(p, p[1:], strict=False)):
+            raise ValueError("rows must be ordered by final probability, descending")
+        return self
+
+
+# --- GET /alerts ----------------------------------------------------------------------------------
+
+
+class HiddenByRule(Strict):
+    """How much each hiding rule removed from one trend alert (api.alerts and A7)."""
+
+    top_segments: int = Field(ge=0)
+    too_small_segments: int = Field(ge=0)
+    segments: int = Field(ge=0)  # top_segments + too_small_segments
+    dimension_totals: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def total(self) -> HiddenByRule:
+        if self.segments != self.top_segments + self.too_small_segments:
+            raise ValueError("segments hidden must be the sum of both segment lists")
+        return self
+
+
+class TrendAlert(Strict):
+    """One Phase 5 trend alert as stored, with the hidden dimensions removed and counted."""
+
+    kind: Literal["trend"]
+    knowable_from: date
+    labels: tuple[str, ...]
+    hidden_by_rule: HiddenByRule
+    alert_id: str
+    week: date
+    series: str
+    before_rate: float
+    after_rate: float
+    size_points: float
+    note: str | None
+    direction: str
+    size_class: str
+    windows: dict[str, Any]
+    series_returned_to_level: Any
+    return_week: str | None
+    band: list[Any]
+    flags: dict[str, Any]
+    data_quality_flags: list[str]
+    top_segments: list[dict[str, Any]]
+    too_small_segments: list[dict[str, Any]]
+    dimension_totals: dict[str, float]
+    noise_assumption: dict[str, Any]
+    sentence: str
+
+    @model_validator(mode="after")
+    def registered(self) -> TrendAlert:
+        if self.labels != LABELS.trend_labels:
+            raise ValueError("a trend alert carries exactly the three registered labels")
+        hidden = set(LABELS.hidden_dimensions)
+        shown = [x.get("dimension") for x in (*self.top_segments, *self.too_small_segments)]
+        if hidden & set(shown) or hidden & set(self.dimension_totals):
+            raise ValueError("a hidden dimension is still in the alert")
+        return self
+
+
+class EventAlert(Strict):
+    kind: Literal["event"]
+    msno: str
+    date: date
+    label: Literal[LABELS.event_label]
+
+
+class Alerts(Strict):
+    store_date: date
+    trend_in_file: int = Field(ge=0)
+    trend_knowable: int = Field(ge=0)
+    trend: tuple[TrendAlert, ...]
+    event: tuple[EventAlert, ...]
+
+    @model_validator(mode="after")
+    def counted(self) -> Alerts:
+        if self.trend_knowable != len(self.trend) or self.trend_knowable > self.trend_in_file:
+            raise ValueError("the knowable count must equal the alerts shown")
+        return self
 
 
 class ErrorBody(Strict):

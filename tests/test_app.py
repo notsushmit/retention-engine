@@ -33,6 +33,7 @@ from test_service import (
     P,
     bundle_labels,  # noqa: F401 (fixture)
     load,
+    pins,  # noqa: F401 (fixture)
     registered,  # noqa: F401 (fixture)
     snapshot,
     unreachable,
@@ -48,14 +49,15 @@ def flip_last_byte(path) -> None:
 
 
 @pytest.fixture()
-def make_client(registered, bundle_labels, valkey, tmp_path):  # noqa: F811
-    """make_client(connect=...) -> a started TestClient on the hand-made models."""
+def make_client(registered, bundle_labels, pins, valkey, tmp_path):  # noqa: F811
+    """make_client(connect=...) -> a started TestClient on the hand-made models and pins."""
     clients = []
 
-    def start(connect=None, settings=None):
+    def start(connect=None, settings=None, pinned=None):
+        work = tmp_path / f"work{len(clients)}"
         app = api.create_app(
             load=lambda: svc.load_context(
-                settings or registered, MODEL_SETTINGS, P, tmp_path / f"work{len(clients)}"
+                settings or registered, MODEL_SETTINGS, P, work, pins=pinned or pins
             ),
             connect=connect or (lambda: valkey),
         )
@@ -80,14 +82,21 @@ def error_of(status: int, reason: str | None = None) -> dict:
 # --- startup ------------------------------------------------------------------------------------
 
 
-def test_startup_is_refused_when_a_registered_file_changed(registered, bundle_labels, tmp_path):  # noqa: F811
+def test_startup_is_refused_when_a_registered_file_changed(
+    registered,  # noqa: F811
+    bundle_labels,  # noqa: F811
+    pins,  # noqa: F811
+    tmp_path,
+):
     folder = store_folder(registered)
     keep = tmp_path / "keep"
     shutil.copytree(folder, keep)
     try:
         flip_last_byte(folder / "booster_30d.txt")
         app = api.create_app(
-            load=lambda: svc.load_context(registered, MODEL_SETTINGS, P, tmp_path / "work"),
+            load=lambda: svc.load_context(
+                registered, MODEL_SETTINGS, P, tmp_path / "work", pins=pins
+            ),
             connect=unreachable,
         )
         with pytest.raises(ModelRefused, match="booster_30d"):
@@ -97,10 +106,10 @@ def test_startup_is_refused_when_a_registered_file_changed(registered, bundle_la
         shutil.copyfile(keep / "booster_30d.txt", folder / "booster_30d.txt")
 
 
-def test_startup_is_refused_without_the_alias(registered, bundle_labels, tmp_path):  # noqa: F811
+def test_startup_is_refused_without_the_alias(registered, bundle_labels, pins, tmp_path):  # noqa: F811
     other = dataclasses.replace(registered, name="not-registered")
     app = api.create_app(
-        load=lambda: svc.load_context(other, MODEL_SETTINGS, P, tmp_path / "work"),
+        load=lambda: svc.load_context(other, MODEL_SETTINGS, P, tmp_path / "work", pins=pins),
         connect=unreachable,
     )
     with pytest.raises(ModelRefused, match="not registered"):

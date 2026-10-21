@@ -1,8 +1,11 @@
-"""The scoring API: GET /health and POST /score (configs/serving.yaml, contract and api).
+"""The scoring API: GET /health, POST /score, GET /at-risk and GET /alerts.
+
+configs/serving.yaml, contract, api and step5.
 
 Startup loads the models through the registry alias with every check; a missing
 alias, a missing, extra or changed file, or a manifest that differs refuses
-startup (the exception ends the app's lifespan before it serves anything). A
+startup (the exception ends the app's lifespan before it serves anything), and
+so does a pinned file (plans, alerts) whose SHA-256 differs from its pin. A
 Valkey that cannot be reached does not stop startup: the service starts not
 ready and says why.
 
@@ -22,9 +25,9 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from retention.api import alerts, at_risk, store
 from retention.api import schemas as sch
 from retention.api import service as svc
-from retention.api import store
 
 
 def error(status_code: int, reason: str | None = None) -> JSONResponse:
@@ -53,6 +56,10 @@ def create_app(
     async def malformed(request: Request, exc: RequestValidationError) -> JSONResponse:
         return error(422)
 
+    @app.exception_handler(at_risk.Malformed)
+    async def malformed_query(request: Request, exc: at_risk.Malformed) -> JSONResponse:
+        return error(422)
+
     @app.exception_handler(svc.NotReady)
     async def not_ready(request: Request, exc: svc.NotReady) -> JSONResponse:
         return error(503, str(exc))
@@ -74,5 +81,21 @@ def create_app(
     def post_score(req: svc.ScoreRequest, request: Request) -> JSONResponse:
         body = svc.answer(request.app.state.ctx, request.app.state.valkey, req)
         return JSONResponse(status_code=200, content=body)
+
+    @app.get("/at-risk", response_model=sch.AtRiskPage)
+    def get_at_risk(request: Request) -> JSONResponse:
+        q = at_risk.parse_query(request.query_params.multi_items())
+        ctx, r = request.app.state.ctx, request.app.state.valkey
+        t = svc.ready_date(ctx, r)
+        body = at_risk.page(r, t, q, ctx.pinned.plans.get(t), ctx.at_risk_index)
+        return JSONResponse(status_code=200, content=body)
+
+    @app.get("/alerts", response_model=sch.Alerts)
+    def get_alerts(request: Request) -> JSONResponse:
+        if request.query_params:
+            raise at_risk.Malformed("/alerts takes no parameters")
+        ctx, r = request.app.state.ctx, request.app.state.valkey
+        t = svc.ready_date(ctx, r)
+        return JSONResponse(status_code=200, content=alerts.alerts_body(ctx.pinned.alerts, r, t))
 
     return app

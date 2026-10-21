@@ -2,8 +2,10 @@
 
 One store date at a time (configs/serving.yaml, step5). For POST /score:
 - the service is ready only when the downloaded model files still match the
-  registered bundle, Valkey answers and the store has a date (a half-finished
-  load leaves none); otherwise 503 with every reason found;
+  registered bundle, both pinned files (plans and alerts) still match their pins,
+  Valkey answers and the store has a date (a half-finished load leaves none);
+  otherwise 503 with every reason found; a pinned file that differs at startup
+  refuses startup, its error naming the file and both hashes;
 - an as_of that differs from the store's date is 409;
 - a customer with a stored document is scored or outside_population as stored; a
   known customer without one is not_active; anyone else is 404 (a customer in the
@@ -30,6 +32,7 @@ computed from the 30-day probability before the ordering fix, as in Phase 7.
 
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -41,7 +44,7 @@ import pandas as pd
 from pydantic import Field, StrictStr, field_validator
 from redis.exceptions import RedisError
 
-from retention.api import registry, store
+from retention.api import alerts, at_risk, registry, store
 from retention.api import schemas as sch
 from retention.api import scoring as sc
 from retention.api.config import SERVING_CONFIG, file_sha256, load_serving
@@ -68,6 +71,10 @@ class UnknownCustomer(LookupError):
 
 class DateDiffers(ValueError):
     """409: as_of differs from the store's date."""
+
+
+class PinRefused(RuntimeError):
+    """A pinned file (step5.pins) is missing or its SHA-256 differs from the pin."""
 
 
 # --- requests and health -----------------------------------------------------------------------
@@ -107,6 +114,49 @@ class Health(sch.Strict):
 # --- the loaded context ------------------------------------------------------------------------
 
 
+# --- the pinned files ----------------------------------------------------------------------------
+
+
+@dataclass
+class Pinned:
+    """The two pinned batch files, read once at startup and never written."""
+
+    pins: dict[str, tuple[Path, str]]  # name: (path, pinned SHA-256)
+    plans: dict[date, dict[str, str]]  # the registered plan cell, {snapshot: {msno: action}}
+    alerts: dict[str, Any]  # the Phase 5 alerts run
+
+
+def registered_pins(cfg: dict[str, Any] | None = None) -> dict[str, tuple[Path, str]]:
+    pins = (cfg if cfg is not None else load_serving())["step5"]["pins"]
+    return {name: (Path(p["path"]), p["sha256"]) for name, p in pins.items()}
+
+
+def pin_problems(pins: dict[str, tuple[Path, str]]) -> list[str]:
+    """Each pinned file that is missing or differs, named with both hashes."""
+    out = []
+    for path, sha in pins.values():
+        if not path.is_file():
+            out.append(f"pinned file {path.name} is missing")
+            continue
+        found = file_sha256(path)
+        if found != sha:
+            out.append(f"pinned file {path.name} SHA-256 {found} differs from the pinned {sha}")
+    return out
+
+
+def load_pinned(pins: dict[str, tuple[Path, str]]) -> Pinned:
+    """Both pinned files after their hashes match; refuses (PinRefused) otherwise."""
+    if sorted(pins) != ["alerts", "plans"]:
+        raise PinRefused("the pins must name exactly the plans and the alerts files")
+    problems = pin_problems(pins)
+    if problems:
+        raise PinRefused("; ".join(problems))
+    plans = at_risk.plan_cell(pd.read_parquet(pins["plans"][0]))
+    run = json.loads(pins["alerts"][0].read_text())
+    alerts.check_run(run)
+    return Pinned(dict(pins), plans, run)
+
+
 @dataclass
 class Context:
     models: registry.ServingModels
@@ -123,6 +173,8 @@ class Context:
     protocol: Protocol
     config_sha256: str
     replay_expected_events: int
+    pinned: Pinned
+    at_risk_index: at_risk.IndexCache
 
     def close(self) -> None:
         shutil.rmtree(self.workdir, ignore_errors=True)
@@ -142,13 +194,17 @@ def load_context(
     protocol: Protocol,
     workdir: Path,
     cfg: dict[str, Any] | None = None,
+    pins: dict[str, tuple[Path, str]] | None = None,
 ) -> Context:
     """The models through the alias with every registry check, then everything scoring needs.
 
     Refuses (ModelRefused) when a downloaded file's SHA-256 differs from the bundle the
-    response schemas register, so a model block can never name other files.
+    response schemas register, so a model block can never name other files, and
+    (PinRefused) when a pinned file differs from its pin. `pins` defaults to the
+    registered ones (step5.pins).
     """
     cfg = cfg if cfg is not None else load_serving()
+    pinned = load_pinned(registered_pins(cfg) if pins is None else pins)
     models = registry.load_serving_models(settings, model_settings, protocol, workdir)
     if dict(models.files) != sch.LABELS.bundle:
         raise ModelRefused("the loaded model files differ from the registered bundle")
@@ -169,6 +225,8 @@ def load_context(
         protocol=protocol,
         config_sha256=file_sha256(SERVING_CONFIG),
         replay_expected_events=int(cfg["api"]["health"]["replay_expected_events"]),
+        pinned=pinned,
+        at_risk_index=at_risk.IndexCache(),
     )
 
 
@@ -205,6 +263,7 @@ def health(ctx: Context, r) -> Health:
     problem = model_problem(ctx)
     if problem:
         reasons.append(problem)
+    reasons += pin_problems(ctx.pinned.pins)
     reachable, t, progress = True, None, None
     try:
         r.ping()

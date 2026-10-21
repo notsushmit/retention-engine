@@ -18,6 +18,7 @@ from retention.api.config import load_serving
 
 WITHHELD = re.compile(r'^withheld, code "(?P<code>[^"]+)"$')
 WARNING = re.compile(r"^returned with a (?P<warning>data warning about .+)$")
+KNOWABLE = re.compile(r"^week start \+ (?P<days>\d+) days on or before the store's date$")
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,13 @@ class Labels:
     bundle: dict[str, str]
     unseen_generic_code: str  # A5: an unseen level in a feature naming a never-used attribute
     msno_exempt_field: str  # A6: the one field whose own-ID value the response scan skips
+    plan_label: str  # on every plan field of /at-risk
+    at_risk_header_note: str
+    no_plan_status: str
+    trend_labels: tuple[str, ...]  # on every trend alert
+    event_label: str
+    hidden_dimensions: tuple[str, ...]  # removed from served alerts (api.alerts, A7)
+    knowable_days: int  # a trend alert is knowable when week start + this many days <= T
 
 
 def load_labels(cfg: dict[str, Any] | None = None) -> Labels:
@@ -71,6 +79,16 @@ def load_labels(cfg: dict[str, Any] | None = None) -> Labels:
     if d["no_usable_price"]["reads_as"] != a4["reads_as_when_not_paying"]:
         raise ValueError("D2's reading and A4's reading differ")
     a5, a6 = c["unseen_level_codes"], c["msno_scan_exemption"]
+    risk, alerts, step5 = c["api"]["at_risk"], c["api"]["alerts"], c["step5"]
+    if (
+        risk["plan_label"] != step5["plan_fields"]["every_plan_field"]
+        or risk["header_note"] != step5["plan_fields"]["header_note"]
+        or alerts["event"]["label"] != step5["alerts"]["event_label"]
+    ):
+        raise ValueError("the api and step5 registrations of the /at-risk or /alerts labels differ")
+    knowable = KNOWABLE.match(alerts["trend"]["knowable_rule"])
+    if knowable is None:
+        raise ValueError("the registered knowable rule no longer fits its pattern")
     generic = a5["generic_code"]
     if not generic.startswith(unseen[0].removesuffix("<feature>")) or generic.endswith(":"):
         raise ValueError("A5's generic code must be an unseen-level code")
@@ -107,6 +125,13 @@ def load_labels(cfg: dict[str, Any] | None = None) -> Labels:
         bundle=dict(c["registry"]["bundle"]),
         unseen_generic_code=generic,
         msno_exempt_field=a6["field"],
+        plan_label=risk["plan_label"],
+        at_risk_header_note=risk["header_note"],
+        no_plan_status=risk["no_plan_status"],
+        trend_labels=tuple(alerts["trend"]["labels"]),
+        event_label=alerts["event"]["label"],
+        hidden_dimensions=tuple(alerts["trend"]["hidden_dimensions"]),
+        knowable_days=int(knowable["days"]),
     )
 
 

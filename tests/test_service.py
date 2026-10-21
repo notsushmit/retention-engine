@@ -20,6 +20,7 @@ import mlflow
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 import redis
 import yaml
@@ -151,6 +152,98 @@ def registered(tmp_path_factory) -> reg.RegistrySettings:
     mlflow.set_tracking_uri(before)
 
 
+# --- hand-made pinned files (plans and alerts) ----------------------------------------------------
+
+PLAN_CELL = {"strategy": "optimizer", "scenario": "base", "budget_label": "5,000"}
+NOV_PLAN = {
+    f"c{i:03d}": ("reminder", "discount", "autorenew_prompt")[i % 3] for i in range(0, 40, 3)
+}
+OCT_PLAN = {"c001": "reminder"}
+HIDDEN = ("city", "registration_channel", "tenure")
+
+
+def plan_rows() -> list[dict]:
+    rows = []
+    for t, plan in (("2016-11-01", NOV_PLAN), ("2016-10-01", OCT_PLAN)):
+        rows += [{"snapshot": t, **PLAN_CELL, "msno": m, "action": a} for m, a in plan.items()]
+        # the same customers in other cells: never read as the plan
+        rows += [
+            {"snapshot": t, **PLAN_CELL, "budget_label": "1,000", "msno": m, "action": "discount"}
+            for m in ("c002", "c005")
+        ]
+        rows += [
+            {"snapshot": t, **PLAN_CELL, "strategy": "highest_risk", "msno": "c005", "action": "x"}
+        ]
+    return rows
+
+
+def trend_alert(alert_id: str, week: str, sentence: str = "A weekly rate moved.") -> dict:
+    """One alert shaped as Phase 5 stores it, with segments in hidden dimensions."""
+
+    def seg(dim, value, small=False):
+        out = {"dimension": dim, "value": value, "events_before": 10, "events_after": 12}
+        if not small:
+            out |= {"rate_before": 0.1, "rate_after": 0.2, "share_before": 0.3}
+            out |= {"share_after": 0.3, "rate_contribution": 0.01, "mix_contribution": 0.0}
+        return out
+
+    return {
+        "alert_id": alert_id,
+        "week": week,
+        "series": "the paid series",
+        "before_rate": 0.11,
+        "after_rate": 0.18,
+        "size_points": 7.0,
+        "note": None,
+        "direction": "up",
+        "size_class": "shift",
+        "windows": {"rule": "detector segments", "before_weeks": [week, week]},
+        "series_returned_to_level": None,
+        "return_week": None,
+        "band": [None, None],
+        "flags": {"unreliable_months": ["2016-03"], "left_truncation_risk": False},
+        "data_quality_flags": ["unreliable_month"],
+        "top_segments": [seg("tenure", "730+"), seg("auto_renew", "on"), seg("city", "1")],
+        "too_small_segments": [
+            seg("city", "10", True),
+            seg("registration_channel", "9", True),
+            seg("payment_method", "41", True),
+        ],
+        "dimension_totals": {d: 0.06 for d in ("auto_renew", *HIDDEN, "plan_length")},
+        "noise_assumption": {"status": "exploratory", "c": 5.0},
+        "sentence": sentence,
+    }
+
+
+# Knowable at 2016-11-01 (week start + 37 days on or before it): cp1 and cp2 (the boundary
+# day, 2016-09-25 + 37 = 2016-11-01); cp3 (2016-09-26, one day late) and cp4 are not.
+ALERT_WEEKS = {"cp1": "2016-03-07", "cp2": "2016-09-25", "cp3": "2016-09-26", "cp4": "2016-12-05"}
+
+
+def alerts_run(**sentences) -> dict:
+    alerts = [
+        trend_alert(i, w, sentences.get(i, "A weekly rate moved.")) for i, w in ALERT_WEEKS.items()
+    ]
+    return {"commit": "abc", "weeks": 45, "alerts": alerts}
+
+
+def write_pins(out: Path, run: dict | None = None) -> dict[str, tuple[Path, str]]:
+    """Hand-made plans and alerts files and their own hashes (the pins' test double)."""
+    out.mkdir(parents=True, exist_ok=True)
+    plans = out / "plans.parquet"
+    table = pa.Table.from_pylist(plan_rows())
+    table = table.cast(pa.schema([pa.field(c, pa.large_string()) for c in table.column_names]))
+    pq.write_table(table, plans)
+    run_path = out / "alerts_run.json"
+    run_path.write_text(json.dumps(alerts_run() if run is None else run))
+    return {"plans": (plans, file_sha256(plans)), "alerts": (run_path, file_sha256(run_path))}
+
+
+@pytest.fixture(scope="module")
+def pins(tmp_path_factory) -> dict[str, tuple[Path, str]]:
+    return write_pins(tmp_path_factory.mktemp("pins"))
+
+
 @pytest.fixture(scope="module")
 def bundle_labels(registered):
     """The response schemas check the hand-made bundle instead of the registered one."""
@@ -160,8 +253,9 @@ def bundle_labels(registered):
 
 
 @pytest.fixture(scope="module")
-def ctx(registered, bundle_labels, tmp_path_factory) -> svc.Context:
-    c = svc.load_context(registered, MODEL_SETTINGS, P, tmp_path_factory.mktemp("work"))
+def ctx(registered, bundle_labels, pins, tmp_path_factory) -> svc.Context:
+    work = tmp_path_factory.mktemp("work")
+    c = svc.load_context(registered, MODEL_SETTINGS, P, work, pins=pins)
     yield c
     c.close()
 
@@ -308,11 +402,13 @@ def test_a_stored_row_rebuilds_the_batch_row_exactly(ctx, valkey):
         assert prices.price_per_day.iloc[0] == s.prices.price_per_day.iloc[i]
 
 
-def test_files_other_than_the_registered_bundle_are_refused(registered, tmp_path, monkeypatch):
+def test_files_other_than_the_registered_bundle_are_refused(
+    registered, pins, tmp_path, monkeypatch
+):
     monkeypatch.setattr(sch, "LABELS", LABELS)  # the registered bundle, for this test only
     assert registered.bundle != LABELS.bundle
     with pytest.raises(ModelRefused, match="registered bundle"):
-        svc.load_context(registered, MODEL_SETTINGS, P, tmp_path / "work")
+        svc.load_context(registered, MODEL_SETTINGS, P, tmp_path / "work", pins=pins)
 
 
 # --- requests ------------------------------------------------------------------------------------
