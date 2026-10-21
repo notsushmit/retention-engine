@@ -998,3 +998,17 @@ http_parity_a10:
     action, a flag) for customers outside the sample; discrete fields stay exact under
     A10, so such a flip inside the sample would fail it; outside the sample it is not
     observed.
+
+api_memory_limit:
+  label: the user's choice after 8c (D-246), under step8.api_memory.memory_limit_rule; registered before the compose change
+  api: 1.5GiB  # docker compose mem_limit for the api service
+  valkey: none  # no limit, as step7.valkey (no eviction of store keys)
+  reason: >-
+    twice the measured 588.8 MiB peak (about 1.15 GiB) leaves too little headroom while
+    the /at-risk filter index is unmeasured; the user chose 1.5 GiB
+  evidence:  # docker stats, D-243 and D-246
+    api_peak_mib: 588.8  # during http-checks' concurrency (8 threads)
+    api_after_first_default_at_risk_mib: 424.4  # the default query builds no filter index
+    api_empty_store_mib: 534.9  # D-238
+    valkey_peak_mib: 369.2
+  check_after_applying: GET /at-risk?auto_renew=on once (builds the filter index); API memory recorded under the limit; near the limit is reported with a higher proposal, nothing else tuned
