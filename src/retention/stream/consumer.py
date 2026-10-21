@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from collections.abc import Callable, Iterable
 from datetime import date, timedelta
 from pathlib import Path
@@ -48,6 +49,7 @@ from typing import Any
 
 from retention.api import store
 from retention.features.spec import SECS_PER_DAY_MAX, SECS_SENTINEL_ABS, WINDOWS
+from retention.models.resources import peak_rss_gb
 from retention.stream import producer, source
 
 RING_DAYS = WINDOWS["28"][1]  # 28
@@ -192,14 +194,39 @@ class Consumer:
     # --- the bootstrap -----------------------------------------------------------------------
 
     def bootstrap(
-        self, folder: Path, batch: int = 5_000, bucket: int | None = None
+        self,
+        folder: Path,
+        batch: int = 5_000,
+        bucket: int | None = None,
+        measure: dict | None = None,
     ) -> dict[str, int]:
-        """State from rows dated before 2016-10-01, read only through source.bootstrap_rows."""
+        """State from rows dated before 2016-10-01, read only through source.bootstrap_rows.
+
+        With `measure` (a measurement only, D-223), per file: rows; seconds reading (DuckDB's
+        fetches), updating the state (everything else in the loop) and writing (pipeline
+        executions); the read stats of source.run (DuckDB's memory, the first batch, which
+        ends DuckDB's sort); and the process's running peak RSS after the file. Then the
+        first and last listening days' writes, with their entries and the peak after them."""
         counts = {"user_logs": 0, "transactions": 0, "transactions_v2": 0}
         first: dict[str, int] = {}
         last: dict[str, int] = {}
         pipe = self.r.pipeline(transaction=False)
-        for row in source.bootstrap_rows(folder, "user_logs", bucket):
+        write = {"user_logs": 0.0, "transactions": 0.0, "transactions_v2": 0.0}
+        stats = {name: {} for name in counts} if measure is not None else None
+
+        def rows_of(name: str):
+            if stats is None:
+                return source.bootstrap_rows(folder, name, bucket)
+            return source.bootstrap_rows(folder, name, bucket, stats=stats[name])
+
+        def flush(name: str) -> None:
+            t = time.perf_counter()
+            pipe.execute()
+            write[name] += time.perf_counter() - t
+
+        loop: dict[str, float] = {}
+        t0 = time.perf_counter()
+        for row in rows_of("user_logs"):
             m, day = row["msno"], row["date"]
             totals = day_totals(row)  # refuses a missing or NaN value here too
             first[m] = min(first.get(m, day), day)
@@ -211,13 +238,21 @@ class Consumer:
                     pipe.hset(ring_key(m), f"{day}:x", 1)
             counts["user_logs"] += 1
             if counts["user_logs"] % batch == 0:
-                pipe.execute()
+                flush("user_logs")
+        flush("user_logs")
+        loop["user_logs"] = time.perf_counter() - t0
+        peak_after = {"user_logs": peak_rss_gb()}
         for name in ("transactions", "transactions_v2"):
-            for row in source.bootstrap_rows(folder, name, bucket):
+            t0 = time.perf_counter()
+            for row in rows_of(name):
                 self._tx(pipe, row, name)
                 counts[name] += 1
                 if counts[name] % batch == 0:
-                    pipe.execute()
+                    flush(name)
+            flush(name)
+            loop[name] = time.perf_counter() - t0
+            peak_after[name] = peak_rss_gb()
+        t0 = time.perf_counter()
         items = sorted(first)
         for i in range(0, len(items), batch):
             part = items[i : i + batch]
@@ -225,6 +260,22 @@ class Consumer:
             pipe.hset(LAST, mapping={m: last[m] for m in part})
             pipe.execute()
         pipe.execute()
+        if measure is not None:
+            for name in counts:
+                read = stats[name].get("fetch_seconds", 0.0)
+                measure[name] = {
+                    "rows": counts[name],
+                    "read_seconds": round(read, 3),
+                    "state_seconds": round(loop[name] - read - write[name], 3),
+                    "write_seconds": round(write[name], 3),
+                    **{k: v for k, v in stats[name].items() if k != "fetch_seconds"},
+                    "peak_rss_gb_after": peak_after[name],
+                }
+            measure["first_last_writes"] = {
+                "entries": len(items),
+                "seconds": round(time.perf_counter() - t0, 3),
+                "peak_rss_gb_after": peak_rss_gb(),
+            }
         return counts
 
     # --- reading the state (the move and the tests) ------------------------------------------

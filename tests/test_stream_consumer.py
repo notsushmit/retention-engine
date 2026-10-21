@@ -305,3 +305,25 @@ def test_a_stored_transaction_row_is_tx_stored_in_order(consumer):
         [41, 30, 149, 149, 1, 20161005, 20161035, 0, "v2", 0],
         [36, 30, 149, 149, 1, 20161006, 20161036, 0, "v2", 1],
     ]
+
+
+# --- the bootstrap measurement (D-223) -----------------------------------------------------------
+
+
+@pytest.mark.valkey
+def test_a_measured_bootstrap_writes_the_same_state_and_splits_its_time(valkey, folder):
+    cs.Consumer(valkey, 15, REPLAY_STORE_DATE, is_scored=lambda m: False).bootstrap(folder)
+    plain = canonical(valkey)
+    valkey.flushdb()
+    measure: dict = {}
+    c = cs.Consumer(valkey, 15, REPLAY_STORE_DATE, is_scored=lambda m: False)
+    counts = c.bootstrap(folder, measure=measure)
+    assert canonical(valkey) == plain
+    assert counts == {"user_logs": 3, "transactions": 1, "transactions_v2": 1}
+    for name, rows in counts.items():
+        m = measure[name]
+        assert m["rows"] == rows
+        assert min(m["read_seconds"], m["write_seconds"]) >= 0
+        assert m["peak_rss_gb_after"] >= m["peak_rss_gb_after_first_batch"] > 0
+        assert m["duckdb_memory_bytes_max"] >= 0
+    assert measure["first_last_writes"]["entries"] == 2  # a and c listened before 2016-10-01

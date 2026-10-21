@@ -169,7 +169,8 @@ def run(
     valkey_before = store.memory_used(r)
     lap("clear")
     c = cs.Consumer(r, database, source.BOOTSTRAP, is_scored)
-    boot = c.bootstrap(folder, bucket=bucket)
+    bootstrap_detail: dict[str, Any] = {}
+    boot = c.bootstrap(folder, bucket=bucket, measure=bootstrap_detail)
     lap("bootstrap")
     move.write_bootstrap_timelines(r, cfg, work, n_chunks)
     lap("bootstrap_timelines")
@@ -209,6 +210,7 @@ def run(
         "store": written,
         "step_seconds": step_seconds,
         "step_peak_rss_gb": step_peak,
+        "bootstrap_detail": bootstrap_detail,  # a measurement (D-223); stamp never writes it
         "process_peak_rss_gb_start": rss_start,
         "process_peak_rss_gb": peak_rss_gb(),
         "valkey_used_memory_bytes_before": int(valkey_before),

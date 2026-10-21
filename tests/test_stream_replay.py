@@ -105,6 +105,9 @@ def test_a_full_replay_equals_batch_and_counts_every_october_event(valkey, raw, 
     peaks = list(report["step_peak_rss_gb"].values())
     assert peaks == sorted(peaks) and peaks[0] >= report["process_peak_rss_gb_start"]
     assert not (tmp_path / "stream_work").exists()  # the chunk work folder is removed
+    detail = report["bootstrap_detail"]
+    assert set(detail) == {"user_logs", "transactions", "transactions_v2", "first_last_writes"}
+    assert {k: detail[k]["rows"] for k in report["bootstrap_rows"]} == report["bootstrap_rows"]
 
 
 @pytest.mark.valkey
@@ -249,7 +252,11 @@ def fake_run(table_sha="a" * 64, produced=6, consumed=6, peak=0.9, valkey=101_00
             "consumed": consumed,
             **dry(peak, valkey),
         }
-        report |= {"step_seconds": {"bootstrap": 1.5}, "step_peak_rss_gb": {"bootstrap": 0.7}}
+        report |= {
+            "step_seconds": {"bootstrap": 1.5},
+            "step_peak_rss_gb": {"bootstrap": 0.7},
+            "bootstrap_detail": {"user_logs": {"read_seconds": 1.0, "peak_rss_gb_after": 0.7}},
+        }
         return report, SimpleNamespace(link_rows=None)
 
     return run
@@ -303,6 +310,9 @@ def test_the_dry_run_returns_the_projection_s_verdict(quiet, monkeypatch, valkey
     # the written report keeps the per-step keys next to stamp's own total
     assert report["step_seconds"] == {"bootstrap": 1.5}
     assert report["step_peak_rss_gb"] == {"bootstrap": 0.7}
+    assert report["bootstrap_detail"] == {
+        "user_logs": {"read_seconds": 1.0, "peak_rss_gb_after": 0.7}
+    }
     assert isinstance(report["seconds"], float)
 
 

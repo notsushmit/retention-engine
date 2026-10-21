@@ -25,6 +25,7 @@ planning the move, before any result).
 from __future__ import annotations
 
 import heapq
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date
@@ -36,6 +37,7 @@ import duckdb
 from retention.api.config import load_serving
 from retention.data.sample import bucket_sql
 from retention.data.stream import USER_LOGS_TYPES
+from retention.models.resources import peak_rss_gb
 
 CFG = load_serving()
 STORE_DATE = date.fromisoformat(CFG["streaming"]["replay"]["store_date_after"])  # 2016-11-01
@@ -127,13 +129,47 @@ def query(src: Source, lo: date | None, hi: date, bucket: int | None = None) -> 
     return f"select {cols} from {reader} where {where} order by {', '.join(order)}"
 
 
-def run(sql: str, batch_rows: int) -> Iterator[list[tuple]]:
-    """Run one read and yield its rows in batches (tests wrap this as the spy)."""
+def duckdb_memory(con: duckdb.DuckDBPyConnection) -> tuple[int, int]:
+    """DuckDB's own memory in use and temporary storage, in bytes (duckdb_memory())."""
+    used, temp = (
+        con.cursor()
+        .execute(
+            "select coalesce(sum(memory_usage_bytes), 0), "
+            "coalesce(sum(temporary_storage_bytes), 0) from duckdb_memory()"
+        )
+        .fetchone()
+    )
+    return int(used), int(temp)
+
+
+def run(sql: str, batch_rows: int, stats: dict | None = None) -> Iterator[list[tuple]]:
+    """Run one read and yield its rows in batches (tests wrap this as the spy).
+
+    With `stats` (a measurement only, D-223): seconds spent fetching; after the first batch
+    (DuckDB has sorted every row by then) the seconds, DuckDB's memory and temporary storage
+    and the process's running peak RSS; DuckDB's largest memory and temporary storage."""
     con = duckdb.connect()
     try:
+        t0 = time.perf_counter()
         cur = con.execute(sql)
+        first = True
         while True:
+            t1 = time.perf_counter()
             rows = cur.fetchmany(batch_rows)
+            if stats is not None:
+                stats["fetch_seconds"] = stats.get("fetch_seconds", 0.0) + time.perf_counter() - t1
+                used, temp = duckdb_memory(con)
+                stats["duckdb_memory_bytes_max"] = max(
+                    stats.get("duckdb_memory_bytes_max", 0), used
+                )
+                stats["duckdb_temporary_bytes_max"] = max(
+                    stats.get("duckdb_temporary_bytes_max", 0), temp
+                )
+                if first:
+                    stats["first_batch_seconds"] = round(time.perf_counter() - t0, 3)
+                    stats["duckdb_memory_bytes_after_first_batch"] = used
+                    stats["peak_rss_gb_after_first_batch"] = peak_rss_gb()
+                    first = False
             if not rows:
                 return
             yield rows
@@ -148,11 +184,14 @@ def read(
     ceiling: date = STORE_DATE,
     batch_rows: int = 50_000,
     bucket: int | None = None,
+    stats: dict | None = None,
 ) -> Iterator[dict[str, Any]]:
     """One file's rows in [lo, hi), in tie order; refused before any query if hi > ceiling."""
     check_bounds(lo, hi, ceiling)
     date_at = src.columns.index(src.date_column)
-    for rows in run(query(src, lo, hi, bucket), batch_rows):
+    sql = query(src, lo, hi, bucket)
+    batches = run(sql, batch_rows) if stats is None else run(sql, batch_rows, stats)
+    for rows in batches:
         for row in rows:
             if row[date_at] >= day_number(ceiling):  # a second guard on what came back
                 raise PermissionError(f"a row dated {row[date_at]} came back")
@@ -188,8 +227,8 @@ def events(
 
 
 def bootstrap_rows(
-    folder: Path, source: str, bucket: int | None = None
+    folder: Path, source: str, bucket: int | None = None, stats: dict | None = None
 ) -> Iterator[dict[str, Any]]:
     """One file's rows dated before the bootstrap snapshot (2016-10-01), in tie order."""
     src = next(s for s in sources(folder) if s.name == source)
-    return read(src, None, BOOTSTRAP, ceiling=BOOTSTRAP, bucket=bucket)
+    return read(src, None, BOOTSTRAP, ceiling=BOOTSTRAP, bucket=bucket, stats=stats)

@@ -336,3 +336,24 @@ def test_source_row_does_not_change_the_registered_order(tmp_path):
     without = [(name, row) for _, name, row in sorted(keyed, key=lambda x: x[0])]
     assert with_rows == without
     assert len(with_rows) == 11
+
+
+# --- the read measurement (D-223) ----------------------------------------------------------------
+
+
+def test_a_measured_read_returns_the_same_rows_and_records_duckdb_s_memory(folder):
+    src = source.sources(folder)[2]
+    plain = list(source.read(src, source.FIRST_DAY, source.STORE_DATE))
+    stats: dict = {}
+    measured = list(source.read(src, source.FIRST_DAY, source.STORE_DATE, stats=stats))
+    assert measured == plain and len(plain) == 2
+    assert set(stats) == {
+        "fetch_seconds",
+        "first_batch_seconds",
+        "duckdb_memory_bytes_after_first_batch",
+        "duckdb_memory_bytes_max",
+        "duckdb_temporary_bytes_max",
+        "peak_rss_gb_after_first_batch",
+    }
+    assert stats["duckdb_memory_bytes_max"] >= stats["duckdb_memory_bytes_after_first_batch"] >= 0
+    assert stats["duckdb_temporary_bytes_max"] >= 0 and stats["peak_rss_gb_after_first_batch"] > 0
