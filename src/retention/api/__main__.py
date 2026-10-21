@@ -54,6 +54,13 @@ needs the reload's report with every mark met, latency needs http-parity met, an
 http-checks needs the latency report. URL defaults to API_URL, else
 http://127.0.0.1:8000. Each writes one report (counts and timings, no customer ID).
 
+http-diagnose [--url URL]: the diagnosis of a not-met HTTP parity (D-244, found after a
+result; not a mark): the same 1,000 drawn again, the container and the host asked twice
+each; whether each side is stable, and per schema path the largest absolute, relative
+and ulp gaps where they differ, which reason positions changed and whether an action
+change follows a probability gap. Read only (database 0's key count is checked before
+and after); needs the http-parity report; once; counts only.
+
 score-parity --dry-run: the same comparisons on one md5 bucket of 2016-11-01's
 customers, with no registered full-count mark judged and no stop rule stopping.
 Writes only step4_dry_run.json, refuses to overwrite it, and never reads or writes
@@ -525,6 +532,7 @@ LOAD_REPORT = f"load_snapshot_{RELOAD_SNAPSHOT.isoformat()}.json"
 HTTP_PARITY_REPORT = "http_parity_2016-11-01.json"
 LATENCY_REPORT = "latency_2016-11-01.json"
 HTTP_CHECKS_REPORT = "http_checks_2016-11-01.json"
+HTTP_DIAGNOSIS_REPORT = "http_parity_diagnosis_2016-11-01.json"
 STORE_DATABASE = 0
 MLRUNS = Path("mlruns")
 
@@ -664,6 +672,37 @@ def latency_cmd(args, client=None, r=None) -> int:
     return step8_finish(report, repo, path, t0, "LATENCY")
 
 
+def http_diagnose_cmd(args, client=None, ctx=None, r=None) -> int:
+    """The parity diagnosis (D-244); read only, counts only, not a mark."""
+    from retention.api import service as svc
+
+    repo, out, path, t0 = step8_begin(args, HTTP_DIAGNOSIS_REPORT)
+    require_report(out / HTTP_PARITY_REPORT, "http-parity runs first", met=False)
+    r = store_on_database_0(r)
+    keys_before = int(r.dbsize())
+    drawn = http_checks.sample(http_checks.scored_ids(r))
+    own_ctx = ctx is None
+    ctx = svc.default_context() if own_ctx else ctx
+    c = client if client is not None else http_client(api_url(args))
+    try:
+        result = http_checks.diagnose(c, ctx, r, drawn)
+    finally:
+        if client is None:
+            c.close()
+        if own_ctx:
+            ctx.close()
+    keys_after = int(r.dbsize())
+    report = {
+        "not_a_mark": "a diagnosis of the not-met HTTP parity (D-244)",
+        "seed": http_checks.SAMPLE_SEED,
+        **result,
+        "store_keys_before": keys_before,
+        "store_keys_after": keys_after,
+        "met": keys_before == keys_after,  # read only: nothing written
+    }
+    return step8_finish(report, repo, path, t0, "THE DIAGNOSIS CHANGED THE STORE")
+
+
 def http_checks_cmd(args, client_for=None, r=None) -> int:
     import threading
 
@@ -764,6 +803,7 @@ def main(argv: list[str] | None = None) -> int:
         ("http-parity", "HTTP score parity on the registered sample (step 8)"),
         ("latency", "POST /score latency over HTTP (step 8)"),
         ("http-checks", "concurrency, December 2016, config and registry checks (step 8)"),
+        ("http-diagnose", "diagnose a not-met HTTP parity, counts only (D-244)"),
     ):
         hp = sub.add_parser(name, help=text)
         hp.add_argument("--fraction", type=float, default=None)
@@ -784,6 +824,8 @@ def main(argv: list[str] | None = None) -> int:
         return latency_cmd(args)
     if args.command == "http-checks":
         return http_checks_cmd(args)
+    if args.command == "http-diagnose":
+        return http_diagnose_cmd(args)
     if args.command == "write-docs":
         from retention.api import docs
 

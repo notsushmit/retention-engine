@@ -265,3 +265,116 @@ def test_a_store_on_another_database_is_refused(quiet, valkey, monkeypatch):
     monkeypatch.setattr(cli, "STORE_DATABASE", 0)
     with pytest.raises(SystemExit, match="database 0, not 15"):
         cli.http_parity_cmd(args(), client=object(), ctx=object(), r=valkey)
+
+
+# --- the parity diagnosis (D-244) ---------------------------------------------------------------
+
+
+def test_adjacent_floats_are_one_ulp_apart_on_both_sides_of_zero():
+    import math
+
+    for x in (0.1234, 1e-300, 0.5, 1.0):
+        assert hc.ulps(x, math.nextafter(x, 2.0)) == 1
+    assert hc.ulps(-0.25, math.nextafter(-0.25, 0.0)) == 1
+    assert hc.ulps(0.0, -0.0) == 0 and hc.ulps(0.3, 0.3) == 0
+
+
+def test_gaps_are_kept_by_schema_path_with_no_value():
+    import math
+
+    a = {
+        "risk": {"days_7": {"probability": 0.2, "text": "low"}},
+        "reasons": [{"text": "left-text"}],
+    }
+    b = {
+        "risk": {"days_7": {"probability": math.nextafter(0.2, 1.0), "text": "low"}},
+        "reasons": [{"text": "right-text"}],
+    }
+    got = hc.leaf_gaps([(a, b), (a, a)])
+    assert set(got) == {"risk.days_7.probability", "reasons.0.text"}
+    p = got["risk.days_7.probability"]
+    assert p["differing"] == 1 and p["max_ulps"] == 1 and 0 < p["max_rel_gap"] < 1e-15
+    assert got["reasons.0.text"] == {"differing": 1, "kind": "not a float pair"}
+    assert "-text" not in json.dumps(got) and "0.2" not in json.dumps(got)
+
+
+def test_a_diagnosis_of_equal_sides_finds_nothing(served, valkey):
+    c, _ = served
+    ids = hc.scored_ids(valkey)[:15]
+    got = hc.diagnose(c, c.app.state.ctx, valkey, ids)
+    assert got["http_differs_from_itself"] == got["host_differs_from_itself"] == 0
+    assert got["http_differs_from_host"] == 0 and got["gaps_by_path"] == {}
+    assert got["action_changed"] == 0
+
+
+class Nudged:
+    """A client whose answers carry a one-ulp change in the 30-day pre-fix probability and,
+    for the first customer, another action."""
+
+    def __init__(self, c):
+        self.c, self.first = c, None
+
+    def post(self, url, json):
+        import math
+
+        body = self.c.post(url, json=json).json()
+        r = body["reasons"][1]
+        r["probability_before_fix"] = math.nextafter(r["probability_before_fix"], 2.0)
+        self.first = self.first or json["msno"]
+        if json["msno"] == self.first:
+            body["action"]["highest_net_value_action"] = "planted"
+        return SimpleNamespace(status_code=200, json=lambda: body, text="")
+
+
+def test_a_diagnosis_reports_ulps_reason_positions_and_whether_an_action_follows_a_gap(
+    served, valkey
+):
+    c, _ = served
+    ids = hc.scored_ids(valkey)[:10]
+    got = hc.diagnose(Nudged(c), c.app.state.ctx, valkey, ids)
+    assert got["http_differs_from_itself"] == 0 and got["http_differs_from_host"] == 10
+    gap = got["gaps_by_path"]["reasons.1.probability_before_fix"]
+    assert gap["differing"] == 10 and gap["max_ulps"] == 1
+    assert got["reason_positions_changed"] == {"0": 0, "1": 10}
+    assert got["action_changed"] == 1
+    assert got["action_changed_with_a_probability_gap"] == 1
+    assert got["action_changed_with_a_30_day_pre_fix_gap"] == 1
+    assert not any(m in json.dumps(got) for m in ids)
+
+
+class Unstable:
+    """Answers differ between the first and the second pass."""
+
+    def __init__(self, c, n):
+        self.c, self.left = c, n
+
+    def post(self, url, json):
+        body = self.c.post(url, json=json).json()
+        self.left -= 1
+        if self.left < 0:
+            body["paid_days"]["value"] += 1.0
+        return SimpleNamespace(status_code=200, json=lambda: body, text="")
+
+
+def test_a_side_that_differs_from_itself_is_counted(served, valkey):
+    c, _ = served
+    ids = hc.scored_ids(valkey)[:6]
+    got = hc.diagnose(Unstable(c, len(ids)), c.app.state.ctx, valkey, ids)
+    assert got["http_differs_from_itself"] == 6 and got["host_differs_from_itself"] == 0
+
+
+def test_the_diagnosis_command_reads_only_runs_once_and_writes_no_id(quiet, served, valkey):
+    out, _ = quiet
+    c, _ = served
+    with pytest.raises(SystemExit, match="http-parity runs first"):
+        cli.http_diagnose_cmd(args(), client=c, ctx=c.app.state.ctx, r=valkey)
+    (out / cli.HTTP_PARITY_REPORT).write_text(json.dumps({"met": False}))
+    keys = valkey.dbsize()
+    assert cli.http_diagnose_cmd(args(), client=c, ctx=c.app.state.ctx, r=valkey) == 0
+    report = json.loads((out / cli.HTTP_DIAGNOSIS_REPORT).read_text())
+    assert report["store_keys_before"] == report["store_keys_after"] == keys == valkey.dbsize()
+    assert report["customers"] == 12 and report["http_differs_from_host"] == 0
+    text = (out / cli.HTTP_DIAGNOSIS_REPORT).read_text()
+    assert not any(m in text for m in hc.scored_ids(valkey))
+    with pytest.raises(SystemExit, match="runs once"):
+        cli.http_diagnose_cmd(args(), client=c, ctx=c.app.state.ctx, r=valkey)

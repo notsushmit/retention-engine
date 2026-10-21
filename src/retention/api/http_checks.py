@@ -13,6 +13,9 @@ hold counts, timings and field names only, never a customer ID.
   threads at once, every answer equal and no 5xx; GET /at-risk alike.
 - december: POST /score with an as_of in December 2016 answers 409 with no reasons and
   passes the never-used-word scan.
+- diagnose (D-244, a diagnostic found after a result, not a mark): the container and the
+  host twice each on the same sample; each side against itself, and per schema path the
+  largest gaps (absolute, relative, ulps) where they differ; counts only.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import struct
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -239,4 +243,106 @@ def config_matches(client, committed_sha256: str) -> dict[str, Any]:
         "served_config_sha256": body.get("config_sha256"),
         "committed_config_sha256": committed_sha256,
         "met": body.get("config_sha256") == committed_sha256,
+    }
+
+
+# --- the parity diagnosis (D-244, found after a result: HTTP parity 996 of 1,000) -------------
+
+
+def leaves(body: Any, prefix: str = "") -> dict[str, Any]:
+    """Every leaf of a JSON body by its schema path (list items by position)."""
+    if isinstance(body, dict):
+        out: dict[str, Any] = {}
+        for k, v in body.items():
+            out |= leaves(v, f"{prefix}{k}.")
+        return out
+    if isinstance(body, list | tuple):
+        out = {}
+        for i, v in enumerate(body):
+            out |= leaves(v, f"{prefix}{i}.")
+        return out
+    return {prefix.rstrip("."): body}
+
+
+def ordered_bits(x: float) -> int:
+    """The float's bits as an integer that orders like the float (for distances in ulps)."""
+    i = struct.unpack("<q", struct.pack("<d", x))[0]
+    return -(i & 0x7FFFFFFFFFFFFFFF) if i < 0 else i
+
+
+def ulps(a: float, b: float) -> int:
+    return abs(ordered_bits(a) - ordered_bits(b))
+
+
+def is_float(v: Any) -> bool:
+    return isinstance(v, float) and not isinstance(v, bool)
+
+
+def leaf_gaps(pairs: list[tuple[dict[str, Any], dict[str, Any]]]) -> dict[str, dict[str, Any]]:
+    """Per schema path, over every (a, b) pair: how many differ; for floats the largest
+    absolute and relative gap and the largest distance in ulps. Values are never kept."""
+    out: dict[str, dict[str, Any]] = {}
+    for a, b in pairs:
+        la, lb = leaves(a), leaves(b)
+        for path in sorted(set(la) | set(lb)):
+            x, y = la.get(path), lb.get(path)
+            if canonical(x) == canonical(y):
+                continue
+            row = out.setdefault(path, {"differing": 0})
+            row["differing"] += 1
+            if is_float(x) and is_float(y):
+                gap = abs(x - y)
+                rel = gap / max(abs(x), abs(y)) if max(abs(x), abs(y)) else 0.0
+                row["max_abs_gap"] = max(row.get("max_abs_gap", 0.0), gap)
+                row["max_rel_gap"] = max(row.get("max_rel_gap", 0.0), rel)
+                row["max_ulps"] = max(row.get("max_ulps", 0), ulps(x, y))
+            else:
+                row["kind"] = "not a float pair"
+    return dict(sorted(out.items()))
+
+
+PROBABILITY_PATHS = (
+    "risk.days_7.probability",
+    "risk.days_30.probability",
+    "risk.days_59.probability",
+    "reasons.0.probability_before_fix",
+    "reasons.1.probability_before_fix",
+)
+ACTION_BASIS = "reasons.1.probability_before_fix"  # the 30-day probability before the fix
+
+
+def diagnose(client, ctx, r, ids: list[str]) -> dict[str, Any]:
+    """The container (HTTP) and the host (svc.answer), twice each, on `ids`: counts and gap
+    sizes by schema path only; no ID and no customer's value."""
+    http, host = [], []
+    for _ in range(2):
+        http.append({m: client.post("/score", json={"msno": m}).json() for m in ids})
+        host.append({m: svc.answer(ctx, r, svc.ScoreRequest(msno=m)) for m in ids})
+    http_self = sum(canonical(http[0][m]) != canonical(http[1][m]) for m in ids)
+    host_self = sum(canonical(host[0][m]) != canonical(host[1][m]) for m in ids)
+    differ = [m for m in ids if canonical(http[0][m]) != canonical(host[0][m])]
+    pairs = [(http[0][m], host[0][m]) for m in differ]
+    gaps = leaf_gaps(pairs)
+    reason_positions = {
+        str(i): sum(any(p.startswith(f"reasons.{i}.") for p in leaf_gaps([pair])) for pair in pairs)
+        for i in (0, 1)
+    }
+    action_changed = [
+        pair
+        for pair in pairs
+        if canonical(pair[0]["action"]["highest_net_value_action"])
+        != canonical(pair[1]["action"]["highest_net_value_action"])
+    ]
+    follows = [any(p in leaf_gaps([pair]) for p in PROBABILITY_PATHS) for pair in action_changed]
+    basis = [ACTION_BASIS in leaf_gaps([pair]) for pair in action_changed]
+    return {
+        "customers": len(ids),
+        "http_differs_from_itself": http_self,
+        "host_differs_from_itself": host_self,
+        "http_differs_from_host": len(differ),
+        "gaps_by_path": gaps,
+        "reason_positions_changed": reason_positions,
+        "action_changed": len(action_changed),
+        "action_changed_with_a_probability_gap": sum(follows),
+        "action_changed_with_a_30_day_pre_fix_gap": sum(basis),
     }
