@@ -902,3 +902,13 @@ step7:
       The throttled replay took 816.8 s and peaked at 2.145 GB, against 550.6 s and
       1.671 GB at full speed; it started 6 minutes after a restart of the Mac, so
       these figures are not comparable; determinism compares the table hash only.
+
+step7_images:
+  label: read in 7b without pulling (registry metadata only); registered before any pull
+  python: python:3.11.17-slim-bookworm@sha256:f06d01d4ba3f8ad5af45a3ec87df19c1d317d8e8961edc0fabda61811af6f7cf  # linux/arm64 sha256:8f51ccb8569b75cf967ffe3e1638b9953042bf36142d7032cbb6f0696c9cd2c6, 47,276,582 bytes compressed
+  uv: ghcr.io/astral-sh/uv:0.12.24@sha256:3af4716e991d6956a41e573eab705d0ee08500cd829ed30293eb8472f372c65a  # linux/arm64 sha256:49b038b84be7d7cd1f54ae0c78468d639ddfc3b5cf660c3c870d867f7e397c9a, 18,878,458 bytes compressed
+  pulled: in 7d at the build, not before
+  docs_notes:
+    - >-
+      The python:3.11.17-slim-bookworm tag was rebuilt on 2026-10-21 at 01:20 UTC,
+      hours before it was pinned by digest; the pin freezes that build.
