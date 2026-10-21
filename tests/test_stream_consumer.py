@@ -168,8 +168,8 @@ def test_the_bootstrap_never_sees_a_row_dated_2016_10_01_or_later(consumer, fold
     seen = []
     real = source.bootstrap_rows
 
-    def spying(f, name):
-        for row in real(f, name):
+    def spying(f, name, bucket=None):
+        for row in real(f, name, bucket):
             seen.append(row.get("date", row.get("transaction_date")))
             yield row
 

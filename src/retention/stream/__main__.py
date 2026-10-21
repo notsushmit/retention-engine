@@ -24,10 +24,11 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
+import yaml
 
 from retention.api import __main__ as api_cli
 from retention.api.config import load_serving
-from retention.stream import move, parity, producer, source
+from retention.stream import move, parity, producer, replay, source
 
 REPORT = "stream_parity_{t}.json"
 
@@ -139,13 +140,208 @@ def stream_parity_cmd(args, gather=gather) -> int:
     return 0
 
 
+# --- recount, cancel-ids, replay -----------------------------------------------------------------
+
+RECOUNT = "recount_2016-10.json"
+CANCEL_IDS = "cancel_ids_2016-10.json"
+
+
+def interim(fraction):
+    from retention.models.__main__ import interim_dir
+
+    return interim_dir(fraction)
+
+
+def begin(args, name: str) -> tuple[Path, Path, float]:
+    """Clean tree and the run-once guard; returns (repo, report path, start time)."""
+    repo = Path.cwd()
+    api_cli.require_clean(repo)
+    path = api_cli.out_dir(args.fraction) / name
+    api_cli.run_once(path)
+    return repo, path, time.time()
+
+
+def finish(report: dict, repo: Path, path: Path, t0: float) -> dict:
+    report = api_cli.stamp(report, repo, t0)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(replay.json_ready(report))
+    print(replay.json_ready(report), end="")
+    return report
+
+
+def recount_cmd(args, folder=None) -> int:
+    repo, path, t0 = begin(args, RECOUNT)
+    report = finish(replay.recount(folder or interim(args.fraction)), repo, path, t0)
+    if not report["met"]:
+        print(f"EVENT COUNT NOT MET: {report['total']} against {report['expected']}")
+        return 1
+    return 0
+
+
+def scored_at(t, fraction) -> set[str]:
+    """Customers scored at t: the P2 main population (in_exp30 and a main segment), read from
+    labels.parquet's pre-T columns through the lock-aware loader."""
+    from retention.models.__main__ import processed_dir
+    from retention.models.data import load_labels
+    from retention.models.protocol import load_protocol
+
+    protocol = load_protocol()
+    lab = load_labels(
+        processed_dir(fraction) / "labels.parquet", [t], ["in_exp30", "segment"], protocol
+    )
+    keep = lab.in_exp30.astype(bool) & lab.segment.isin(protocol.main_segments)
+    return set(lab.msno[keep.to_numpy()].astype(str))
+
+
+def cancel_ids_cmd(args, folder=None, scored=None) -> int:
+    repo, path, t0 = begin(args, CANCEL_IDS)
+    ids = scored if scored is not None else scored_at(source.BOOTSTRAP, args.fraction)
+    finish(replay.cancel_ids(folder or interim(args.fraction), ids), repo, path, t0)
+    return 0
+
+
+def replay_name(args) -> str:
+    if args.bucket is not None:
+        return f"replay_dry_bucket{args.bucket}.json"
+    return f"replay_{args.speed}.json"
+
+
+def check_replay_args(args) -> None:
+    dbs = load_serving()["step6"]["databases"]
+    if args.db == int(dbs["loaded_store"]):
+        raise SystemExit("database 0 holds the loaded store; step 6 never writes it")
+    want = int(dbs["determinism_replay"] if args.speed == "throttled" else dbs["replay"])
+    if args.bucket is not None and args.speed != "full":
+        raise SystemExit("the dry run replays one bucket at full speed")
+    if args.db != want:
+        raise SystemExit(f"a {args.speed}-speed replay goes to database {want}")
+
+
+def table_path(args) -> Path:
+    registered = Path(load_serving()["step6"]["outputs"]["stream_features"])
+    if args.bucket is not None:
+        return registered.with_name(f"{registered.stem}_bucket{args.bucket}.parquet")
+    if args.speed == "throttled":
+        return registered.with_name(f"{registered.stem}_throttled.parquet")
+    return registered
+
+
+def gather_replay(args) -> dict:
+    """Everything a replay reads besides its sources: the client, the label settings, the
+    models through the registry alias, the store columns, the scored set, the paths."""
+    from retention.api import registry
+    from retention.explain.config import load_explain_config
+    from retention.explain.model import load_settings
+    from retention.labels.config import load_label_config
+    from retention.models.__main__ import processed_dir
+    from retention.models.protocol import load_protocol
+    from retention.optimize.value import EXTRA_COLUMNS
+
+    protocol = load_protocol()
+    settings = load_settings(horizons=(7, 30, 59))
+    with tempfile.TemporaryDirectory() as tmp:
+        models = registry.load_serving_models(
+            registry.registry_settings(Path.cwd()), settings, protocol, Path(tmp)
+        )
+    explain = load_explain_config(settings.columns)
+    facts = sorted({c for cs in explain.facts.values() for c in cs} | {"tenure_days"})
+    columns = list(dict.fromkeys([*settings.columns, *EXTRA_COLUMNS, *facts]))
+    scored = scored_at(source.BOOTSTRAP, args.fraction)
+    processed = processed_dir(args.fraction)
+    return {
+        "r": producer.client_for(args.db),
+        "folder": interim(args.fraction),
+        "cfg": load_label_config(),
+        "members": processed / "members.parquet",
+        "cleaned": processed / "transactions.parquet",
+        "is_scored": scored.__contains__,
+        "c01": models.c01,
+        "models_version": models.version,
+        "seed": protocol.seed,
+        "columns": columns,
+        "main": tuple(protocol.main_segments),
+        "sample_buckets": to_percent_of(args.fraction),
+    }
+
+
+def to_percent_of(fraction) -> int:
+    from retention.data.sample import resolve_fraction, to_percent
+
+    raw = yaml.safe_load(Path("configs/kkbox.yaml").read_text())["data"]
+    return to_percent(resolve_fraction(fraction, raw))
+
+
+def replay_cmd(args, gather=gather_replay) -> int:
+    check_replay_args(args)
+    repo, path, t0 = begin(args, replay_name(args))
+    out = api_cli.out_dir(args.fraction)
+    if args.speed == "throttled":
+        full = out / "replay_full.json"
+        if not full.exists():
+            raise SystemExit("the throttled replay runs after the full-speed one (step6.run_order)")
+    g = gather(args)
+    report, tl = replay.run(
+        g["r"], args.db, g["folder"], g["cfg"], g["members"], g["is_scored"], g["c01"],
+        g["seed"], g["columns"], g["main"], table_path(args),
+        throttled=args.speed == "throttled", bucket=args.bucket,
+    )  # fmt: skip
+    report["models_version"] = g["models_version"]
+    code = 0
+    if args.bucket is not None:
+        report["not_a_mark"] = "dry run on one md5 bucket"
+        report["projection"] = replay.project(report, factor=g["sample_buckets"])
+        report["source_row_link"] = replay.link_check(
+            g["cleaned"], tl.tx, source.STORE_DATE, args.bucket
+        )
+        code = {"proceed": 0, "stop_and_ask": 2, "stop": 1}[report["projection"]["verdict"]]
+        code = code or (0 if report["source_row_link"]["met"] else 1)
+    elif args.speed == "full":
+        recount = out / RECOUNT
+        if not recount.exists():
+            raise SystemExit("the recount runs before the replay is judged (step6.run_order)")
+        expected = json.loads(recount.read_text())["total"]
+        report["event_count"] = {
+            "recount": expected,
+            "registered": replay.EXPECTED_EVENTS,
+            "produced": report["produced"],
+            "consumed": report["consumed"],
+            "met": report["produced"] == report["consumed"] == expected == replay.EXPECTED_EVENTS,
+        }
+        code = 0 if report["event_count"]["met"] else 1
+    else:
+        full = json.loads((out / "replay_full.json").read_text())
+        report["determinism"] = {
+            "full_speed_sha256": full["table_sha256"],
+            "throttled_sha256": report["table_sha256"],
+            "met": full["table_sha256"] == report["table_sha256"],
+        }
+        code = 0 if report["determinism"]["met"] else 1
+    finish(report, repo, path, t0)
+    return code
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m retention.stream")
     sub = parser.add_subparsers(dest="command", required=True)
     sp = sub.add_parser("stream-parity", help="judge feature and score parity of the replay")
     sp.add_argument("--fraction", type=float, default=None)
     sp.add_argument("--db", type=int, required=True)
+    rc = sub.add_parser("recount", help="count October's source rows (event_count)")
+    rc.add_argument("--fraction", type=float, default=None)
+    ci = sub.add_parser("cancel-ids", help="counts only: never-used words in cancel-event IDs")
+    ci.add_argument("--fraction", type=float, default=None)
+    rp = sub.add_parser("replay", help="one replay into a replay database")
+    rp.add_argument("--fraction", type=float, default=None)
+    rp.add_argument("--db", type=int, required=True)
+    rp.add_argument("--speed", choices=["full", "throttled"], required=True)
+    rp.add_argument("--bucket", type=int, default=None)
     args = parser.parse_args(argv)
+    if args.command == "recount":
+        return recount_cmd(args)
+    if args.command == "cancel-ids":
+        return cancel_ids_cmd(args)
+    if args.command == "replay":
+        return replay_cmd(args)
     return stream_parity_cmd(args)
 
 

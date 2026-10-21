@@ -34,6 +34,7 @@ from typing import Any
 import duckdb
 
 from retention.api.config import load_serving
+from retention.data.sample import bucket_sql
 from retention.data.stream import USER_LOGS_TYPES
 
 CFG = load_serving()
@@ -108,12 +109,15 @@ def fields(src: Source) -> tuple[str, ...]:
     return (*src.columns, "source_row") if src.row_number else src.columns
 
 
-def query(src: Source, lo: date | None, hi: date) -> str:
-    """The one SQL statement a read runs: the window [lo, hi) of one file, in tie order."""
+def query(src: Source, lo: date | None, hi: date, bucket: int | None = None) -> str:
+    """The one SQL statement a read runs: the window [lo, hi) of one file, in tie order;
+    with `bucket`, only that md5 bucket's customers (the sample's own bucket rule)."""
     cols = ", ".join(src.columns)
     where = f"{src.date_column} < {day_number(hi)}"
     if lo is not None:
         where = f"{src.date_column} >= {day_number(lo)} and {where}"
+    if bucket is not None:
+        where = f"{where} and {bucket_sql('msno')} = {int(bucket)}"
     order = [src.date_column, "msno", *(f"{c} asc nulls first" for c in src.columns if c != "msno")]
     reader = f"read_parquet('{src.path}')"
     if src.row_number:
@@ -138,12 +142,17 @@ def run(sql: str, batch_rows: int) -> Iterator[list[tuple]]:
 
 
 def read(
-    src: Source, lo: date | None, hi: date, ceiling: date = STORE_DATE, batch_rows: int = 50_000
+    src: Source,
+    lo: date | None,
+    hi: date,
+    ceiling: date = STORE_DATE,
+    batch_rows: int = 50_000,
+    bucket: int | None = None,
 ) -> Iterator[dict[str, Any]]:
     """One file's rows in [lo, hi), in tie order; refused before any query if hi > ceiling."""
     check_bounds(lo, hi, ceiling)
     date_at = src.columns.index(src.date_column)
-    for rows in run(query(src, lo, hi), batch_rows):
+    for rows in run(query(src, lo, hi, bucket), batch_rows):
         for row in rows:
             if row[date_at] >= day_number(ceiling):  # a second guard on what came back
                 raise PermissionError(f"a row dated {row[date_at]} came back")
@@ -156,23 +165,31 @@ def sort_key(src: Source, row: dict[str, Any]) -> tuple:
     return (row[src.date_column], src.rank, row["msno"], rest)
 
 
-def keyed(src: Source, lo: date, hi: date, ceiling: date) -> Iterator[tuple]:
+def keyed(
+    src: Source, lo: date, hi: date, ceiling: date, bucket: int | None = None
+) -> Iterator[tuple]:
     """One file's rows with their tie-rule keys (its own function, so each stream keeps its
     own source)."""
-    for row in read(src, lo, hi, ceiling):
+    for row in read(src, lo, hi, ceiling, bucket=bucket):
         yield sort_key(src, row), src.name, row
 
 
 def events(
-    folder: Path, lo: date = FIRST_DAY, hi: date = STORE_DATE, ceiling: date = STORE_DATE
+    folder: Path,
+    lo: date = FIRST_DAY,
+    hi: date = STORE_DATE,
+    ceiling: date = STORE_DATE,
+    bucket: int | None = None,
 ) -> Iterator[dict[str, Any]]:
     """The replay's events, numbered from 1 in the registered order."""
-    streams = [keyed(s, lo, hi, ceiling) for s in sources(folder)]
+    streams = [keyed(s, lo, hi, ceiling, bucket) for s in sources(folder)]
     for seq, (_, name, row) in enumerate(heapq.merge(*streams, key=lambda x: x[0]), start=1):
         yield {"seq": seq, "source": name, **row}
 
 
-def bootstrap_rows(folder: Path, source: str) -> Iterator[dict[str, Any]]:
+def bootstrap_rows(
+    folder: Path, source: str, bucket: int | None = None
+) -> Iterator[dict[str, Any]]:
     """One file's rows dated before the bootstrap snapshot (2016-10-01), in tie order."""
     src = next(s for s in sources(folder) if s.name == source)
-    return read(src, None, BOOTSTRAP, ceiling=BOOTSTRAP)
+    return read(src, None, BOOTSTRAP, ceiling=BOOTSTRAP, bucket=bucket)

@@ -255,6 +255,18 @@ def diagnostics(
         "inputs_before_t_match": sum(matched.get(m, False) for m in ids),
         "inputs_before_t_differ": sum(not matched.get(m, False) for m in ids),
         "with_same_day_ties": len(ties),
+        # tied customers whose mismatch includes a labels-state column, and those whose does not
+        "tied_with_labels_state_mismatch": sum(
+            bool(diffs[m] & (set(LABELS_STATE) | {"population"})) for m in ties
+        ),
+        "tied_without_labels_state_mismatch": sum(
+            not diffs[m] & (set(LABELS_STATE) | {"population"}) for m in ties
+        ),
+        "labels_state_mismatch_without_ties": sum(
+            bool(c & (set(LABELS_STATE) | {"population"}))
+            for m, c in diffs.items()
+            if m not in ties
+        ),
         "usage_mismatching": len(usage_ids),
         "usage_stream_equals_recount": len(_usage_equal(stream, recount, usage_ids))
         if recount

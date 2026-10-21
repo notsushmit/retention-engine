@@ -191,13 +191,15 @@ class Consumer:
 
     # --- the bootstrap -----------------------------------------------------------------------
 
-    def bootstrap(self, folder: Path, batch: int = 5_000) -> dict[str, int]:
+    def bootstrap(
+        self, folder: Path, batch: int = 5_000, bucket: int | None = None
+    ) -> dict[str, int]:
         """State from rows dated before 2016-10-01, read only through source.bootstrap_rows."""
         counts = {"user_logs": 0, "transactions": 0, "transactions_v2": 0}
         first: dict[str, int] = {}
         last: dict[str, int] = {}
         pipe = self.r.pipeline(transaction=False)
-        for row in source.bootstrap_rows(folder, "user_logs"):
+        for row in source.bootstrap_rows(folder, "user_logs", bucket):
             m, day = row["msno"], row["date"]
             totals = day_totals(row)  # refuses a missing or NaN value here too
             first[m] = min(first.get(m, day), day)
@@ -211,7 +213,7 @@ class Consumer:
             if counts["user_logs"] % batch == 0:
                 pipe.execute()
         for name in ("transactions", "transactions_v2"):
-            for row in source.bootstrap_rows(folder, name):
+            for row in source.bootstrap_rows(folder, name, bucket):
                 self._tx(pipe, row, name)
                 counts[name] += 1
                 if counts[name] % batch == 0:
