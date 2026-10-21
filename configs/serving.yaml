@@ -754,3 +754,17 @@ alerts_hidden_segments:  # amendment A7; a new key, so the registered api.alerts
     dimension_totals: 10
     too_small_segments: 65
     every_other_field: 0
+
+alerts_knowable_count:  # amendment A8; a new key, so the registered count stays in the config unchanged
+  id: A8
+  date: "2026-10-21"
+  label: >-
+    the registered count was wrong: the user's arithmetic error in the earlier reading,
+    not a tuned result; found by the 5d test that recomputes the count from the pinned
+    file under the registered rule
+  amends: step5.alerts.trend_knowable_at_2016_11_01  # kept as registered (7), labelled wrong here
+  registered_value: 7  # wrong
+  rule: week start + 37 days on or before the store's date  # unchanged (api.alerts.trend.knowable_rule)
+  knowable_at_2016_11_01: 6  # of 10, under the unchanged rule
+  first_not_knowable: {alert_id: cp7, week: "2016-09-26", knowable_from: "2016-11-02"}  # one day after 2016-11-01
+  pinned_file: unchanged  # data/processed/kkbox/sample_020/trends/alerts_run.json keeps its pinned SHA-256
