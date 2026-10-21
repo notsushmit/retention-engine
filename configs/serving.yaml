@@ -855,3 +855,50 @@ stream_parity_columns:  # amendment A9; a new key, so streaming.pass_marks stays
       labels-state difference with matching inputs before T is a Phase 2 finding; any
       other difference is not met as a stream difference, with the largest difference
       and the columns involved, and no code change without the user's OK
+
+step7:
+  label: registered before any step 7 code; digests of the python and uv images are read in 7b without pulling and registered in their own key before any pull
+  registry_source: >-
+    rebase onto <repo>/mlruns/artifacts only when the version's source holds
+    mlruns/artifacts/<run>/artifacts/bundle; a source without that part, or holding "..",
+    is refused; the eight SHA-256 checks and the manifest check are unchanged
+  mlruns_mount: >-
+    read-only at /app/mlruns; mlflow.db's SHA-256 equal before and after the stack
+    runs, and a read-only load on the host (test) shows no write and no migration
+    (schema version dc11669786a5 unchanged); any write or migration stops step 7
+  images:
+    python: python:3.11.17-slim-bookworm  # the host's Python patch; digest read in 7b
+    uv: ghcr.io/astral-sh/uv:0.12.24  # the host's uv; build stage only; digest read in 7b
+    valkey: valkey/valkey:9.1.2-alpine3.24@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+  install: uv sync --frozen --no-dev --group api  # from uv.lock; MLflow 3.17.0 as on the host
+  runtime_packages: [libgomp1]  # LightGBM's OpenMP; GCC runtime, GPL-3.0-or-later with the GCC Runtime Library Exception 3.1
+  build_context: allowlist .dockerignore (everything ignored, then src/, configs/, pyproject.toml, uv.lock, README.md)
+  ports: {api: "127.0.0.1:8000", valkey: "127.0.0.1:6379"}  # host loopback only
+  api:
+    command: uvicorn --factory retention.api.app:create_app --host 0.0.0.0 --port 8000
+    user: non-root
+    read_only_rootfs: true
+    tmpfs: /tmp
+    valkey_url: redis://valkey:6379/0
+    mounts_read_only: [mlruns, the files load_context reads under data/processed]  # never data/raw, never .env
+    memory_limit: none  # decided after 7d measures the container
+  valkey:
+    persistence: none  # --save "" --appendonly no; the store only comes from a recorded load
+    maxmemory: none  # no eviction of store keys
+  restart: unless-stopped
+  healthchecks:
+    valkey: ping
+    api: GET /health answers 200 or 503 (alive; 503 is "not ready", the right answer for an empty store)
+  make: {up: docker compose up -d --wait, then print /health, down: docker compose down}
+  load_snapshot: a host command into 127.0.0.1:6379, as in 5f; the reload procedure for database 0 is registered in step 8
+  docker_vm: unchanged (8,319,504,384 bytes)
+  valkey_replays_at_once: 1  # beside the store (D-231: two full replays plus the VM pushed the Mac into swap)
+  image_size: measured and reported; no limit
+  ci: no image build; the file checks run as ordinary tests
+  standalone_container: retention-valkey is retired before 7d (it holds port 6379)
+  run_7d: not a mark; /health 503 "store empty", registry loaded read-only, mlflow.db hash unchanged, docker stats, swap and free memory recorded
+  docs_notes:
+    - >-
+      The throttled replay took 816.8 s and peaked at 2.145 GB, against 550.6 s and
+      1.671 GB at full speed; it started 6 minutes after a restart of the Mac, so
+      these figures are not comparable; determinism compares the table hash only.
