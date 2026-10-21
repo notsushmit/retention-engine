@@ -1,0 +1,8 @@
+# Allowlist: everything is left out of the build context except what the image needs.
+*
+!src/
+!configs/
+!pyproject.toml
+!uv.lock
+!README.md
+**/__pycache__

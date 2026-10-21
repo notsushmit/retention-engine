@@ -144,7 +144,7 @@ def registered(tmp_path_factory) -> reg.RegistrySettings:
         alias="serving",
         bundle=hashes,
         tracking_uri=f"sqlite:///{tmp / 'mlflow.db'}",
-        artifact_root=tmp / "artifacts",
+        artifact_root=tmp / "mlruns" / "artifacts",  # the layout step7.registry_source accepts
     )
     before = mlflow.get_tracking_uri()
     reg.register(settings, {n: tmp / "src" / n for n in hashes}, tmp / "staging", "abc", "f" * 64)

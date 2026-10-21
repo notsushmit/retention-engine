@@ -83,7 +83,7 @@ def settings_for(tmp: Path, hashes: dict[str, str]) -> reg.RegistrySettings:
         alias="serving",
         bundle=dict(hashes),
         tracking_uri=f"sqlite:///{tmp / 'mlflow.db'}",
-        artifact_root=tmp / "artifacts",
+        artifact_root=tmp / "mlruns" / "artifacts",  # the layout step7.registry_source accepts
     )
 
 

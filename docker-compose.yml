@@ -1,0 +1,51 @@
+# The scoring stack (configs/serving.yaml, step7): Valkey and the API, host loopback only.
+# The store is loaded from the host with load-snapshot into 127.0.0.1:6379.
+name: retention-engine
+
+services:
+  valkey:
+    image: valkey/valkey:9.1.2-alpine3.24@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    image: retention-api:step7
+    depends_on:
+      valkey:
+        condition: service_healthy
+    environment:
+      VALKEY_URL: redis://valkey:6379/0
+    ports:
+      - "127.0.0.1:8000:8000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./mlruns:/app/mlruns:ro
+      - ./data/processed/kkbox/sample_020/optimize/plans.parquet:/app/data/processed/kkbox/sample_020/optimize/plans.parquet:ro
+      - ./data/processed/kkbox/sample_020/trends/alerts_run.json:/app/data/processed/kkbox/sample_020/trends/alerts_run.json:ro
+    restart: unless-stopped
+    healthcheck:
+      # Alive when /health answers 200 (ready) or 503 (not ready, e.g. an empty store).
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import urllib.error, urllib.request
+          try:
+              urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=5)
+          except urllib.error.HTTPError as e:
+              raise SystemExit(0 if e.code == 503 else 1)
+      interval: 10s
+      timeout: 6s
+      retries: 6
+      start_period: 60s

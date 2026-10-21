@@ -1,4 +1,4 @@
-.PHONY: setup data labels features train test lint up
+.PHONY: setup data labels features train test lint up down
 
 # Load .env if present (Kaggle credentials, SAMPLE_FRACTION).
 -include .env
@@ -32,8 +32,16 @@ features:
 train:
 	@echo "make train is not implemented until Phase 3" && exit 1
 
+# The scoring stack (configs/serving.yaml, step7): Valkey and the API on 127.0.0.1.
+# /health answers 503 until a store is loaded (load-snapshot, from the host).
+API_URL ?= http://127.0.0.1:8000
+
 up:
-	@echo "make up is not implemented until Phase 8" && exit 1
+	docker compose up -d --wait
+	@curl -s -w ' (HTTP %{http_code})\n' $(API_URL)/health
+
+down:
+	docker compose down
 
 lint:
 	uv run ruff check .

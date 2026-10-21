@@ -15,12 +15,20 @@ version 1 from that folder and sets the alias.
 load: resolves the alias, downloads the version's files, refuses any missing,
 extra or changed file and a manifest whose hashes differ from the bundle, and only
 then parses the models. Runs are tagged with repository-relative paths only.
+
+The version's source is an absolute path on the machine that registered it. At load
+it is rebased onto this repository's artifact root (configs/serving.yaml,
+step7.registry_source): only a source holding <artifact root>/<run>/artifacts/bundle
+(artifact root mlruns/artifacts, configs/evaluation.yaml) is accepted, and nothing
+holding "..". On the host the rebase changes nothing; in the container the
+repository is /app. The eight SHA-256 checks still decide.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,6 +74,7 @@ class RegistrySettings:
     bundle: dict[str, str]
     tracking_uri: str
     artifact_root: Path
+    artifact_marker: str = "mlruns/artifacts"  # configs/evaluation.yaml tracking.artifact_root
 
 
 def tracking_uri(repo: Path, env: dict[str, str] | None = None) -> str:
@@ -90,6 +99,7 @@ def registry_settings(
         bundle=dict(reg["bundle"]),
         tracking_uri=tracking_uri(repo, env),
         artifact_root=repo / root,
+        artifact_marker=str(root).strip("/"),
     )
 
 
@@ -185,15 +195,29 @@ def register(
 # --- loading -----------------------------------------------------------------------------
 
 
+def rebased_source(source: str, artifact_root: Path, marker: str = "mlruns/artifacts") -> str:
+    """The registered source moved onto `artifact_root` (step7.registry_source); refuses any
+    source that is not file://.../<marker>/<run id>/artifacts/bundle or that holds ".."."""
+    if ".." in source:
+        raise ModelRefused("the registered source holds '..'; refused")
+    pattern = rf"file://(/.*)?/{re.escape(marker)}/(?P<run>[0-9a-f]{{32}})/artifacts/bundle"
+    m = re.fullmatch(pattern, source)
+    if m is None:
+        raise ModelRefused(f"the registered source is not under {marker}/<run>/artifacts/bundle")
+    return (artifact_root / m["run"] / "artifacts" / "bundle").as_uri()
+
+
 def download_bundle(settings: RegistrySettings, workdir: Path) -> tuple[Path, Any]:
-    """The alias's version downloaded to `workdir`; a missing alias is refused."""
+    """The alias's version downloaded to `workdir` from its source rebased onto this
+    repository's artifact root; a missing alias is refused."""
     client = client_for(settings)
     try:
         version = client.get_model_version_by_alias(settings.name, settings.alias)
     except MlflowException as e:
         raise ModelRefused(f"{settings.name}@{settings.alias} is not registered") from e
     workdir.mkdir(parents=True, exist_ok=True)
-    path = mlflow.artifacts.download_artifacts(artifact_uri=version.source, dst_path=str(workdir))
+    source = rebased_source(version.source, settings.artifact_root, settings.artifact_marker)
+    path = mlflow.artifacts.download_artifacts(artifact_uri=source, dst_path=str(workdir))
     return Path(path), version
 
 
