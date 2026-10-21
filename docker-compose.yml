@@ -28,6 +28,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    mem_limit: 1536m  # 1.5 GiB, configs/serving.yaml api_memory_limit (the user's choice)
     volumes:
       - ./mlruns:/app/mlruns:ro
       - ./data/processed/kkbox/sample_020/optimize/plans.parquet:/app/data/processed/kkbox/sample_020/optimize/plans.parquet:ro

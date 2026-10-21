@@ -55,7 +55,15 @@ def test_the_api_is_read_only_with_tmp_and_reaches_valkey_by_service_name():
     assert a["read_only"] is True and a["tmpfs"] == ["/tmp"]
     assert a["environment"] == {"VALKEY_URL": STEP7["api"]["valkey_url"]}
     assert a["depends_on"] == {"valkey": {"condition": "service_healthy"}}
-    assert "env_file" not in a and "mem_limit" not in a and "deploy" not in a  # limit: none
+    assert "env_file" not in a and "deploy" not in a
+
+
+def test_the_api_memory_limit_is_the_registered_one_and_valkey_has_none():
+    limit = load_serving()["api_memory_limit"]
+    assert limit["api"] == "1.5GiB" and limit["valkey"] == "none"
+    mib = float(limit["api"].removesuffix("GiB")) * 1024
+    assert COMPOSE["services"]["api"]["mem_limit"] == f"{int(mib)}m" == "1536m"
+    assert "mem_limit" not in COMPOSE["services"]["valkey"]
 
 
 def test_the_api_mounts_only_mlruns_and_the_two_pinned_files_read_only():
