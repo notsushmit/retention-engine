@@ -45,7 +45,11 @@ customers, with no registered full-count mark judged and no stop rule stopping.
 Writes only step4_dry_run.json, refuses to overwrite it, and never reads or writes
 step4_report.json (the run-once guard of the real run is untouched).
 
-Every command refuses to run when a tracked file differs from HEAD, so each
+write-docs: write docs/scoring_api.md from configs/serving.yaml and the response
+schemas (retention.api.docs); nothing else is written. It reads no data and is
+not a run, so it does not need a clean tree.
+
+Every other command refuses to run when a tracked file differs from HEAD, so each
 report ties to a commit.
 """
 
@@ -501,7 +505,13 @@ def main(argv: list[str] | None = None) -> int:
     sp = sub.add_parser("score-parity", help="judge every registered step 4 mark, once")
     sp.add_argument("--fraction", type=float, default=None)
     sp.add_argument("--dry-run", action="store_true", help="one md5 bucket, comparisons only")
+    sub.add_parser("write-docs", help="write docs/scoring_api.md from the config and schemas")
     args = parser.parse_args(argv)
+    if args.command == "write-docs":
+        from retention.api import docs
+
+        print(docs.write())
+        return 0
     if args.command == "score-parity":
         return score_parity(args)
     if args.command == "load-snapshot":
