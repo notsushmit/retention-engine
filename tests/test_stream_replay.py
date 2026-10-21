@@ -117,6 +117,47 @@ def test_a_full_replay_equals_batch_and_counts_every_october_event(valkey, raw, 
             assert 0 < d["rss_gb_after_first_batch"] <= d["peak_rss_gb_after_first_batch"]
 
 
+STEPS = [
+    "clear", "bootstrap", "bootstrap_timelines", "produce", "consume", "move",
+    "move_write_table", "store",
+]  # fmt: skip
+
+
+def lines(path):
+    return [json.loads(x) for x in path.read_text().splitlines()]
+
+
+@pytest.mark.valkey
+def test_every_step_appends_a_progress_line_and_runs_never_truncate(valkey, raw, tmp_path):  # noqa: F811
+    progress = tmp_path / "replay_full_progress.jsonl"
+    first, _ = one(valkey, raw, tmp_path, progress=progress)
+    got = lines(progress)
+    assert [x["step"] for x in got] == ["start", *STEPS]
+    assert {x["run_started"] for x in got} == {got[0]["run_started"]}
+    for x in got[1:]:
+        assert x["seconds"] == first["step_seconds"][x["step"]]
+        assert x["peak_rss_gb"] == first["step_peak_rss_gb"][x["step"]]
+        assert x["rss_gb"] == first["step_rss_gb"][x["step"]] and x["database"] == 15
+    one(valkey, raw, tmp_path, progress=progress)
+    again = lines(progress)
+    assert again[: len(got)] == got and len(again) == 2 * len(got)
+    assert again[len(got)]["run_started"] != got[0]["run_started"]
+
+
+@pytest.mark.valkey
+def test_a_run_stopped_in_the_move_leaves_the_steps_before_it(valkey, raw, tmp_path, monkeypatch):  # noqa: F811
+    def stopped(*a, **k):
+        raise KeyboardInterrupt("stopped in the move")
+
+    monkeypatch.setattr(move, "chunked_move", stopped)
+    progress = tmp_path / "replay_throttled_progress.jsonl"
+    with pytest.raises(KeyboardInterrupt):
+        one(valkey, raw, tmp_path, throttled=True, progress=progress)
+    got = lines(progress)
+    assert [x["step"] for x in got] == ["start", *STEPS[:5]]
+    assert all(x["peak_rss_gb"] >= x["rss_gb"] > 0 for x in got)
+
+
 @pytest.mark.valkey
 def test_a_throttled_replay_gives_the_same_table_hash(valkey, raw, tmp_path):  # noqa: F811
     full, _ = one(valkey, raw, tmp_path)
@@ -354,6 +395,19 @@ def test_a_dry_run_with_a_broken_link_is_not_clean(quiet, monkeypatch):
     monkeypatch.setattr(replay, "run", fake_run())
     monkeypatch.setattr(replay, "link_check", lambda *a: {"met": False})
     assert cli.replay_cmd(args(bucket=3), gather=lambda a: GATHER) == 1
+
+
+def test_the_command_writes_progress_next_to_its_report(quiet, monkeypatch):
+    seen = []
+
+    def run(*a, **k):
+        seen.append(k["progress"])
+        return fake_run()(*a, **k)
+
+    monkeypatch.setattr(replay, "run", run)
+    monkeypatch.setattr(replay, "link_check", lambda *a: {"met": True})
+    cli.replay_cmd(args(bucket=3), gather=lambda a: GATHER)
+    assert seen == [quiet / "replay_dry_bucket3_progress.jsonl"]
 
 
 def test_a_two_bucket_dry_run_projects_by_a_factor_of_10(quiet, monkeypatch):

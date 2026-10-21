@@ -5,7 +5,9 @@ one replay (step6). With --bucket it is a dry run on one or two md5 buckets (D-2
 mark, projected to the full sample by a factor of 20 over the buckets replayed.
 --rerun-reason reruns a dry run only: the earlier report and table are renamed with the
 earlier report's git head as a suffix (never overwritten) and the reason is recorded in the
-new report. A registered run (no --bucket) is never rerun.
+new report. A registered run (no --bucket) is never rerun. Every replay appends one line per
+step to <report stem>_progress.jsonl as the step ends (D-232), so a stopped run leaves
+its step times and memory.
 
 stream-parity --db <replay database>: judge the registered feature and score parity of
 the replayed 2016-11-01 store (configs/serving.yaml, streaming.pass_marks, amendment
@@ -355,6 +357,7 @@ def replay_cmd(args, gather=gather_replay) -> int:
         g["seed"], g["columns"], g["main"], table_path(args),
         throttled=args.speed == "throttled", bucket=bucket_arg(args),
         keep_link=args.bucket is not None,
+        progress=path.with_name(path.stem + "_progress.jsonl"),
     )  # fmt: skip
     report["models_version"] = g["models_version"]
     code = 0

@@ -22,6 +22,11 @@ configs/serving.yaml, streaming and step6.
   source_row) and content.
 - Memory: after every step, the process's running peak (step_peak_rss_gb) and its current
   resident memory (step_rss_gb, D-227), which falls when a step gives memory back.
+- Progress (D-232, found after a result: the stopped throttled replay of D-231 left no step
+  times): with a progress path, one JSON line is appended and synced to disk at the start
+  and after every step (the step, its seconds, the running peak and current memory, the
+  wall-clock time and the run's start time), so a stopped run leaves its evidence. Lines
+  are appended, never truncated: earlier runs' lines stay, told apart by run_started.
 """
 
 from __future__ import annotations
@@ -29,10 +34,11 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import shutil
 import time
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -147,11 +153,13 @@ def run(
     t: date = source.STORE_DATE,
     n_chunks: int = move.WORK_CHUNKS,
     keep_link: bool = False,
+    progress: Path | None = None,
 ) -> tuple[dict[str, Any], move.MoveResult]:
     """One replay into `database`: its report (counts, times, memory; no customer ID) and
     the move's result. Steps are timed under step_seconds and the process's running peak
     memory after each step under step_peak_rss_gb, and its current memory under step_rss_gb
-    (keys api.__main__.stamp never writes)."""
+    (keys api.__main__.stamp never writes). With `progress`, each step is also appended to
+    that file as it ends (D-232)."""
     producer.refuse_loaded_store(r)
     producer.require_database(r, database)
     rss_start = peak_rss_gb()
@@ -160,6 +168,25 @@ def run(
     step_peak: dict[str, float] = {}
     step_rss: dict[str, float] = {}
     clock = time.time()
+    started = datetime.now().astimezone().isoformat(timespec="milliseconds")
+
+    def note(step: str, seconds: float | None, peak: float, rss: float) -> None:
+        if progress is None:
+            return
+        line = {
+            "run_started": started,
+            "database": database,
+            "step": step,
+            "seconds": seconds,
+            "peak_rss_gb": peak,
+            "rss_gb": rss,
+            "at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+        }
+        progress.parent.mkdir(parents=True, exist_ok=True)
+        with progress.open("a") as f:
+            f.write(json.dumps(line) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
 
     def lap(name: str) -> None:
         nonlocal clock
@@ -167,7 +194,10 @@ def run(
         step_seconds[name] = round(now - clock, 2)
         step_peak[name] = peak_rss_gb()
         step_rss[name] = current_rss_gb()
+        note(name, step_seconds[name], step_peak[name], step_rss[name])
         clock = now
+
+    note("start", None, rss_start, rss_now_start)
 
     work = table_path.with_name(table_path.stem + "_work")
     shutil.rmtree(work, ignore_errors=True)
