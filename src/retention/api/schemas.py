@@ -5,7 +5,9 @@ so a response missing a label, or carrying another value, cannot be built. Extra
 fields are refused. The models also check the reading rules: probabilities never
 fall from 7 to 30 to 59 days; amendment A4's pays and reads_as; D2's flag only on
 a block that does not pay; no "recommend" in a block that does not pay; no "member
-for" in a reason (amendment A3); December 2016's withheld reasons and warning.
+for" in a reason (amendment A3); December 2016's withheld reasons and warning; no
+outside code naming a never-used attribute (amendment A5). response_hits is the
+response scan with amendment A6's identifier exemption.
 
 D1, stated here as the registry asks: the action block is computed from the 30-day
 probability before the ordering fix, as in Phase 7, so it can differ from the
@@ -37,6 +39,33 @@ NEVER = re.compile(r"\b(" + "|".join(map(re.escape, LABELS.never_in_any_body)) +
 def never_used_hits(text: str) -> list[str]:
     """Every never-used attribute named in `text` (whole words, any letter case)."""
     return [m.group(0) for m in NEVER.finditer(text)]
+
+
+def response_hits(text: str, status_code: int, own_id: str | None) -> list[str]:
+    """The response scan under amendment A6 (configs/serving.yaml, msno_scan_exemption).
+
+    An identifier exemption, not a relaxation of the never-used rule: only the value
+    of the top-level msno field is skipped, and only when it equals `own_id`, the
+    requested customer's own ID (for an /at-risk row, scanned row by row, the listed
+    customer's own ID). Every error body (status 400 and above), every key, every
+    other field, the same string anywhere else, a nested msno, and another
+    customer's ID in msno are scanned in full.
+    """
+    if status_code >= 400 or own_id is None:
+        return never_used_hits(text)
+    try:
+        body = json.loads(text)
+    except ValueError:
+        return never_used_hits(text)
+    if not isinstance(body, dict):
+        return never_used_hits(text)
+    hits = []
+    for key, value in body.items():
+        hits += never_used_hits(json.dumps(key))
+        if key == LABELS.msno_exempt_field and isinstance(value, str) and value == own_id:
+            continue
+        hits += never_used_hits(json.dumps(value))
+    return hits
 
 
 class Strict(BaseModel):
@@ -206,6 +235,8 @@ class Outside(Strict):
             self.code.startswith(prefix) and len(self.code) > len(prefix)
         ):
             raise ValueError("the code is not one of the registered outside-population codes")
+        if never_used_hits(self.code):  # amendment A5
+            raise ValueError("the code names an attribute that is never shown; use A5's code")
         return self
 
 

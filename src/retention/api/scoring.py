@@ -7,7 +7,8 @@ Status (configs/serving.yaml, contract), for every customer with coverage at T:
   or segment_promo_only;
 - in_exp30 and paid or 100%-discount-only (the training population): scored,
   unless a category value was never seen by the models: outside_population,
-  unseen_level:<feature> (refused, never guessed).
+  unseen_level:<feature> (refused, never guessed); under amendment A5 a feature
+  naming a never-used attribute reads unseen_level:hidden_feature instead.
 Every outside row keeps next_expiry_in_days (days_until_expiry). A null value
 inside a feature row stays in population (native missing values).
 
@@ -54,6 +55,7 @@ import pandas as pd
 
 from retention.api.labels import LABELS, Labels
 from retention.api.ordering import HORIZONS, final_probabilities, platt_from
+from retention.api.schemas import never_used_hits
 from retention.explain.build_reasons import caveat_flags, reason_rows
 from retention.explain.config import STRENGTHS, ExplainConfig
 from retention.explain.contributions import (
@@ -130,6 +132,15 @@ def unseen_feature(model: Classifier, rows: pd.DataFrame) -> np.ndarray:
     return out
 
 
+def unseen_code(feature: str, labels: Labels = LABELS) -> str:
+    """The outside-population code of an unseen level in `feature` (amendment A5): the
+    generic code when the name contains a never-used attribute as a whole word (the
+    response scan's own test), otherwise unseen_level:<feature>."""
+    if never_used_hits(feature):
+        return labels.unseen_generic_code
+    return f"{UNSEEN}:{feature}"
+
+
 def refuse_unseen(status: pd.DataFrame, rows: pd.DataFrame, models: list[Classifier]):
     """Mark scored rows with an unseen category value as outside_population, unseen_level:<f>.
 
@@ -143,7 +154,7 @@ def refuse_unseen(status: pd.DataFrame, rows: pd.DataFrame, models: list[Classif
     status = status.copy()
     hit = status.msno.isin(refused.index).to_numpy()
     status.loc[hit, "status"] = OUTSIDE
-    status.loc[hit, "code"] = [f"{UNSEEN}:{refused[m]}" for m in status.msno[hit]]
+    status.loc[hit, "code"] = [unseen_code(refused[m]) for m in status.msno[hit]]
     return status, np.array([f is None for f in first])
 
 

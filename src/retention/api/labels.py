@@ -1,7 +1,8 @@
 """Every fixed string the service returns, read once from configs/serving.yaml.
 
 Nothing here is written in code: each value comes from a registered entry (the
-contract, its amendments A2 and A4, step 4's decisions D1 and D2, the registry).
+contract, its amendments A2, A4, A5 and A6, step 4's decisions D1 and D2, the
+registry).
 Two December 2016 strings are registered as descriptions, not as exact text; they
 are taken out of those descriptions by a fixed pattern, and loading stops if the
 registered wording no longer fits it.
@@ -47,6 +48,8 @@ class Labels:
     errors: dict[int, str]
     never_in_any_body: tuple[str, ...]
     bundle: dict[str, str]
+    unseen_generic_code: str  # A5: an unseen level in a feature naming a never-used attribute
+    msno_exempt_field: str  # A6: the one field whose own-ID value the response scan skips
 
 
 def load_labels(cfg: dict[str, Any] | None = None) -> Labels:
@@ -67,6 +70,10 @@ def load_labels(cfg: dict[str, Any] | None = None) -> Labels:
         raise ValueError("the contract must register exactly one unseen-level code")
     if d["no_usable_price"]["reads_as"] != a4["reads_as_when_not_paying"]:
         raise ValueError("D2's reading and A4's reading differ")
+    a5, a6 = c["unseen_level_codes"], c["msno_scan_exemption"]
+    generic = a5["generic_code"]
+    if not generic.startswith(unseen[0].removesuffix("<feature>")) or generic.endswith(":"):
+        raise ValueError("A5's generic code must be an unseen-level code")
     return Labels(
         statuses=(
             "scored",
@@ -98,6 +105,8 @@ def load_labels(cfg: dict[str, Any] | None = None) -> Labels:
         errors={int(code): text for code, text in k["errors"].items()},
         never_in_any_body=tuple(k["never_in_any_body"]),
         bundle=dict(c["registry"]["bundle"]),
+        unseen_generic_code=generic,
+        msno_exempt_field=a6["field"],
     )
 
 

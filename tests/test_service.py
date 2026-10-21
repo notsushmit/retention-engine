@@ -12,6 +12,7 @@ shows that without the swap the context is refused.
 from __future__ import annotations
 
 import dataclasses
+import json
 from datetime import date
 from pathlib import Path
 
@@ -372,3 +373,79 @@ def test_health_names_valkey_when_it_cannot_be_reached(ctx):
     assert h.store_date is None and h.replay_progress is None
     with pytest.raises(svc.NotReady, match="Valkey cannot be reached"):
         svc.ready_date(ctx, unreachable())
+
+
+# --- amendment A5: unseen-level codes ------------------------------------------------------------
+
+
+def test_a5_and_a6_registered_values_are_read():
+    assert LABELS.unseen_generic_code == "unseen_level:hidden_feature"
+    assert LABELS.msno_exempt_field == "msno"
+
+
+def test_a5_maps_a_never_used_feature_to_the_generic_code():
+    assert sc.unseen_code("registered_via") == "unseen_level:hidden_feature"
+    assert sc.unseen_code("last_payment_method_id") == "unseen_level:last_payment_method_id"
+
+
+def test_a5_through_refuse_unseen_on_the_hand_made_models(ctx):
+    rows = frame(3, 41)
+    rows.loc[0, "registered_via"] = 13  # a level the models never saw
+    rows.loc[1, "last_payment_method_id"] = 99
+    status = sc.population_status(
+        pd.DataFrame(
+            {"msno": rows.msno, "in_exp30": True, "segment": "paid", "days_until_expiry": 4}
+        ),
+        tuple(P.main_segments),
+    )
+    status, keep = sc.refuse_unseen(status, rows, [m.model for m in ctx.models.c01.values()])
+    assert status.code.tolist() == [
+        "unseen_level:hidden_feature",
+        "unseen_level:last_payment_method_id",
+        None,
+    ]
+    assert keep.tolist() == [False, False, True]
+
+
+def test_a5_an_outside_code_naming_a_never_used_attribute_cannot_be_built():
+    base = {"status": sc.OUTSIDE, "msno": "m", "features_as_of": NOV, "next_expiry_in_days": 3}
+    assert sch.Outside(code="unseen_level:hidden_feature", **base).code.endswith("hidden_feature")
+    with pytest.raises(ValidationError, match="never shown"):
+        sch.Outside(code="unseen_level:registered_via", **base)
+
+
+# --- amendment A6: the msno identifier exemption -------------------------------------------------
+
+OWN = "x/age+01"  # an ID holding a never-used word as a whole word
+
+
+def body(**fields) -> str:
+    return json.dumps(fields)
+
+
+def test_a6_exempts_only_the_top_level_msno_equal_to_the_own_id():
+    assert sch.never_used_hits(body(status="scored", msno=OWN)) == ["age"]
+    assert sch.response_hits(body(status="scored", msno=OWN), 200, OWN) == []
+
+
+def test_a6_scans_the_same_string_in_any_other_field_and_key():
+    assert sch.response_hits(body(msno=OWN, code=OWN), 200, OWN) == ["age"]
+    assert sch.response_hits(body(msno=OWN, row={"msno": OWN}), 200, OWN) == ["age"]
+    assert sch.response_hits(body(msno=OWN, age=1), 200, OWN) == ["age"]
+    assert sch.response_hits(body(msno=OWN, reasons=[OWN]), 200, OWN) == ["age"]
+
+
+def test_a6_scans_another_customer_s_id_in_msno():
+    assert sch.response_hits(body(msno=OWN), 200, "c000") == ["age"]
+    assert sch.response_hits(body(msno=OWN), 200, None) == ["age"]
+    assert sch.response_hits(body(msno=OWN.upper()), 200, OWN) == ["AGE"]
+
+
+@pytest.mark.parametrize("status", [404, 409, 422, 500, 503])
+def test_a6_scans_every_error_body_in_full(status):
+    assert sch.response_hits(body(msno=OWN), status, OWN) == ["age"]
+
+
+@pytest.mark.parametrize("text", [json.dumps([OWN]), json.dumps(OWN), f"plain {OWN}"])
+def test_a6_scans_a_body_that_is_not_a_json_object_in_full(text):
+    assert sch.response_hits(text, 200, OWN) == ["age"]

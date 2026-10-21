@@ -26,6 +26,8 @@ REGISTRATIONS = {
     "4e199b4": "a65d588c48b49b166f1d4cacf18b049e67953d949f73b714d2741cd5edcd6e73",  # A3
     "f1c46bc": "0973c46889ef7ffbe018b0fe92f58c943c1bc4dd26fc768adfc0e642e05cf2e5",  # A4
     "822def8": "c5b043114586b5138f660d4e1c76e9faa94435dda92e298d0a97f615b655dd78",  # step 5
+    "21fd391": "c40e1a9206f619f11f941852d64b709c1d6efbb9b57c36de197a82ddcb600801",  # A5
+    "8ec0086": "c06c7be5d7cb0f0938a069a05d3eaaaec17a3c0d1fa758e95c4e0da8edb0e63b",  # A6
 }
 REHEARSAL = Path("data/processed/kkbox/sample_020/rehearsal.json")
 OCTOBER = Path("mlruns/artifacts/9bca205ae00b4017a440d16057fa60e8/artifacts/october.json")

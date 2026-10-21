@@ -20,7 +20,7 @@ from retention.api import service as svc
 from retention.api import store as st
 from retention.api.labels import LABELS
 from retention.api.saved import ModelRefused
-from retention.api.schemas import never_used_hits
+from retention.api.schemas import never_used_hits, response_hits
 from test_registry import store_folder
 from test_service import (
     MALFORMED,
@@ -204,6 +204,7 @@ def test_score_equals_the_batch_and_the_ranking_for_every_customer(loaded, valke
     assert score_each(c, valkey, s, N_SCORED) == ([], [])
 
 
+@pytest.mark.random2000
 def test_score_equals_the_batch_and_the_ranking_on_a_random_2000_row_set(make_client, valkey):
     c = make_client()
     s = snapshot(c.app.state.ctx, n=N_RANDOM, seed=RANDOM_SEED)
@@ -319,3 +320,40 @@ def test_no_body_carries_the_placeholder_or_the_duplicate_row(make_client, valke
             body = json.loads(v)
             assert isinstance(body, dict) and body["msno"] == k.removeprefix("score ")
             assert v.count('"msno"') == 1
+
+
+# --- amendment A6 over HTTP ----------------------------------------------------------------------
+
+AGE_SCORED, AGE_INACTIVE, AGE_UNKNOWN = "x/age+01", "n/age+02", "y/age+03"
+
+
+def with_id(s, old: str, new: str):
+    """The snapshot with one scored customer's ID replaced in every table."""
+    for frame in (s.rows, s.prices, s.status, s.finals):
+        frame["msno"] = frame.msno.astype(str).replace(old, new)
+    s.known = sorted(new if m == old else m for m in s.known)
+    return s
+
+
+def test_a6_a_stored_customer_whose_id_contains_age(make_client, valkey):
+    c = make_client()
+    s = with_id(snapshot(c.app.state.ctx), "c000", AGE_SCORED)
+    s.known = sorted([*s.known, AGE_INACTIVE])
+    load(valkey, s)
+    r = score(c, msno=AGE_SCORED)
+    assert r.status_code == 200
+    got = r.json()
+    assert (got["status"], got["msno"]) == ("scored", AGE_SCORED)
+    assert never_used_hits(r.text) == ["age"]  # the plain scan flags the ID itself
+    assert response_hits(r.text, 200, AGE_SCORED) == []  # A6: the own ID, in msno only
+    assert response_hits(r.text, 200, "c001") == ["age"]  # another customer's ID in msno
+    other = json.dumps({**got, "features_as_of": AGE_SCORED})
+    assert response_hits(other, 200, AGE_SCORED) == ["age"]  # the same string elsewhere
+    assert response_hits(r.text, 503, AGE_SCORED) == ["age"]  # an error status: in full
+    n = score(c, msno=AGE_INACTIVE)
+    assert n.json()["status"] == "not_active"
+    assert response_hits(n.text, 200, AGE_INACTIVE) == []
+    for req in ({"msno": AGE_UNKNOWN}, {"msno": AGE_SCORED, "as_of": "2016-10-01"}):
+        e = score(c, **req)
+        assert e.status_code in (404, 409)
+        assert response_hits(e.text, e.status_code, req["msno"]) == []  # nothing echoed

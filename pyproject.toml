@@ -86,3 +86,6 @@ known-first-party = ["retention"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "random2000: the random 2,000-row /score equality test; runs in CI, or alone with -m random2000",
+]
