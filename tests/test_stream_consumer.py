@@ -1,7 +1,9 @@
 """The replay's consumer on hand-made rows and the test database (15); nothing reads real data.
 
 Every expected value is written out by hand, or (for rounding) taken from DuckDB running
-Phase 2's own cleaning expression on the same doubles.
+Phase 2's own cleaning expression on the same doubles. The bootstrap's unsorted listening-log
+read (D-225) is judged against the registered sorted read on test_stream_move's hand-made raw
+tables (both seeds).
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ import math
 from datetime import date
 
 import duckdb
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -19,7 +22,8 @@ from retention.data.stream import USER_LOGS_TYPES
 from retention.features.spec import SECS_PER_DAY_MAX, SECS_SENTINEL_ABS
 from retention.models import protocol
 from retention.stream import consumer as cs
-from retention.stream import producer, source
+from retention.stream import move, parity, producer, replay, source
+from test_stream_move import CFG, T, batch_table, raw  # noqa: F401
 from test_stream_source import TX_TYPES, Untouchable, log, numbered, tx, write
 
 REPLAY_STORE_DATE = date(2016, 10, 1)
@@ -327,3 +331,117 @@ def test_a_measured_bootstrap_writes_the_same_state_and_splits_its_time(valkey, 
         assert m["peak_rss_gb_after"] >= m["peak_rss_gb_after_first_batch"] > 0
         assert m["duckdb_memory_bytes_max"] >= 0
     assert measure["first_last_writes"]["entries"] == 2  # a and c listened before 2016-10-01
+
+
+# --- the bootstrap's unsorted listening-log read (D-225) ----------------------------------------
+
+
+def exact_state(r) -> dict:
+    """Every key's value as stored (lists in their stored order), keyed by name."""
+    out = {}
+    for k in sorted(r.keys("*")):
+        t = r.type(k).decode()
+        if t == "hash":
+            out[k] = dict(sorted(r.hgetall(k).items()))
+        elif t == "list":
+            out[k] = r.lrange(k, 0, -1)
+        elif t == "set":
+            out[k] = sorted(r.smembers(k))
+        elif t == "string":
+            out[k] = r.get(k)
+    return out
+
+
+def force_log_order(monkeypatch, folder, order: str) -> list[list[tuple]]:
+    """A spy on source.run: the bootstrap's user_logs read gives its rows in `order`, in
+    batches of 7; every other read runs untouched. "sorted" runs the registered ORDER BY;
+    "reversed" is the registered order backwards; "shuffled" a fixed-seed permutation of it;
+    "duckdb" is the unsorted read as DuckDB returns it. Returns the rows given, per read."""
+    real = source.run
+    logs_src = next(s for s in source.sources(folder) if s.name == "user_logs")
+    unsorted = source.query(logs_src, None, source.BOOTSTRAP, ordered=False)
+    registered = source.query(logs_src, None, source.BOOTSTRAP)
+    given: list[list[tuple]] = []
+
+    def spy(sql, batch_rows, stats=None):
+        if sql != unsorted or order == "duckdb":
+            yield from real(sql, batch_rows)
+            return
+        rows = [row for b in real(registered, batch_rows) for row in b]
+        if order == "reversed":
+            rows = rows[::-1]
+        elif order == "shuffled":
+            rows = [rows[i] for i in np.random.default_rng(7).permutation(len(rows))]
+        given.append(rows)
+        for i in range(0, len(rows), 7):
+            yield rows[i : i + 7]
+
+    monkeypatch.setattr(source, "run", spy)
+    return given
+
+
+def replay_with(valkey, monkeypatch, folder, members_path, order: str):
+    """Bootstrap, October's events and the move, with the logs' bootstrap rows in `order`."""
+    valkey.flushdb()
+    given = force_log_order(monkeypatch, folder, order)
+    c = cs.Consumer(valkey, 15, REPLAY_STORE_DATE, is_scored=lambda m: True)
+    counts = c.bootstrap(folder)
+    after_bootstrap = exact_state(valkey)
+    base = move.rebuild(valkey, CFG, None)
+    c.apply(source.events(folder))
+    after_october = exact_state(valkey)
+    table, _ = move.feature_table(valkey, T, move.rebuild(valkey, CFG, base), CFG, members_path)
+    monkeypatch.undo()
+    return counts, given, after_bootstrap, after_october, table
+
+
+@pytest.mark.valkey
+@pytest.mark.parametrize("order", ["reversed", "shuffled", "duckdb"])
+def test_bootstrap_state_ignores_the_log_order(raw, valkey, monkeypatch, order):  # noqa: F811
+    folder, members_path = raw
+    ref = replay_with(valkey, monkeypatch, folder, members_path, "sorted")
+    got = replay_with(valkey, monkeypatch, folder, members_path, order)
+    if order != "duckdb":  # the forced order really differs from the registered one
+        (sorted_rows,), (forced_rows,) = ref[1], got[1]
+        assert forced_rows != sorted_rows and sorted(forced_rows) == sorted(sorted_rows)
+        assert len(sorted_rows) > 500
+    assert got[0] == ref[0]
+    assert [k for k in got[2] if not k.startswith(b"rp:")] == [] and len(got[2]) > 100
+    for state, want in ((got[2], ref[2]), (got[3], ref[3])):  # after October: every key
+        assert state.keys() == want.keys()
+        for k in want:
+            assert state[k] == want[k], k
+    assert parity.compare_tables(got[4], ref[4])["met"]
+    assert replay.content_hash(got[4]) == replay.content_hash(ref[4])
+    assert parity.compare_tables(got[4], batch_table(folder, members_path))["met"]
+
+
+def registered_order(columns: tuple[str, ...], date_column: str, row_number: bool) -> str:
+    """The tie rule's ORDER BY, written out from the registered rule (streaming.tie_rule)."""
+    rest = [f"{c} asc nulls first" for c in columns if c != "msno"]
+    return "order by " + ", ".join([date_column, "msno", *rest] + ["source_row"] * row_number)
+
+
+@pytest.mark.valkey
+def test_only_the_bootstrap_logs_read_is_unsorted(raw, valkey, monkeypatch):  # noqa: F811
+    folder, _ = raw
+    seen: list[str] = []
+    real = source.run
+
+    def recording(sql, batch_rows, stats=None):
+        seen.append(sql)
+        yield from real(sql, batch_rows)
+
+    monkeypatch.setattr(source, "run", recording)
+    cs.Consumer(valkey, 15, REPLAY_STORE_DATE, is_scored=lambda m: True).bootstrap(folder)
+    boot = dict(zip(("user_logs", "transactions", "transactions_v2"), seen, strict=True))
+    seen.clear()
+    list(source.events(folder))
+    october = dict(zip(("transactions", "transactions_v2", "user_logs"), seen, strict=True))
+    tx_order = registered_order(source.TRANSACTION_COLUMNS, "transaction_date", True)
+    log_order = registered_order(source.LOG_COLUMNS, "date", False)
+    assert "order by" not in boot["user_logs"] and "< 20161001" in boot["user_logs"]
+    for name in ("transactions", "transactions_v2"):
+        assert boot[name].endswith(tx_order) and october[name].endswith(tx_order)
+    assert october["user_logs"].endswith(log_order)
+    assert source.UNSORTED_BOOTSTRAP == {"user_logs"}

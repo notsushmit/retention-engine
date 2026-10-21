@@ -205,8 +205,10 @@ class Consumer:
         With `measure` (a measurement only, D-223), per file: rows; seconds reading (DuckDB's
         fetches), updating the state (everything else in the loop) and writing (pipeline
         executions); the read stats of source.run (DuckDB's memory, the first batch, which
-        ends DuckDB's sort); and the process's running peak RSS after the file. Then the
-        first and last listening days' writes, with their entries and the peak after them."""
+        ends DuckDB's sort on a sorted read); and the process's running peak RSS after the
+        file. user_logs is read unsorted (D-225); the state does not depend on its order.
+        Then the first and last listening days' writes, with their entries and the peak
+        after them."""
         counts = {"user_logs": 0, "transactions": 0, "transactions_v2": 0}
         first: dict[str, int] = {}
         last: dict[str, int] = {}

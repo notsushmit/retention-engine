@@ -20,6 +20,12 @@ the move can drop identical rows and break the timeline's last ties exactly as
 Phase 1 did. source_row comes last in the sort, so it only orders rows that are
 equal in every column: the registered order is unchanged (D-215, found while
 planning the move, before any result).
+
+The bootstrap reads user_logs without ORDER BY (D-225, a fix found after a result: the
+bucket-2 dry run measured DuckDB holding about 182 bytes per row to sort the logs). The
+listening state is order-independent: day totals are integer sums, first and last days a
+minimum and a maximum, the invalid flag a set. Both transaction files (appended to lists)
+and every October event keep the registered order.
 """
 
 from __future__ import annotations
@@ -56,6 +62,7 @@ TRANSACTION_COLUMNS = (
     "is_cancel",
 )
 LOG_COLUMNS = tuple(USER_LOGS_TYPES)  # the interim user_logs columns, in file order
+UNSORTED_BOOTSTRAP = frozenset({"user_logs"})  # read without ORDER BY at the bootstrap (D-225)
 
 
 @dataclass(frozen=True)
@@ -111,9 +118,12 @@ def fields(src: Source) -> tuple[str, ...]:
     return (*src.columns, "source_row") if src.row_number else src.columns
 
 
-def query(src: Source, lo: date | None, hi: date, bucket: int | None = None) -> str:
-    """The one SQL statement a read runs: the window [lo, hi) of one file, in tie order;
-    with `bucket`, only that md5 bucket's customers (the sample's own bucket rule)."""
+def query(
+    src: Source, lo: date | None, hi: date, bucket: int | None = None, ordered: bool = True
+) -> str:
+    """The one SQL statement a read runs: the window [lo, hi) of one file, in tie order
+    (unordered only for the bootstrap's user_logs, D-225); with `bucket`, only that md5
+    bucket's customers (the sample's own bucket rule)."""
     cols = ", ".join(src.columns)
     where = f"{src.date_column} < {day_number(hi)}"
     if lo is not None:
@@ -126,7 +136,8 @@ def query(src: Source, lo: date | None, hi: date, bucket: int | None = None) -> 
         cols += ", file_row_number as source_row"
         reader = f"read_parquet('{src.path}', file_row_number = true)"
         order.append("source_row")
-    return f"select {cols} from {reader} where {where} order by {', '.join(order)}"
+    sql = f"select {cols} from {reader} where {where}"
+    return f"{sql} order by {', '.join(order)}" if ordered else sql
 
 
 def duckdb_memory(con: duckdb.DuckDBPyConnection) -> tuple[int, int]:
@@ -146,8 +157,9 @@ def run(sql: str, batch_rows: int, stats: dict | None = None) -> Iterator[list[t
     """Run one read and yield its rows in batches (tests wrap this as the spy).
 
     With `stats` (a measurement only, D-223): seconds spent fetching; after the first batch
-    (DuckDB has sorted every row by then) the seconds, DuckDB's memory and temporary storage
-    and the process's running peak RSS; DuckDB's largest memory and temporary storage."""
+    (for a sorted read, DuckDB has sorted every row by then) the seconds, DuckDB's memory and
+    temporary storage and the process's running peak RSS; DuckDB's largest memory and
+    temporary storage."""
     con = duckdb.connect()
     try:
         t0 = time.perf_counter()
@@ -185,11 +197,13 @@ def read(
     batch_rows: int = 50_000,
     bucket: int | None = None,
     stats: dict | None = None,
+    ordered: bool = True,
 ) -> Iterator[dict[str, Any]]:
-    """One file's rows in [lo, hi), in tie order; refused before any query if hi > ceiling."""
+    """One file's rows in [lo, hi), in tie order unless `ordered` is False; refused before
+    any query if hi > ceiling."""
     check_bounds(lo, hi, ceiling)
     date_at = src.columns.index(src.date_column)
-    sql = query(src, lo, hi, bucket)
+    sql = query(src, lo, hi, bucket, ordered)
     batches = run(sql, batch_rows) if stats is None else run(sql, batch_rows, stats)
     for rows in batches:
         for row in rows:
@@ -229,6 +243,8 @@ def events(
 def bootstrap_rows(
     folder: Path, source: str, bucket: int | None = None, stats: dict | None = None
 ) -> Iterator[dict[str, Any]]:
-    """One file's rows dated before the bootstrap snapshot (2016-10-01), in tie order."""
+    """One file's rows dated before the bootstrap snapshot (2016-10-01): the transaction
+    files in tie order, user_logs in DuckDB's own order (D-225)."""
     src = next(s for s in sources(folder) if s.name == source)
-    return read(src, None, BOOTSTRAP, ceiling=BOOTSTRAP, bucket=bucket, stats=stats)
+    ordered = source not in UNSORTED_BOOTSTRAP
+    return read(src, None, BOOTSTRAP, BOOTSTRAP, bucket=bucket, stats=stats, ordered=ordered)
