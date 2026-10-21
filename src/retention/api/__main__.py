@@ -53,6 +53,9 @@ running stack (retention.api.http_checks), each once, in this order: http-parity
 needs the reload's report with every mark met, latency needs http-parity met, and
 http-checks needs the latency report. URL defaults to API_URL, else
 http://127.0.0.1:8000. Each writes one report (counts and timings, no customer ID).
+http-parity judges under amendment A10 (http_parity_a10, found after a result) and
+takes --rerun-reason R for A10's one labelled rerun: the earlier report is renamed with
+its git head as a suffix (never overwritten) and the reason recorded.
 
 http-diagnose [--url URL]: the diagnosis of a not-met HTTP parity (D-244, found after a
 result; not a mark): the same 1,000 drawn again, the container and the host asked twice
@@ -547,12 +550,12 @@ def check_reload_store(r, database: int = STORE_DATABASE) -> None:
         raise SystemExit(f"database {database} holds {n} keys; the reload needs it empty")
 
 
-def set_aside_report(path: Path, reason: str) -> dict:
+def set_aside_report(path: Path, reason: str, flag: str = "--reload-reason") -> dict:
     """Rename the earlier report with its git head as a suffix (never overwriting)."""
     if not reason.strip():
-        raise SystemExit("--reload-reason needs a reason")
+        raise SystemExit(f"{flag} needs a reason")
     if not path.exists():
-        raise SystemExit(f"--reload-reason given but {path.name} does not exist")
+        raise SystemExit(f"{flag} given but {path.name} does not exist")
     head = json.loads(path.read_text()).get("git_head")
     if not head:
         raise SystemExit(f"{path.name} has no git_head; set it aside by hand")
@@ -596,11 +599,13 @@ def http_client(url: str):
     return httpx.Client(base_url=url, timeout=10.0, limits=one)
 
 
-def step8_begin(args, name: str) -> tuple[Path, Path, Path, float]:
+def step8_begin(args, name: str, before_once=None) -> tuple[Path, Path, Path, float]:
     repo = Path.cwd()
     require_clean(repo)
     out = out_dir(args.fraction)
     path = out / name
+    if before_once is not None:
+        before_once(path)
     run_once(path)
     return repo, out, path, time.time()
 
@@ -629,7 +634,15 @@ def store_on_database_0(r=None):
 def http_parity_cmd(args, client=None, ctx=None, r=None) -> int:
     from retention.api import service as svc
 
-    repo, out, path, t0 = step8_begin(args, HTTP_PARITY_REPORT)
+    reason = getattr(args, "rerun_reason", None)
+    rerun: dict = {}
+
+    def aside(path: Path) -> None:  # A10's labelled rerun (http_parity_a10.run)
+        rerun.update(set_aside_report(path, reason, "--rerun-reason"))
+
+    repo, out, path, t0 = step8_begin(
+        args, HTTP_PARITY_REPORT, aside if reason is not None else None
+    )
     load = require_report(
         out / LOAD_REPORT, "the reload of database 0 runs first and must meet every mark"
     )
@@ -652,6 +665,8 @@ def http_parity_cmd(args, client=None, ctx=None, r=None) -> int:
             ctx.close()
     result["met"] = result["met"] and health == {"http_status": 200, "ready": True}
     report = {"scored_ids": len(ids), "seed": http_checks.SAMPLE_SEED, "health": health, **result}
+    if rerun:
+        report["rerun"] = rerun
     return step8_finish(report, repo, path, t0, "HTTP SCORE PARITY")
 
 
@@ -808,6 +823,8 @@ def main(argv: list[str] | None = None) -> int:
         hp = sub.add_parser(name, help=text)
         hp.add_argument("--fraction", type=float, default=None)
         hp.add_argument("--url", default=None)
+        if name == "http-parity":
+            hp.add_argument("--rerun-reason", default=None, help="A10's labelled rerun")
     sp = sub.add_parser("score-parity", help="judge every registered step 4 mark, once")
     sp.add_argument("--fraction", type=float, default=None)
     sp.add_argument("--dry-run", action="store_true", help="one md5 bucket, comparisons only")

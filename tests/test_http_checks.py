@@ -378,3 +378,128 @@ def test_the_diagnosis_command_reads_only_runs_once_and_writes_no_id(quiet, serv
     assert not any(m in text for m in hc.scored_ids(valkey))
     with pytest.raises(SystemExit, match="runs once"):
         cli.http_diagnose_cmd(args(), client=c, ctx=c.app.state.ctx, r=valkey)
+
+
+# --- amendment A10: non-float fields exact, floats within relative 1e-12 ------------------------
+
+
+def test_a10_registered_values():
+    assert hc.A10_TOLERANCE == 1e-12 and hc.A10["judged"]["non_float_fields"] == "exact"
+    assert hc.A10["registered_wording"].startswith("not met as written (996 of 1,000")
+
+
+class Changed:
+    """A client whose every /score body gets `change(body)` applied."""
+
+    def __init__(self, c, change):
+        self.c, self.change = c, change
+
+    def post(self, url, json):
+        body = self.c.post(url, json=json).json()
+        self.change(body)
+        return SimpleNamespace(status_code=200, json=lambda: body, text="")
+
+    def get(self, url):
+        return self.c.get(url)
+
+
+def one_ulp(body):
+    import math
+
+    p = body["risk"]["days_7"]
+    p["probability"] = math.nextafter(p["probability"], 2.0)
+
+
+def test_a_planted_one_ulp_float_gap_passes_a10(served, valkey, monkeypatch):
+    c, _ = served
+    ids = hc.scored_ids(valkey)[:12]
+    monkeypatch.setattr(hc, "SAMPLE_SIZE", 12)
+    got = hc.parity(Changed(c, one_ulp), c.app.state.ctx, valkey, ids)
+    assert got["equal"] == 0 and got["a10_passed"] == 12 and got["met"]
+    assert got["customers_with_a_float_gap"] == 12 and got["largest_ulps"] == 1
+    assert 0 < got["largest_relative_gap"] < 1e-15 and got["a10_failing_paths"] == {}
+
+
+def above_tolerance(body):
+    p = body["risk"]["days_30"]
+    p["probability"] = p["probability"] * (1 + 1e-9)
+
+
+def text(body):
+    body["reasons"][0]["text"] = body["reasons"][0]["text"] + " "
+
+
+def action_name(body):
+    body["action"]["highest_net_value_action"] = "planted"
+
+
+def flag(body):
+    body["action"]["pays"] = not body["action"]["pays"]
+
+
+def risk_flag(body):
+    body["risk"]["moved_by_ordering_fix"] = not body["risk"]["moved_by_ordering_fix"]
+
+
+def code(body):
+    body["status"] = "planted"
+
+
+@pytest.mark.parametrize(
+    "change, path",
+    [
+        (above_tolerance, "risk.days_30.probability"),
+        (text, "reasons.0.text"),
+        (action_name, "action.highest_net_value_action"),
+        (flag, "action.pays"),
+        (risk_flag, "risk.moved_by_ordering_fix"),
+        (code, "status"),
+    ],
+)
+def test_a_gap_above_tolerance_or_any_non_float_difference_fails_a10(
+    served, valkey, monkeypatch, change, path
+):
+    c, _ = served
+    ids = hc.scored_ids(valkey)[:12]
+    monkeypatch.setattr(hc, "SAMPLE_SIZE", 12)
+    got = hc.parity(Changed(c, change), c.app.state.ctx, valkey, ids)
+    assert got["a10_passed"] == 0 and not got["met"]
+    assert got["a10_failing_paths"] == {path: 12}
+
+
+def test_a10_fails_a_leaf_on_one_side_only_and_an_int_for_a_float():
+    assert hc.a10_failures({"a": 1.0}, {"a": 1.0, "b": 2.0}) == ["b"]
+    assert hc.a10_failures({"a": 1}, {"a": 1.0}) == ["a"]
+    assert hc.a10_failures({"a": [1.0, 2.0]}, {"a": [1.0]}) == ["a.1"]
+    assert hc.a10_failures({"a": 0.0}, {"a": 0.0}) == []
+
+
+def test_a10_s_rerun_renames_the_earlier_report_with_its_reason(quiet, served, valkey):
+    out, mlruns = quiet
+    c, _ = served
+    write_load_report(out, mlruns)
+    earlier = out / cli.HTTP_PARITY_REPORT
+    earlier.write_text(json.dumps({"met": False, "git_head": "224f672"}))
+    with pytest.raises(SystemExit, match="runs once"):
+        cli.http_parity_cmd(args(), client=c, ctx=c.app.state.ctx, r=valkey)
+    blank = SimpleNamespace(fraction=None, url=None, rerun_reason=" ")
+    with pytest.raises(SystemExit, match="--rerun-reason needs a reason"):
+        cli.http_parity_cmd(blank, client=c, ctx=c.app.state.ctx, r=valkey)
+    a = SimpleNamespace(fraction=None, url=None, rerun_reason="judged under A10")
+    assert cli.http_parity_cmd(a, client=c, ctx=c.app.state.ctx, r=valkey) == 0
+    kept = out / "http_parity_2016-11-01_224f672.json"
+    assert json.loads(kept.read_text()) == {"met": False, "git_head": "224f672"}
+    report = json.loads(earlier.read_text())
+    assert report["rerun"] == {
+        "reason": "judged under A10",
+        "earlier_git_head": "224f672",
+        "earlier_report": kept.name,
+    }
+    assert report["met"] and report["registered_wording"].startswith("not met as written")
+
+
+def test_the_rerun_reason_is_an_http_parity_option(monkeypatch):
+    got = []
+    monkeypatch.setattr(cli, "http_parity_cmd", lambda a: got.append(a) or 0)
+    cli.main(["http-parity", "--rerun-reason", "judged under A10"])
+    assert got[0].rerun_reason == "judged under A10"

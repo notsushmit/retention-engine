@@ -5,8 +5,10 @@ test client in tests) so the code the tests run is the code the real runs use. R
 hold counts, timings and field names only, never a customer ID.
 
 - sample / warmup: the registered seeded draws from the sorted scored IDs.
-- parity: each POST /score body over HTTP against svc.answer on the host, both as
-  canonical JSON (sorted keys); the strings must be equal (1,000 of 1,000).
+- parity: each POST /score body over HTTP against svc.answer on the host. Judged under
+  amendment A10 (configs/serving.yaml, http_parity_a10; found after a result): every
+  non-float field exact, every float within relative 1e-12; the count of bodies equal as
+  canonical JSON strings (the registered wording) is reported beside it.
 - latency: warm-up calls, then the sample, sequential, timed around sending the request
   and reading the whole body; p50, p95, p99, mean and max in milliseconds.
 - concurrency: the sample's sequential answers, then the same requests from several
@@ -41,6 +43,8 @@ from retention.api.config import load_serving
 STEP8 = load_serving()["step8"]
 LATENCY = load_serving()["streaming"]["pass_marks"]["latency"]
 HTTP_SAMPLE = load_serving()["streaming"]["pass_marks"]["score_parity"]["http_sample"]
+A10 = load_serving()["http_parity_a10"]
+A10_TOLERANCE = float(A10["judged"]["float_relative_tolerance"])
 DECEMBER_AS_OF = "2016-12-01"
 
 
@@ -98,11 +102,34 @@ def differing_fields(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
     return [k for k in keys if canonical(a.get(k)) != canonical(b.get(k))]
 
 
+def a10_failures(a: Any, b: Any, tolerance: float | None = None) -> list[str]:
+    """The schema paths failing A10: a leaf on one side only, a non-float leaf that differs
+    (texts, the action name, flags, codes, statuses), or two floats further apart than
+    the relative tolerance."""
+    tolerance = A10_TOLERANCE if tolerance is None else tolerance
+    la, lb = leaves(a), leaves(b)
+    bad = []
+    for path in sorted(set(la) | set(lb)):
+        if path not in la or path not in lb:
+            bad.append(path)
+            continue
+        x, y = la[path], lb[path]
+        if is_float(x) and is_float(y):
+            if abs(x - y) > tolerance * max(abs(x), abs(y)):
+                bad.append(path)
+        elif canonical(x) != canonical(y):
+            bad.append(path)
+    return bad
+
+
 def parity(client, ctx, r, ids: list[str]) -> dict[str, Any]:
-    """Each POST /score body against svc.answer on the host; counts and field names only."""
+    """Each POST /score body against svc.answer on the host, judged under A10, with the
+    count of bodies equal as strings beside it; counts, sizes and field names only."""
     statuses: Counter = Counter()
     fields: Counter = Counter()
-    equal = 0
+    failing: Counter = Counter()
+    equal = passed = float_gap = 0
+    worst_ulps, worst_rel = 0, 0.0
     for m in ids:
         resp = client.post("/score", json={"msno": m})
         statuses[resp.status_code] += 1
@@ -110,15 +137,31 @@ def parity(client, ctx, r, ids: list[str]) -> dict[str, Any]:
         got = resp.json()
         if resp.status_code == 200 and canonical(got) == canonical(host):
             equal += 1
-        else:
-            fields.update(differing_fields(got, host) if isinstance(got, dict) else ["body"])
+            passed += 1
+            continue
+        fields.update(differing_fields(got, host) if isinstance(got, dict) else ["body"])
+        bad = a10_failures(got, host) if resp.status_code == 200 else ["http_status"]
+        failing.update(bad)
+        passed += not bad
+        gaps = leaf_gaps([(got, host)]) if isinstance(got, dict) else {}
+        floats = [g for g in gaps.values() if "max_ulps" in g]
+        float_gap += bool(floats)
+        worst_ulps = max([worst_ulps, *(g["max_ulps"] for g in floats)])
+        worst_rel = max([worst_rel, *(g["max_rel_gap"] for g in floats)])
     return {
         "customers": len(ids),
         "equal": equal,
         "differing": len(ids) - equal,
         "http_status": {str(k): v for k, v in sorted(statuses.items())},
         "differing_fields": dict(sorted(fields.items())),
-        "met": equal == len(ids) == SAMPLE_SIZE,
+        "registered_wording": A10["registered_wording"],
+        "a10_float_relative_tolerance": A10_TOLERANCE,
+        "a10_passed": passed,
+        "a10_failing_paths": dict(sorted(failing.items())),
+        "customers_with_a_float_gap": float_gap,
+        "largest_ulps": worst_ulps,
+        "largest_relative_gap": worst_rel,
+        "met": passed == len(ids) == SAMPLE_SIZE,
     }
 
 
