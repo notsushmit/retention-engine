@@ -151,3 +151,34 @@ def test_every_number_in_the_doc_is_in_the_config_or_listed_here():
     missing = numbers(DOC_TEXT) - in_config - set(NOT_IN_CONFIG)
     assert missing == set()
     assert set(NOT_IN_CONFIG) <= numbers(DOC_TEXT)  # every listed exception is still needed
+
+
+# --- amendments A9 and A10 and the registered notes of steps 7 and 8 -----------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "A9 (2026-10-21, amends streaming.pass_marks.feature_parity): feature parity is judged on "
+        "61 columns; 7 metadata columns are excluded",
+        "The registered wording: not met as written (mis-specified before any run).",
+        "A10 (amends step8.http_score_parity): found after a result (D-243, D-244)",
+        "every non-float field exact and every float within relative 1e-12",
+        "The registered wording: not met as written (996 of 1,000 bodies equal as strings at "
+        "224f672, D-243).",
+        "outside the sample it is not observed.",
+    ],
+)
+def test_amendments_a9_and_a10_are_stated(text):
+    assert text in DOC_TEXT
+
+
+def test_every_registered_docs_note_of_steps_7_and_8_is_stated_verbatim():
+    cfg = load_serving()
+    notes = [
+        *cfg["step7"]["docs_notes"],
+        *cfg["step7_images"]["docs_notes"],
+        *cfg["step8"]["docs_notes"],
+    ]
+    assert len(notes) == 6 and all(f"- {n}" in DOC_TEXT for n in notes)
+    assert "memory limit is 1.5GiB, the user's choice; Valkey has no limit" in DOC_TEXT

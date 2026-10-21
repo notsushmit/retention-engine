@@ -122,6 +122,34 @@ uv run python -m retention.optimize report     # reports/strategy_backtest.md fr
 
 Chooses at most one action per customer (a reminder, an auto-renew prompt or a discount) to maximize the expected net value within a budget. Every effect, cost and margin is a labelled assumption in `configs/actions.yaml`; no KKBox effect of any action has been estimated. KKBox backtest figures are model estimates under assumed effects, not observed outcomes. The comparison with simpler targeting rules (highest risk, highest assumed uplift x value, random, reminder only, no action) is arithmetic on assumed effects, and the optimizer maximizes that quantity by design. The observed churn of each strategy's targeted customers says nothing about whether any action works. Each step runs once, at a clean commit; the results are in [reports/strategy_backtest.md](reports/strategy_backtest.md) once the steps have run.
 
+## Scoring service
+
+> The service replays 2016 KKBox data; there is no live source.
+>
+> Customers expiring more than 30 days ahead (22% of active customers on 2016-11-01) get no score.
+>
+> Plans exist for two dates only (2016-10-01 and 2016-11-01) and were built from the 30-day probability before the ordering fix.
+>
+> KKBox backtest figures are model estimates under assumed effects, not observed outcomes.
+
+A FastAPI service answers `GET /health`, `POST /score`, `GET /at-risk` and `GET /alerts` from a Valkey store loaded for one snapshot date, 2016-11-01. The models load from the MLflow registry alias `retention-scoring@serving`, and every model file is checked by SHA-256 at startup and on every call. Risk is given at 7, 30 and 59 days, one day short of the phase plan's 60-day horizon; every 59-day probability is marked as a demonstration. Endpoints and fields: [docs/scoring_api.md](docs/scoring_api.md); every comparison with batch scoring: [reports/serving_parity.md](reports/serving_parity.md).
+
+```bash
+make up    # Valkey on 127.0.0.1:6379 and the API on 127.0.0.1:8000, then /health
+uv run python -m retention.api load-snapshot --snapshot 2016-11-01
+make down
+```
+
+Valkey writes nothing to disk, so the store is empty after any restart and `/health` answers 503 until the snapshot is loaded again from the host; a load after the first one needs `--reload-reason`.
+
+Parity over HTTP: the registered mark compared 1,000 seeded answers from the container with the host's answers as exact strings, and it was not met: 996 of 1,000 matched. The other 4 differed only in float values, at most 4 ulps apart (the smallest steps a float can take), with no text, action name or flag different; the likely source, untested, is the container's Linux libraries against the Mac's. Amendment A10, written after that result was seen, judges floats within a relative 1e-12 and every other field exactly; under it all 1,000 pass, and the 996 of 1,000 stays on record as not met as written. Step 6's score parity is a separate result: on all 169,673 scored rows of 2016-11-01 the replayed store gave the same scores as batch within the registered tolerance (final probabilities within a relative 1e-12; the largest gap was 0.0). The HTTP sample was 1,000 of the 169,673 scored customers (0.6%), drawn with one seed, scored customers only, at one store date; outside_population and not_active answers are covered by neither the parity mark nor the step 8 HTTP checks, and were checked in-process only (the tests and the step 5 smoke run, not over HTTP).
+
+Latency, p95 on this Mac, one run of 1,000 calls: p95 69.429 ms, with p99 97.809 ms and a maximum of 108.142 ms, measured before the 1.5 GiB limit, over loopback with one client and one connection, against a threshold of 100 ms (my unvalidated choice). The p50 was 59.242 ms. Every timed call includes the service's check of its model and pinned files, about 15 ms in an earlier in-process measurement.
+
+Memory: the API container is limited to 1.5 GiB, my choice. After one filtered `GET /at-risk` call it used 672.4 MiB, measured with swap above 0 (97.38 MB) and no concurrent clients; the filter index together with 8 concurrent clients was not measured, so the headroom is not established.
+
+Unverified: `ps` showed Docker's VM process at 9.83 GB resident, above the VM's 7.75 GiB, while free memory read 74% and swap 0, and this is not explained; the API image is listed at 1.47GB by `docker images` and at 322,050,115 bytes by `docker image inspect`, and the two sizes are not reconciled. The figures 672.4 MiB, 97.38 MB and 9.83 GB are console readings (docker stats, sysctl, ps) with no report written to disk.
+
 ## Make targets
 
 | Target | Does |
@@ -132,4 +160,5 @@ Chooses at most one action per customer (a reminder, an auto-renew prompt or a d
 | `make test` | ruff check, ruff format check, pytest |
 | `make features` | leakage-safe feature table for every labelled snapshot (docs/features.md) |
 | `make train` | Phase 3 (not yet implemented) |
-| `make up` | Phase 8 (not yet implemented) |
+| `make up` | starts Valkey and the scoring API (docker compose), then prints `/health` |
+| `make down` | stops them |

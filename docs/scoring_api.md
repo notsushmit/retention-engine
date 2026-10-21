@@ -226,6 +226,21 @@ Kinds: trend, event. A trend alert is shown when the registered rule holds: week
 - POST /score scores each customer together with a placeholder copy of the row and returns only the customer's own answer. This is a workaround that relies on NumPy's summation behaviour, chosen after the exact-equality test failed, not a fix of its source: Phase 7's expected-days sum adds a one-row array in another order than an array of several rows (D-199).
 - The test that recomputes the knowable count from the pinned alerts file skips in CI, because the pinned file is not in git; it runs where the file exists and checks amendment A8's count.
 
+## Amendments A9 and A10
+
+- A9 (2026-10-21, amends streaming.pass_marks.feature_parity): feature parity is judged on 61 columns; 7 metadata columns are excluded because they cannot be rebuilt from rows dated before the store's date. The registered wording: not met as written (mis-specified before any run).
+- A10 (amends step8.http_score_parity): found after a result (D-243, D-244); registered before any A10 code or run. HTTP parity is judged with every non-float field exact and every float within relative 1e-12. The registered wording: not met as written (996 of 1,000 bodies equal as strings at 224f672, D-243). A last-bit gap could in principle flip a threshold (a reason's ranking, the chosen action, a flag) for customers outside the sample; discrete fields stay exact under A10, so such a flip inside the sample would fail it; outside the sample it is not observed.
+
+## Notes on the stack and the runs
+
+- The throttled replay took 816.8 s and peaked at 2.145 GB, against 550.6 s and 1.671 GB at full speed; it started 6 minutes after a restart of the Mac, so these figures are not comparable; determinism compares the table hash only.
+- The python:3.11.17-slim-bookworm tag was rebuilt on 2026-10-21 at 01:20 UTC, hours before it was pinned by digest; the pin freezes that build.
+- ps showed the Docker VM process at 9.83 GB resident, above the VM's 7.75 GiB, while free memory read 74% and swap 0 (D-238); unexplained and unverified.
+- The API image is listed at 1.47GB by docker images and at 322,050,115 bytes by docker image inspect (D-238); the two sizes are not reconciled and unverified.
+- The latency figure is for this Mac only, over loopback, with one client and one connection; the 100 ms threshold is the user's unvalidated choice.
+- The HTTP score parity compares the container and the host running the same scoring code; it shows the HTTP path and the container's environment add no difference, not that the scoring is right (steps 4 and 6 cover that).
+- The API container's memory limit is 1.5GiB, the user's choice; Valkey has no limit.
+
 ## Choices not registered
 
 - /health carries a reason field beside the registered fields.

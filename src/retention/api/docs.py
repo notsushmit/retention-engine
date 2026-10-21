@@ -80,6 +80,41 @@ UNREGISTERED = (
 )
 
 
+# --- amendments A9 and A10, and the registered notes of steps 7 and 8 ---------------------------
+
+
+def amendments_a9_a10() -> list[str]:
+    """A9 and A10 as registered, each with its registered wording (not met as written)."""
+    a9, a10 = CFG["stream_parity_columns"], CFG["http_parity_a10"]
+    tolerance = a10["judged"]["float_relative_tolerance"]
+    return [
+        "## Amendments A9 and A10",
+        "",
+        f"- {a9['id']} ({a9['date']}, amends {a9['amends']}): feature parity is judged on "
+        f"{a9['columns_judged']} columns; {len(a9['excluded'])} metadata columns are excluded "
+        "because they cannot be rebuilt from rows dated before the store's date. The registered "
+        f"wording: {a9['registered_wording']}.",
+        f"- A10 (amends {a10['amends']}): {a10['label'].removeprefix('amendment A10, ')}. "
+        "HTTP parity is judged with every "
+        f"non-float field exact and every float within relative {tolerance:g}. The registered "
+        f"wording: {a10['registered_wording']}. {a10['limit']}",
+        "",
+    ]
+
+
+def stack_notes() -> list[str]:
+    """The registered docs notes of steps 7 and 8 and the API memory limit."""
+    limit = CFG["api_memory_limit"]
+    notes = [
+        *CFG["step7"]["docs_notes"],
+        *CFG["step7_images"]["docs_notes"],
+        *CFG["step8"]["docs_notes"],
+        f"The API container's memory limit is {limit['api']}, the user's choice; Valkey has "
+        "no limit.",
+    ]
+    return ["## Notes on the stack and the runs", "", *[f"- {n}" for n in notes], ""]
+
+
 # --- schema field lists --------------------------------------------------------------------------
 
 
@@ -223,6 +258,8 @@ def build() -> str:
         "- " + WORKAROUND_NOTE,
         "- " + CI_SKIP_NOTE,
         "",
+        *amendments_a9_a10(),
+        *stack_notes(),
         "## Choices not registered",
         "",
         *[f"- {c}" for c in UNREGISTERED],
