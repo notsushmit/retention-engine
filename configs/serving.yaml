@@ -975,3 +975,26 @@ step8:
       The HTTP score parity compares the container and the host running the same scoring
       code; it shows the HTTP path and the container's environment add no difference, not
       that the scoring is right (steps 4 and 6 cover that).
+
+http_parity_a10:
+  label: amendment A10, found after a result (D-243, D-244); registered before any A10 code or run
+  amends: step8.http_score_parity  # the registered entry is kept, not edited
+  registered_wording: not met as written (996 of 1,000 bodies equal as strings at 224f672, D-243)
+  evidence: >-
+    D-244 (a diagnosis, not a mark): the container and the host are each stable against
+    themselves; the 4 differing customers differ only in float fields, 2 to 4 ulps apart,
+    largest relative gap 6.65e-16; no text, action name, flag or code differs
+  judged:
+    non_float_fields: exact  # every text, the action name, every flag, code and status, and the body's shape
+    float_relative_tolerance: 1.0e-12  # |a - b| <= 1e-12 * max(|a|, |b|), as streaming.pass_marks.score_parity
+  reported: [customers equal as strings, customers with any float gap, largest ulps, largest relative gap, customers failing A10 by schema path]
+  sample: as step8.http_score_parity  # the same 1,000, seed 20161001
+  mark: 1000 of 1000 pass A10; anything less is not met and stops step 8 before the latency run
+  run: >-
+    http-parity once more under A10; the earlier report is renamed with its git head as a
+    suffix and the reason recorded, never overwritten
+  limit: >-
+    A last-bit gap could in principle flip a threshold (a reason's ranking, the chosen
+    action, a flag) for customers outside the sample; discrete fields stay exact under
+    A10, so such a flip inside the sample would fail it; outside the sample it is not
+    observed.
