@@ -768,3 +768,45 @@ alerts_knowable_count:  # amendment A8; a new key, so the registered count stays
   knowable_at_2016_11_01: 6  # of 10, under the unchanged rule
   first_not_knowable: {alert_id: cp7, week: "2016-09-26", knowable_from: "2016-11-02"}  # one day after 2016-11-01
   pinned_file: unchanged  # data/processed/kkbox/sample_020/trends/alerts_run.json keeps its pinned SHA-256
+
+step6:  # the streaming replay; approved by the user and registered before any step 6 code
+  label: registered before any step 6 code; the pass marks are the registered ones in streaming.pass_marks, not restated
+  pass_marks: streaming.pass_marks  # event_count, feature_parity, score_parity, determinism, resources; unchanged
+  databases:  # Valkey database numbers on the one retention-valkey container
+    replay: 1  # the stream, the replay state and the replayed store (the store key layout of step5.store.keys)
+    determinism_replay: 2  # the throttled second replay
+    loaded_store: 0  # the 2016-11-01 store loaded in 5f; never written by any step 6 command
+    tests: 15
+    refuse: every step 6 command refuses database 0
+    after_the_report: databases 1 and 2 are kept until the user has read the report; cleared only on the user's OK
+    reload_of_database_0: only with the user's explicit OK
+  cancel_events:
+    format: {msno: the customer's ID, date: the transaction date}  # the form GET /alerts reads
+    key: rs:events:cancel  # in the replay database
+    which: each cancel row (is_cancel = 1) from a customer scored at the store's date (2016-10-01 during the replay)
+    id_check: >-
+      counts only, run once before the replay: how many distinct October cancel-event IDs
+      from customers scored at 2016-10-01 contain a never-used word as a whole word (the
+      response scan's own function); no ID printed; any amendment of A6 is proposed only after it
+  source_stop: >-
+    the reader's query requires event dates before 2016-11-01 (before 2016-10-01 for the
+    bootstrap); a spy test asserts no row dated 2016-11-01 or later is requested or returned;
+    TestUnlock patched to raise in tests; no outcome column in the reader's column list; score-test never run
+  throttle:  # the determinism replay (streaming.pass_marks.determinism: full speed and throttled)
+    full_speed: no pause
+    throttled: 1 ms pause per 1,000 events
+  memory:
+    dry_run: one md5 bucket in the replay database; not a mark; Valkey bytes per customer and process peak RSS, projected to the full sample
+    stop_before_full_replay:
+      projected_process_peak_gb_above: 10
+      projected_valkey_used_memory_bytes_above: 7958871888  # the Docker VM headroom measured in 5f (D-209)
+    full_replay: every process's peak RSS reported; above 10 GB is not met (streaming.pass_marks.resources)
+    docker_vm: unchanged
+  index_rebuild: one store-date move (2016-10-01 to 2016-11-01), so one /at-risk index rebuild in the replay database (about 4.5 s in 5f); reported only
+  outputs:
+    stream_features: data/interim/kkbox/sample_020/serving/stream_features_2016-11-01.parquet
+  failures:
+    labels_state: reported as a finding about Phase 2; the streaming side is never tuned to match
+    any_other: stop; reported as not met with the largest difference and the columns involved
+    code_change_after_a_failure: only with the user's explicit OK, labelled as a fix found after a result
+  run_order: [recount, cancel-ids, dry run on one md5 bucket (database 1), full replay at full speed (database 1), stream-parity (database 1), throttled replay (database 2)]  # each once, clean commit, caffeinate -i
