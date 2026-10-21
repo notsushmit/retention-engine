@@ -545,3 +545,60 @@ def test_a6_scans_every_error_body_in_full(status):
 @pytest.mark.parametrize("text", [json.dumps([OWN]), json.dumps(OWN), f"plain {OWN}"])
 def test_a6_scans_a_body_that_is_not_a_json_object_in_full(text):
     assert sch.response_hits(text, 200, OWN) == ["age"]
+
+
+# --- step 8: the registry and the config after startup (step8.checks) ----------------------------
+
+
+@pytest.mark.valkey
+def test_a_registry_changed_or_removed_after_startup_changes_no_answer(
+    registered,
+    bundle_labels,
+    pins,
+    valkey,
+    tmp_path,  # noqa: F811
+):
+    """The models live in memory after startup and /health re-hashes the downloaded copies,
+    so a registry deleted under a running service changes neither an answer nor /health."""
+    import shutil
+
+    store_root = Path(registered.tracking_uri.removeprefix("sqlite:///")).parent
+    copy = tmp_path / "registry"
+    shutil.copytree(store_root, copy)
+    moved = dataclasses.replace(
+        registered,
+        tracking_uri=f"sqlite:///{copy / 'mlflow.db'}",
+        artifact_root=copy / "mlruns" / "artifacts",
+    )
+    c = svc.load_context(moved, MODEL_SETTINGS, P, tmp_path / "work", pins=pins)
+    try:
+        load(valkey, snapshot(c))
+        m = st.ranking(valkey, 30, 0, 1)[0][0]
+        before = (svc.answer(c, valkey, svc.ScoreRequest(msno=m)), svc.health(c, valkey))
+        shutil.rmtree(copy)
+        after = (svc.answer(c, valkey, svc.ScoreRequest(msno=m)), svc.health(c, valkey))
+    finally:
+        c.close()
+    assert after == before and before[1].ready and before[1].model_checksums_match
+
+
+def test_a_config_edit_after_startup_leaves_the_served_hash_at_its_startup_value(
+    registered,
+    bundle_labels,
+    pins,
+    tmp_path,
+    monkeypatch,  # noqa: F811
+):
+    """config_sha256 is taken once at startup; a later edit shows only after a restart
+    (in the container, after a rebuild: the image holds its own copy)."""
+    config = tmp_path / "serving.yaml"
+    config.write_bytes(svc.SERVING_CONFIG.read_bytes())
+    monkeypatch.setattr(svc, "SERVING_CONFIG", config)
+    c = svc.load_context(registered, MODEL_SETTINGS, P, tmp_path / "work", pins=pins)
+    try:
+        startup = file_sha256(config)
+        config.write_text(config.read_text() + "\n# an edit after startup\n")
+        served = svc.health(c, redis.Redis(host="127.0.0.1", port=1)).config_sha256
+    finally:
+        c.close()
+    assert served == startup != file_sha256(config)

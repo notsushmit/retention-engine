@@ -40,6 +40,20 @@ final probability at 7, 30 and 59 days (models through the registry alias) and
 the /at-risk header counts; the store's date is written last. Writes
 load_snapshot_<date>.json. Runs once per snapshot.
 
+load-snapshot --snapshot 2016-11-01 --reload-reason <reason>: the registered reload of
+database 0 (configs/serving.yaml, step8.reload_database_0): refused unless the reason
+is not empty, the client is on database 0 (asked of the server), database 0 holds no
+key and the earlier report exists; the earlier report is renamed with its git head
+as a suffix (never overwritten), the reason is recorded, the mlruns tree and
+mlflow.db are hashed before loading, and the seven counts and database 0's key count
+are judged exactly against the registered marks.
+
+http-parity, latency, http-checks [--url URL]: step 8's runs over HTTP against the
+running stack (retention.api.http_checks), each once, in this order: http-parity
+needs the reload's report with every mark met, latency needs http-parity met, and
+http-checks needs the latency report. URL defaults to API_URL, else
+http://127.0.0.1:8000. Each writes one report (counts and timings, no customer ID).
+
 score-parity --dry-run: the same comparisons on one md5 bucket of 2016-11-01's
 customers, with no registered full-count mark judged and no stop rule stopping.
 Writes only step4_dry_run.json, refuses to overwrite it, and never reads or writes
@@ -63,6 +77,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import tempfile
 import time
@@ -72,7 +87,7 @@ from pathlib import Path
 import pandas as pd
 
 from retention.api import dt01 as dt01_step
-from retention.api import parity, registry
+from retention.api import http_checks, parity, registry
 from retention.api.batch import snapshot_inputs
 from retention.api.config import SERVING_CONFIG, file_sha256, load_serving, ordering_marks
 from retention.api.ordering import platt_from
@@ -444,6 +459,17 @@ def load_snapshot_cmd(args) -> int:
     snapshot = date.fromisoformat(args.snapshot)
     out = out_dir(args.fraction)
     report_path = out / f"load_snapshot_{snapshot.isoformat()}.json"
+    reason = getattr(args, "reload_reason", None)
+    reload = None
+    if reason is not None:
+        if not reason.strip():
+            raise SystemExit("--reload-reason needs a reason")
+        check_reload_store(store.client())
+        reload = set_aside_report(report_path, reason)
+        reload |= {
+            "mlruns_before": http_checks.tree_sha256(MLRUNS),
+            "mlflow_db_sha256_before": file_sha256(MLRUNS / "mlflow.db"),
+        }
     run_once(report_path)
     t0 = time.time()
     protocol = load_protocol()
@@ -471,22 +497,220 @@ def load_snapshot_cmd(args) -> int:
     r = store.client()
     written = store.load_snapshot(r, snapshot, status, rows, prices, columns, known, finals, counts)
     assert_no_label_building_code()
-    report = stamp(
-        {
-            "snapshot": snapshot.isoformat(),
-            "models_version": models.version,
-            "counts": counts,
-            "written": written,
-            "valkey_used_memory_bytes": store.memory_used(r),
-            "passed": True,
-        },
-        repo,
-        t0,
-    )
+    body = {
+        "snapshot": snapshot.isoformat(),
+        "models_version": models.version,
+        "counts": counts,
+        "written": written,
+        "valkey_used_memory_bytes": store.memory_used(r),
+        "passed": True,
+    }
+    if reload is not None:
+        judged = reload_marks(counts, written["known"], int(r.dbsize()))
+        body |= {"reload": reload, **judged, "passed": judged["met"]}
+    report = stamp(body, repo, t0)
     out.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
+    if not report["passed"]:
+        print("RELOAD OF DATABASE 0 NOT MET (the registered marks differ)")
+        return 1
     return 0
+
+
+# --- step 8: the reload of database 0 and the runs over HTTP ------------------------------------
+
+RELOAD_SNAPSHOT = date(2016, 11, 1)
+LOAD_REPORT = f"load_snapshot_{RELOAD_SNAPSHOT.isoformat()}.json"
+HTTP_PARITY_REPORT = "http_parity_2016-11-01.json"
+LATENCY_REPORT = "latency_2016-11-01.json"
+HTTP_CHECKS_REPORT = "http_checks_2016-11-01.json"
+STORE_DATABASE = 0
+MLRUNS = Path("mlruns")
+
+
+def check_reload_store(r, database: int = STORE_DATABASE) -> None:
+    """The reload writes `database` only, and only when it holds no key (asked of the server)."""
+    found = int(r.client_info()["db"])
+    if found != database:
+        raise SystemExit(f"the reload writes database {database}; the client is on {found}")
+    n = int(r.dbsize())
+    if n:
+        raise SystemExit(f"database {database} holds {n} keys; the reload needs it empty")
+
+
+def set_aside_report(path: Path, reason: str) -> dict:
+    """Rename the earlier report with its git head as a suffix (never overwriting)."""
+    if not reason.strip():
+        raise SystemExit("--reload-reason needs a reason")
+    if not path.exists():
+        raise SystemExit(f"--reload-reason given but {path.name} does not exist")
+    head = json.loads(path.read_text()).get("git_head")
+    if not head:
+        raise SystemExit(f"{path.name} has no git_head; set it aside by hand")
+    new = path.with_name(f"{path.stem}_{head}{path.suffix}")
+    if new.exists():
+        raise SystemExit(f"{new.name} exists; nothing renamed")
+    path.rename(new)
+    return {"reason": reason, "earlier_git_head": head, "earlier_report": new.name}
+
+
+def reload_marks(
+    counts: dict[str, int], known: int, keys: int, marks: dict[str, int] | None = None
+) -> dict:
+    """Every registered reload mark against what was written; exact."""
+    marks = marks if marks is not None else load_serving()["step8"]["reload_database_0"]["marks"]
+    found = dict(counts) | {"known": int(known), "keys_database_0": int(keys)}
+    judged = {
+        k: {"registered": int(v), "found": found.get(k), "met": found.get(k) == int(v)}
+        for k, v in marks.items()
+    }
+    return {"marks": judged, "met": all(x["met"] for x in judged.values())}
+
+
+def api_url(args) -> str:
+    return getattr(args, "url", None) or os.environ.get("API_URL") or "http://127.0.0.1:8000"
+
+
+def require_report(path: Path, why: str, met: bool = True) -> dict:
+    if not path.exists():
+        raise SystemExit(why)
+    report = json.loads(path.read_text())
+    if met and not report.get("met"):
+        raise SystemExit(why)
+    return report
+
+
+def http_client(url: str):
+    import httpx
+
+    one = httpx.Limits(max_connections=1, max_keepalive_connections=1)
+    return httpx.Client(base_url=url, timeout=10.0, limits=one)
+
+
+def step8_begin(args, name: str) -> tuple[Path, Path, Path, float]:
+    repo = Path.cwd()
+    require_clean(repo)
+    out = out_dir(args.fraction)
+    path = out / name
+    run_once(path)
+    return repo, out, path, time.time()
+
+
+def step8_finish(report: dict, repo: Path, path: Path, t0: float, label: str) -> int:
+    report = stamp(report, repo, t0)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2) + "\n")
+    print(json.dumps(report, indent=2))
+    if not report["met"]:
+        print(f"{label} NOT MET")
+        return 1
+    return 0
+
+
+def store_on_database_0(r=None):
+    from retention.api import store
+
+    r = r if r is not None else store.client()
+    found = int(r.client_info()["db"])
+    if found != STORE_DATABASE:
+        raise SystemExit(f"step 8 reads the store in database {STORE_DATABASE}, not {found}")
+    return r
+
+
+def http_parity_cmd(args, client=None, ctx=None, r=None) -> int:
+    from retention.api import service as svc
+
+    repo, out, path, t0 = step8_begin(args, HTTP_PARITY_REPORT)
+    load = require_report(
+        out / LOAD_REPORT, "the reload of database 0 runs first and must meet every mark"
+    )
+    if "reload" not in load:
+        raise SystemExit("the reload of database 0 runs first and must meet every mark")
+    r = store_on_database_0(r)
+    ids = http_checks.scored_ids(r)
+    drawn = http_checks.sample(ids)
+    own_ctx = ctx is None
+    ctx = svc.default_context() if own_ctx else ctx
+    c = client if client is not None else http_client(api_url(args))
+    try:
+        h = c.get("/health")
+        health = {"http_status": h.status_code, "ready": h.json().get("ready")}
+        result = http_checks.parity(c, ctx, r, drawn)
+    finally:
+        if client is None:
+            c.close()
+        if own_ctx:
+            ctx.close()
+    result["met"] = result["met"] and health == {"http_status": 200, "ready": True}
+    report = {"scored_ids": len(ids), "seed": http_checks.SAMPLE_SEED, "health": health, **result}
+    return step8_finish(report, repo, path, t0, "HTTP SCORE PARITY")
+
+
+def latency_cmd(args, client=None, r=None) -> int:
+    repo, out, path, t0 = step8_begin(args, LATENCY_REPORT)
+    require_report(out / HTTP_PARITY_REPORT, "http-parity runs first and must be met")
+    r = store_on_database_0(r)
+    ids = http_checks.scored_ids(r)
+    drawn = http_checks.sample(ids)
+    warm = http_checks.warmup(ids, drawn)
+    c = client if client is not None else http_client(api_url(args))
+    try:
+        result = http_checks.latency(c, warm, drawn)
+    finally:
+        if client is None:
+            c.close()
+    report = {"warmup_seed": http_checks.WARMUP_SEED, **result}
+    return step8_finish(report, repo, path, t0, "LATENCY")
+
+
+def http_checks_cmd(args, client_for=None, r=None) -> int:
+    import threading
+
+    repo, out, path, t0 = step8_begin(args, HTTP_CHECKS_REPORT)
+    require_report(out / LATENCY_REPORT, "the latency run comes first", met=False)
+    load = json.loads((out / LOAD_REPORT).read_text())
+    r = store_on_database_0(r)
+    drawn = http_checks.sample(http_checks.scored_ids(r))
+    checks = load_serving()["step8"]["checks"]
+    threads = int(checks["concurrency"].split()[0])
+    at_risk_calls = int(checks["concurrency"].split("plus ")[1].split()[0])
+    local = threading.local()
+    made = []
+
+    def per_thread():
+        if not hasattr(local, "c"):
+            local.c = http_client(api_url(args))
+            made.append(local.c)
+        return local.c
+
+    client_for = client_for or per_thread
+    try:
+        conc = http_checks.concurrency(client_for, drawn, threads, at_risk_calls)
+        dec = http_checks.december(client_for(), drawn)
+        config = http_checks.config_matches(client_for(), file_sha256(SERVING_CONFIG))
+    finally:
+        for c in made:
+            c.close()
+    before = load["reload"]
+    mlruns = {
+        "before": before["mlruns_before"],
+        "after": http_checks.tree_sha256(MLRUNS),
+        "mlflow_db_sha256_before": before["mlflow_db_sha256_before"],
+        "mlflow_db_sha256_after": file_sha256(MLRUNS / "mlflow.db"),
+    }
+    mlruns["met"] = (
+        mlruns["before"] == mlruns["after"]
+        and mlruns["mlflow_db_sha256_before"] == mlruns["mlflow_db_sha256_after"]
+    )
+    report = {
+        "concurrency": conc,
+        "december_2016_over_http": dec,
+        "serving_yaml_after_startup": config,
+        "mlflow_after_startup": mlruns,
+    }
+    report["met"] = all(v["met"] for v in report.values())
+    return step8_finish(report, repo, path, t0, "STEP 8 CHECKS")
 
 
 def smoke_cmd(args) -> int:
@@ -535,6 +759,15 @@ def main(argv: list[str] | None = None) -> int:
     ls = sub.add_parser("load-snapshot", help="replace the Valkey store with one snapshot")
     ls.add_argument("--fraction", type=float, default=None)
     ls.add_argument("--snapshot", required=True, metavar="YYYY-MM-DD")
+    ls.add_argument("--reload-reason", default=None, help="the registered reload (step 8)")
+    for name, text in (
+        ("http-parity", "HTTP score parity on the registered sample (step 8)"),
+        ("latency", "POST /score latency over HTTP (step 8)"),
+        ("http-checks", "concurrency, December 2016, config and registry checks (step 8)"),
+    ):
+        hp = sub.add_parser(name, help=text)
+        hp.add_argument("--fraction", type=float, default=None)
+        hp.add_argument("--url", default=None)
     sp = sub.add_parser("score-parity", help="judge every registered step 4 mark, once")
     sp.add_argument("--fraction", type=float, default=None)
     sp.add_argument("--dry-run", action="store_true", help="one md5 bucket, comparisons only")
@@ -545,6 +778,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "smoke":
         return smoke_cmd(args)
+    if args.command == "http-parity":
+        return http_parity_cmd(args)
+    if args.command == "latency":
+        return latency_cmd(args)
+    if args.command == "http-checks":
+        return http_checks_cmd(args)
     if args.command == "write-docs":
         from retention.api import docs
 
