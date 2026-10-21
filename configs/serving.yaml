@@ -810,3 +810,48 @@ step6:  # the streaming replay; approved by the user and registered before any s
     any_other: stop; reported as not met with the largest difference and the columns involved
     code_change_after_a_failure: only with the user's explicit OK, labelled as a fix found after a result
   run_order: [recount, cancel-ids, dry run on one md5 bucket (database 1), full replay at full speed (database 1), stream-parity (database 1), throttled replay (database 2)]  # each once, clean commit, caffeinate -i
+
+stream_parity_columns:  # amendment A9; a new key, so streaming.pass_marks stays unedited
+  id: A9
+  date: "2026-10-21"
+  label: >-
+    written while planning the move, before any move code or run: the registered
+    feature parity names every column of features.parquet (68), but 7 metadata
+    columns cannot be reproduced from rows dated before 2016-11-01; the registered
+    wording is reported as not met as written, mis-specified before any run; not a
+    tuned result
+  amends: streaming.pass_marks.feature_parity  # the registered entry is kept, not edited
+  registered_wording: not met as written (mis-specified before any run)
+  columns_judged: 61  # 2 keys + 55 model inputs + 4 metadata columns reproducible before T
+  reproducible_metadata: [counts_365_days_observed, has_member_record, history_truncated, invalid_secs_days_28]
+  excluded:  # 7 metadata columns, never model inputs
+    pre_t_status: >-
+      month completeness status, which uses churn, listening and returns observed after
+      the month and thresholds over all months to 2017 (retention.data.quality)
+    last_txn_span_status: the same month completeness status (retention.features.transactions, _span_status)
+    n_txn_365_in_nonreliable_months: the same month completeness status
+    share_txn_365_in_nonreliable_months: the same month completeness status
+    snapshot_usable_7: label_reliable_7, an outcome-class column (retention.models.data, OUTCOME_LABEL_PREFIXES); never read
+    snapshot_usable_30: label_reliable_30, an outcome-class column; never read
+    snapshot_usable_60: label_reliable_60, an outcome-class column; never read
+  rows: 230286  # unchanged: every customer with coverage at 2016-11-01
+  rules: as streaming.pass_marks.feature_parity  # exact for integer, category, date, boolean and empty positions; floats relative 1e-12
+  members_input:
+    file: data/processed/kkbox/sample_020/members.parquet
+    columns: [msno, city, bd, gender, registered_via, registration_init_time]
+    read: once at the move, as Phase 2 reads it (retention.features.members, member_features and mask_members)
+    masked_by: the stream's own has_any_log_before_T
+    note: >-
+      a fourth input beyond the three registered sources (streaming.sources); one
+      undated table taken after the data ends, used exactly as Phase 2 uses it
+  diagnostics:  # count-only, built into stream-parity, run in this order on mismatching customers; no ID printed
+    - >-
+      same inputs before T: the stream's rows dated before T against timeline.parquet
+      rows dated before T only (row count, seq, eff_expiry_after, row_kind, expiry_date)
+    - "same-day ties: customers with same-day rows tied on every order_rows key or on LAST_ROW_ORDER"
+    - "usage: the customer-day's totals recomputed by DuckDB from the interim logs dated inside the window"
+    - >-
+      classification: a mismatch on same-day ties is an ordering cause; only a
+      labels-state difference with matching inputs before T is a Phase 2 finding; any
+      other difference is not met as a stream difference, with the largest difference
+      and the columns involved, and no code change without the user's OK
