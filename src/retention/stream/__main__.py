@@ -280,10 +280,11 @@ def replay_cmd(args, gather=gather_replay) -> int:
         if not full.exists():
             raise SystemExit("the throttled replay runs after the full-speed one (step6.run_order)")
     g = gather(args)
-    report, tl = replay.run(
+    report, result = replay.run(
         g["r"], args.db, g["folder"], g["cfg"], g["members"], g["is_scored"], g["c01"],
         g["seed"], g["columns"], g["main"], table_path(args),
         throttled=args.speed == "throttled", bucket=args.bucket,
+        keep_link=args.bucket is not None,
     )  # fmt: skip
     report["models_version"] = g["models_version"]
     code = 0
@@ -291,7 +292,7 @@ def replay_cmd(args, gather=gather_replay) -> int:
         report["not_a_mark"] = "dry run on one md5 bucket"
         report["projection"] = replay.project(report, factor=g["sample_buckets"])
         report["source_row_link"] = replay.link_check(
-            g["cleaned"], tl.tx, source.STORE_DATE, args.bucket
+            g["cleaned"], result.link_rows, source.STORE_DATE, args.bucket
         )
         code = {"proceed": 0, "stop_and_ask": 2, "stop": 1}[report["projection"]["verdict"]]
         code = code or (0 if report["source_row_link"]["met"] else 1)

@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import shutil
 import time
 from collections.abc import Callable
 from datetime import date
@@ -61,15 +62,7 @@ DATABASE_0_BYTES = (
 )
 VALKEY_LIMIT = VALKEY_REGISTERED - DATABASE_0_BYTES  # 7,598,239,392
 VALKEY_ASK = int(VALKEY_LIMIT * 0.9)  # 6,838,415,452
-LINK_COLUMNS = [
-    "source",
-    "source_row",
-    "msno",
-    "transaction_date",
-    "is_cancel",
-    "expiry_date",
-    "row_kind",
-]
+LINK_COLUMNS = move.LINK_COLUMNS
 
 
 # --- the recount ---------------------------------------------------------------------------------
@@ -150,61 +143,72 @@ def run(
     throttled: bool = False,
     bucket: int | None = None,
     t: date = source.STORE_DATE,
-) -> tuple[dict[str, Any], move.Timelines]:
+    n_chunks: int = move.WORK_CHUNKS,
+    keep_link: bool = False,
+) -> tuple[dict[str, Any], move.MoveResult]:
     """One replay into `database`: its report (counts, times, memory; no customer ID) and
-    the timelines at the move."""
+    the move's result. Steps are timed under step_seconds and the process's running peak
+    memory after each step under step_peak_rss_gb (keys api.__main__.stamp never writes)."""
     producer.refuse_loaded_store(r)
     producer.require_database(r, database)
     rss_start = peak_rss_gb()
-    seconds: dict[str, float] = {}
+    step_seconds: dict[str, float] = {}
+    step_peak: dict[str, float] = {}
     clock = time.time()
 
     def lap(name: str) -> None:
         nonlocal clock
         now = time.time()
-        seconds[name] = round(now - clock, 2)
+        step_seconds[name] = round(now - clock, 2)
+        step_peak[name] = peak_rss_gb()
         clock = now
 
+    work = table_path.with_name(table_path.stem + "_work")
+    shutil.rmtree(work, ignore_errors=True)
     removed = clear(r)
     valkey_before = store.memory_used(r)
     lap("clear")
     c = cs.Consumer(r, database, source.BOOTSTRAP, is_scored)
     boot = c.bootstrap(folder, bucket=bucket)
     lap("bootstrap")
-    base = move.rebuild(r, cfg, None)
+    move.write_bootstrap_timelines(r, cfg, work, n_chunks)
     lap("bootstrap_timelines")
     produced = producer.produce(r, source.events(folder, bucket=bucket), throttled=throttled)
     lap("produce")
     consumed = c.consume()
     lap("consume")
     touched = r.scard(cs.TOUCHED)
-    tl = move.rebuild(r, cfg, base)
-    lap("move_timelines")
-    table, g = move.feature_table(r, t, tl, cfg, members_path)
-    lap("move_features")
+    result = move.chunked_move(r, t, cfg, members_path, work, main, n_chunks, keep_link=keep_link)
+    lap("move")
     pruned = move.prune_ring(r, t)
     r.delete(cs.TOUCHED)
-    move.write_table(table, table_path)
+    move.write_table(result.table, table_path)
     lap("move_write_table")
-    written = move.write_store(r, database, t, table, g, tl.tx, c01, seed, columns, main)
+    written = move.write_store(
+        r, database, t, result.table, result.g, result.prices, result.known, c01, seed, columns,
+        main,
+    )  # fmt: skip
     lap("store")
+    shutil.rmtree(work, ignore_errors=True)
     valkey_after = store.memory_used(r)
     known = written["known"]
     return {
         "database": database,
         "speed": "throttled" if throttled else "full",
         "bucket": bucket,
+        "chunks": n_chunks,
         "removed_keys_before": int(removed),
         "bootstrap_rows": boot,
         "produced": int(produced),
         "consumed": int(consumed),
         "touched_at_move": int(touched),
         "ring_days_pruned": int(pruned),
-        "feature_rows": table.num_rows,
-        "feature_columns": table.num_columns,
-        "table_sha256": content_hash(table),
+        "feature_rows": result.table.num_rows,
+        "feature_columns": result.table.num_columns,
+        "table_sha256": content_hash(result.table),
         "store": written,
-        "seconds": seconds,
+        "step_seconds": step_seconds,
+        "step_peak_rss_gb": step_peak,
         "process_peak_rss_gb_start": rss_start,
         "process_peak_rss_gb": peak_rss_gb(),
         "valkey_used_memory_bytes_before": int(valkey_before),
@@ -213,8 +217,8 @@ def run(
         if known
         else None,
         "valkey_keys": int(r.dbsize()),
-        "cleaned_rows": int(len(tl.tx)),
-    }, tl
+        "cleaned_rows": int(result.cleaned_rows),
+    }, result
 
 
 # --- the dry run's checks ------------------------------------------------------------------------

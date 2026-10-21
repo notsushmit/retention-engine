@@ -96,10 +96,15 @@ def test_a_full_replay_equals_batch_and_counts_every_october_event(valkey, raw, 
     assert store.store_date(valkey) == T and valkey.scard(cs.TOUCHED) == 0
     assert report["feature_rows"] == stream.num_rows and report["feature_columns"] == 61
     assert report["store"]["customer_documents"] == stream.num_rows
-    assert set(report["seconds"]) == {
-        "clear", "bootstrap", "bootstrap_timelines", "produce", "consume",
-        "move_timelines", "move_features", "move_write_table", "store",
+    steps = {
+        "clear", "bootstrap", "bootstrap_timelines", "produce", "consume", "move",
+        "move_write_table", "store",
     }  # fmt: skip
+    assert set(report["step_seconds"]) == set(report["step_peak_rss_gb"]) == steps
+    assert "seconds" not in report  # stamp's key, written only by the command
+    peaks = list(report["step_peak_rss_gb"].values())
+    assert peaks == sorted(peaks) and peaks[0] >= report["process_peak_rss_gb_start"]
+    assert not (tmp_path / "stream_work").exists()  # the chunk work folder is removed
 
 
 @pytest.mark.valkey
@@ -133,19 +138,19 @@ def test_a_bucket_replay_holds_that_bucket_only_and_links_to_phase_1(valkey, raw
     data, members_path = raw
     population = batch_table(data, members_path).column("msno").to_pylist()
     k, n = Counter(bucket(m) for m in population).most_common(1)[0]
-    report, tl = one(valkey, raw, tmp_path, bucket=k)
+    report, result = one(valkey, raw, tmp_path, bucket=k, keep_link=True)
     stream = move.pq.read_table(tmp_path / "stream.parquet")
     assert report["bucket"] == k and report["feature_rows"] == n
     assert {bucket(m) for m in stream.column("msno").to_pylist()} == {k}
     clean_path = tmp_path / "cleaned.parquet"
     cleaned(data).to_parquet(clean_path)
-    link = replay.link_check(clean_path, tl.tx, T, k)
+    link = replay.link_check(clean_path, result.link_rows, T, k)
     assert link["met"] and link["batch_rows"] == link["stream_rows"] == link["equal_rows"] > 0
     shifted = cleaned(data)
     i = shifted.index[shifted.msno.map(bucket).eq(k) & (shifted.transaction_date < str(T))][0]
     shifted.loc[i, "source_row"] += 1_000_000
     shifted.to_parquet(clean_path)
-    bad = replay.link_check(clean_path, tl.tx, T, k)
+    bad = replay.link_check(clean_path, result.link_rows, T, k)
     assert not bad["met"] and (bad["only_in_batch"], bad["only_in_stream"]) == (1, 1)
 
 
@@ -244,7 +249,8 @@ def fake_run(table_sha="a" * 64, produced=6, consumed=6, peak=0.9, valkey=101_00
             "consumed": consumed,
             **dry(peak, valkey),
         }
-        return report, SimpleNamespace(tx=None)
+        report |= {"step_seconds": {"bootstrap": 1.5}, "step_peak_rss_gb": {"bootstrap": 0.7}}
+        return report, SimpleNamespace(link_rows=None)
 
     return run
 
@@ -294,6 +300,10 @@ def test_the_dry_run_returns_the_projection_s_verdict(quiet, monkeypatch, valkey
     report = json.loads((quiet / "replay_dry_bucket3.json").read_text())
     assert report["not_a_mark"] == "dry run on one md5 bucket"
     assert report["projection"]["factor"] == 20
+    # the written report keeps the per-step keys next to stamp's own total
+    assert report["step_seconds"] == {"bootstrap": 1.5}
+    assert report["step_peak_rss_gb"] == {"bootstrap": 0.7}
+    assert isinstance(report["seconds"], float)
 
 
 def test_a_dry_run_with_a_broken_link_is_not_clean(quiet, monkeypatch):
@@ -316,10 +326,10 @@ def test_table_paths_follow_the_registered_one():
 @pytest.mark.valkey
 def test_tied_customers_with_a_labels_state_mismatch_are_counted_apart(raw, valkey, tmp_path):  # noqa: F811
     data, members_path = raw
-    report, tl = one(valkey, raw, tmp_path)
+    one(valkey, raw, tmp_path)
     stream = move.pq.read_table(tmp_path / "stream.parquet")
     batch = planted(batch_table(data, members_path), "s-tie", "segment", "discount100_only")
-    full = tl.coverage
+    full = move.rebuild(valkey, CFG, None).coverage  # the stored rows outlive the move
     d = parity.diagnostics(
         stream, batch, lambda ids: full[full.msno.isin(ids)], lambda ids: full[full.msno.isin(ids)],
         data / "user_logs.parquet", T,

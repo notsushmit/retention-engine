@@ -343,18 +343,19 @@ def test_the_replayed_store_is_written_to_the_replay_database_only(replayed, tmp
         model, platt = fit_models(fit, fit, settings, h, p)
         c01[h] = SavedModel(h, model, platt.a, platt.b, booster_sha256(model))
     columns = list(real.columns)
-    written = move.write_store(
-        r, 15, T, table, g, tl.tx, c01, p.seed, columns, tuple(p.main_segments)
-    )
+    main = tuple(p.main_segments)
+    prices, known = move.p2_prices(tl, g, T, CFG, main), move.customers(r)
+    written = move.write_store(r, 15, T, table, g, prices, known, c01, p.seed, columns, main)
     assert store.store_date(r) == T
     assert written["customer_documents"] == len(g)
     assert written["ranked"] == r.zcard("rs:rank:30") > 0
     with pytest.raises(PermissionError, match="database 0 holds the loaded store"):
         move.write_store(
-            Untouchable(db=0, settings_db=1), 1, T, table, g, tl.tx, c01, p.seed, columns, ()
-        )
+            Untouchable(db=0, settings_db=1), 1, T, table, g, prices, known, c01, p.seed,
+            columns, (),
+        )  # fmt: skip
     with pytest.raises(PermissionError, match="connected to database 15, expected 1"):
-        move.write_store(r, 1, T, table, g, tl.tx, c01, p.seed, columns, ())
+        move.write_store(r, 1, T, table, g, prices, known, c01, p.seed, columns, ())
 
 
 def test_a9_s_judged_columns_are_the_registry_without_the_seven():

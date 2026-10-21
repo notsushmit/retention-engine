@@ -35,6 +35,7 @@ producer.require_database, never database 0.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -205,8 +206,9 @@ DECIMAL_WEIGHTS = decimal_weights()
 class StreamUsage:
     """UsageSource's features, from the replay's ring and listening days (duck-typed)."""
 
-    def __init__(self, r):
+    def __init__(self, r, median: float | None = None):
         self.r = r
+        self.median = median  # the chunked move gives the population's median afterwards
 
     def frame(self, t: date, population: list[str]) -> pd.DataFrame:
         """The frame UsageSource._chunk returns, column for column."""
@@ -306,7 +308,9 @@ class StreamUsage:
         pop = list(pd.unique(pd.Series(population, dtype=object)))
         out = _derive(self.frame(t, pop))
         valid = out.ratio_secs_7_vs_base.dropna()
-        median = float(valid.median()) if len(valid) else np.nan
+        median = self.median
+        if median is None:
+            median = float(valid.median()) if len(valid) else np.nan
         out["ratio_secs_vs_cohort"] = out.ratio_secs_7_vs_base / median
         out = out.set_index("msno").loc[pop].reset_index()
         return out[["msno", *USAGE_COLUMNS]]
@@ -375,13 +379,17 @@ def write_store(
     t: date,
     table: pa.Table,
     g: pd.DataFrame,
-    tx_clean: pd.DataFrame,
+    prices: pd.DataFrame,
+    known: list[str],
     c01: dict,
     seed: int,
     columns: list[str],
     main_segments: tuple[str, ...],
 ) -> dict[str, int]:
-    """The replayed store for t, written only to the replay database (never database 0)."""
+    """The replayed store for t, written only to the replay database (never database 0).
+
+    prices: price_per_day's columns for (at least) every P2 main customer; known: every
+    customer with a stored transaction row (all dated before t)."""
     producer.refuse_loaded_store(r)
     producer.require_database(r, database)
     feats = table.to_pandas(types_mapper=NULLABLE.get, date_as_object=False)
@@ -393,11 +401,180 @@ def write_store(
     rows = feats[feats.msno.isin(scored)].reset_index(drop=True)
     status, keep = sc.refuse_unseen(status, rows, [m.model for m in c01.values()])
     rows = rows[keep].reset_index(drop=True)
-    prices = price_per_day(tx_clean[PRICE_COLUMNS], rows[["msno", "snapshot_date"]])
+    prices = prices.set_index(prices.msno.astype(str)).loc[rows.msno.astype(str)]
+    prices = prices.reset_index(drop=True)
     pr = sc.probabilities(c01, rows, seed)
     finals = pd.DataFrame({"msno": rows.msno.astype(str)})
     for k, h in enumerate(sc.HORIZONS):
         finals[f"days_{h}"] = pr.final[:, k]
-    known = sorted(tx_clean.msno.astype(str).unique())
+    known = sorted(map(str, known))
     counts = sc.population_counts(status) | {"not_active": len(known) - len(status)}
     return store.load_snapshot(r, t, status, rows, prices, columns, known, finals, counts)
+
+
+# --- the chunked replay (D-221) ---------------------------------------------------------------
+#
+# Found after the bucket-0 dry run (D-220), whose projected process peak was 23.45 GB: the
+# memory-heavy steps (the bootstrap timelines, the move, the store's prices) now hold one
+# chunk of customers at a time. Every one of them is per customer, so chunking changes no
+# value; the cohort median is the exception and is taken once, over the whole population,
+# after every chunk. Chunks are fixed by md5 bits other than the sample's bucket bits, so a
+# one-bucket dry run still splits into chunks.
+
+WORK_CHUNKS = 20  # chosen here, not registered
+
+
+def chunk_of(msno: str, n: int) -> int:
+    return int(hashlib.md5(msno.encode()).hexdigest()[8:16], 16) % n
+
+
+def customers(r) -> list[str]:
+    """Every customer with a stored transaction row, sorted."""
+    return sorted(k.decode().removeprefix("rp:tx:") for k in r.scan_iter("rp:tx:*", 10_000))
+
+
+def chunks(ids: list[str], n: int) -> list[list[str]]:
+    out: list[list[str]] = [[] for _ in range(n)]
+    for m in ids:
+        out[chunk_of(m, n)].append(m)
+    return out
+
+
+def _paths(work: Path, k: int) -> dict[str, Path]:
+    return {name: work / f"chunk{k:03d}_{name}.parquet" for name in ("tx", "coverage", "paid")}
+
+
+def write_bootstrap_timelines(r, cfg: LabelConfig, work: Path, n: int = WORK_CHUNKS) -> int:
+    """The bootstrap's timelines, chunk by chunk, to `work`; returns the cleaned rows."""
+    work.mkdir(parents=True, exist_ok=True)
+    rows = 0
+    for k, ids in enumerate(chunks(customers(r), n)):
+        if not ids:
+            continue
+        tl = Timelines.build(stored_rows(r, ids), cfg)
+        for name, path in _paths(work, k).items():
+            getattr(tl, name).to_parquet(path, index=False)
+        rows += len(tl.tx)
+    return rows
+
+
+def read_chunk(work: Path, k: int) -> Timelines | None:
+    paths = _paths(work, k)
+    if not paths["tx"].exists():
+        return None
+    return Timelines(*(pd.read_parquet(paths[name]) for name in ("tx", "coverage", "paid")))
+
+
+def chunk_timelines(
+    r, cfg: LabelConfig, work: Path, k: int, ids: list[str], touched: set[str]
+) -> Timelines | None:
+    """Chunk k's timelines at the move: the bootstrap's, with its touched customers rebuilt."""
+    base = read_chunk(work, k)
+    redo = sorted(touched & set(ids))
+    if not redo:
+        return base
+    rebuilt = Timelines.build(stored_rows(r, redo), cfg)
+    return rebuilt if base is None else base.splice(rebuilt, set(redo))
+
+
+def p2_prices(tl: Timelines, g: pd.DataFrame, t: date, cfg: LabelConfig, main) -> pd.DataFrame:
+    """Phase 7's price per day for the chunk's P2 main customers (in_exp30, main segment)."""
+    cand = g[g.in_exp30.astype(bool) & g.segment.isin(main)]
+    pop = pd.DataFrame({"msno": cand.msno.astype(str), "snapshot_date": pd.Timestamp(t)})
+    return price_per_day(tl.tx[PRICE_COLUMNS], pop)
+
+
+@dataclass
+class MoveResult:
+    table: pa.Table  # A9's 61 columns, every customer with coverage, msno order
+    g: pd.DataFrame  # the labels state (msno, in_exp30, segment, ...)
+    prices: pd.DataFrame  # P2 main customers' prices
+    known: list[str]
+    cleaned_rows: int
+    link_rows: pd.DataFrame | None  # the dry run's link columns, when asked
+    timelines: Timelines | None  # every chunk's timelines, when asked (tests)
+
+
+LINK_COLUMNS = ["source", "source_row", "msno", "transaction_date", "is_cancel", "expiry_date",
+                "row_kind"]  # fmt: skip
+
+
+def chunked_move(
+    r,
+    t: date,
+    cfg: LabelConfig,
+    members_path: Path,
+    work: Path,
+    main: tuple[str, ...],
+    n: int = WORK_CHUNKS,
+    keep_link: bool = False,
+    keep_timelines: bool = False,
+) -> MoveResult:
+    """The move, one chunk of customers at a time; the cohort median once, at the end."""
+    touched = {m.decode() for m in r.smembers(cs.TOUCHED)}
+    known = customers(r)
+    members_all = duckdb.sql(f"select {', '.join(MEMBER_INPUT)} from '{members_path}'").df()
+    frames, gs, prices, links, tls = [], [], [], [], []
+    cleaned = 0
+    for k, ids in enumerate(chunks(known, n)):
+        tl = chunk_timelines(r, cfg, work, k, ids, touched)
+        if tl is None:
+            continue
+        cleaned += len(tl.tx)
+        g = labels_state(tl, t, cfg)
+        if keep_link:
+            links.append(tl.tx[LINK_COLUMNS])
+        if keep_timelines:
+            tls.append(tl)
+        if g.empty:
+            continue
+        for h in HORIZONS:  # placeholders for assemble; snapshot_usable_h is dropped (A9)
+            g[f"label_reliable_{h}"] = False
+        con = duckdb.connect()
+        try:
+            con.register("stream_timeline", tl.coverage)
+            tx = TransactionSource(
+                con, "stream_timeline", pd.Series(dtype=object), cfg.renewal_window_days,
+                cfg.data_start,
+            )  # fmt: skip
+            members = members_all[members_all.msno.isin(set(g.msno))]
+            # median 1.0: ratio_secs_vs_cohort is recomputed below from the whole population
+            frame, errors = assemble(
+                t, g, StreamUsage(r, median=1.0), tx, members, PLACEHOLDER_PRE_T, cfg.data_start
+            )
+        finally:
+            con.close()
+        if errors:
+            raise ValueError("the stream's feature checks failed: " + "; ".join(errors))
+        frames.append(frame)
+        gs.append(g)
+        prices.append(p2_prices(tl, g, t, cfg, main))
+    frame = pd.concat(frames, ignore_index=True).sort_values("msno", kind="stable")
+    frame = frame.reset_index(drop=True)
+    valid = frame.ratio_secs_7_vs_base.dropna()
+    median = float(valid.median()) if len(valid) else np.nan
+    frame["ratio_secs_vs_cohort"] = frame.ratio_secs_7_vs_base / median
+    g_all = pd.concat(gs, ignore_index=True).sort_values("msno", kind="stable")
+    timelines = None
+    if keep_timelines:
+        timelines = Timelines(
+            *(
+                pd.concat([getattr(x, name) for x in tls], ignore_index=True)
+                .sort_values(keys, kind="stable")
+                .reset_index(drop=True)
+                for name, keys in (
+                    ("tx", ["msno", "transaction_date", "source", "source_row"]),
+                    ("coverage", ["msno", "seq"]),
+                    ("paid", ["msno", "seq"]),
+                )
+            )
+        )
+    return MoveResult(
+        table=to_arrow(frame).select(list(JUDGED)),
+        g=g_all.reset_index(drop=True),
+        prices=pd.concat(prices, ignore_index=True) if prices else pd.DataFrame(),
+        known=known,
+        cleaned_rows=cleaned,
+        link_rows=pd.concat(links, ignore_index=True) if keep_link and links else None,
+        timelines=timelines,
+    )
