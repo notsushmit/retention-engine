@@ -164,6 +164,10 @@ def special_customers() -> list[dict]:
         # paid until 2016-10-20, then a trial: coverage by the trial, paid state grace
         tx_row("s-grace", date(2016, 9, 20), 20161020),
         tx_row("s-grace", date(2016, 10, 28), 20161104, plan=7, price=0, paid=0),
+        # two same-day rows tied on every timeline key: placeholder expiries whose raw dates
+        # differ (so cleaning keeps both) and impute to the same expiry (2016-11-20)
+        tx_row("s-tie", date(2016, 10, 20), 19700101, pm=41),
+        tx_row("s-tie", date(2016, 10, 20), 19700102, pm=41),
         # a row after T for s-long, which batch reads and the stream never does
         tx_row("s-long", date(2016, 12, 10), 20170310, plan=90, price=447, paid=447),
     ]

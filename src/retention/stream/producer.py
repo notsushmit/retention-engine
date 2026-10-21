@@ -35,6 +35,22 @@ def throttle_settings(cfg: dict[str, Any] | None = None) -> tuple[float, int]:
     return int(m["ms"]) / 1000, int(m["every"].replace(",", ""))
 
 
+def client_for(database: int, url: str | None = None):
+    """A client on `database` of VALKEY_URL's server: the URL's path is rewritten, because a
+    database in the URL overrides a db argument in redis-py (D-211); then checked with the
+    server."""
+    import os
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+    import redis
+
+    parts = urlsplit(url or os.environ.get("VALKEY_URL") or store.DEFAULT_URL)
+    query = urlencode([(k, v) for k, v in parse_qsl(parts.query) if k != "db"])
+    r = redis.Redis.from_url(urlunsplit(parts._replace(path=f"/{database}", query=query)))
+    require_database(r, database)
+    return r
+
+
 def database_of(r) -> int:
     """The database the server says this client is on."""
     return int(r.client_info()["db"])
