@@ -704,3 +704,33 @@ unseen_level_codes:  # amendment A5; a new key, so the registered contract stays
     response scan's own test), the code reads the generic code; every other
     feature keeps "unseen_level:<feature>"
   generic_code: "unseen_level:hidden_feature"
+
+msno_scan_exemption:  # amendment A6; a new key, so the registered scan entries stay unchanged
+  id: A6
+  date: "2026-10-21"
+  label: >-
+    an identifier exemption, not a relaxation of the never-used rule; written after a
+    count (counts only, no IDs printed, run once at 5ab206e) found customer IDs that
+    contain a never-used word as a whole word; registered before 5d, 5f and the step 8
+    sample; not a tuned result
+  amends: [contract.never_in_any_body, step5.scan]  # the registered entries are kept, not edited
+  exempt: >-
+    only the value of the msno field of a /score body and the row ID (msno) of each
+    /at-risk row, and only when that value equals the requested customer's own ID or
+    the listed customer's own ID
+  field: msno
+  scanned_in_full: >-
+    every other field and key of every response, the same string in any other field,
+    another customer's ID in the msno field, and every error body
+  counts:  # distinct IDs, not table rows; per-table row counts were not measured
+    known_at_2016_11_01: {distinct_ids: 425520, with_a_whole_word_hit: 3}
+    union_of_the_seven_tables: {distinct_ids: 1474743, with_a_whole_word_hit: 5}
+    distinct_ids_per_table:
+      members_v3: 1353151
+      transactions: 472501
+      transactions_v2: 239093
+      train: 198390
+      train_v2: 193800
+      user_logs: 1046058
+      user_logs_v2: 220457
+    words: {age: 5, gender: 0, registered_via: 0, tenure: 0, city: 0}
