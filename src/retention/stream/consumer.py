@@ -49,7 +49,7 @@ from typing import Any
 
 from retention.api import store
 from retention.features.spec import SECS_PER_DAY_MAX, SECS_SENTINEL_ABS, WINDOWS
-from retention.models.resources import peak_rss_gb
+from retention.models.resources import current_rss_gb, peak_rss_gb
 from retention.stream import producer, source
 
 RING_DAYS = WINDOWS["28"][1]  # 28
@@ -197,7 +197,7 @@ class Consumer:
         self,
         folder: Path,
         batch: int = 5_000,
-        bucket: int | None = None,
+        bucket: source.Buckets = None,
         measure: dict | None = None,
     ) -> dict[str, int]:
         """State from rows dated before 2016-10-01, read only through source.bootstrap_rows.
@@ -205,10 +205,10 @@ class Consumer:
         With `measure` (a measurement only, D-223), per file: rows; seconds reading (DuckDB's
         fetches), updating the state (everything else in the loop) and writing (pipeline
         executions); the read stats of source.run (DuckDB's memory, the first batch, which
-        ends DuckDB's sort on a sorted read); and the process's running peak RSS after the
-        file. user_logs is read unsorted (D-225); the state does not depend on its order.
-        Then the first and last listening days' writes, with their entries and the peak
-        after them."""
+        ends DuckDB's sort on a sorted read); and the process's running peak RSS and current
+        RSS (D-227) after the file. user_logs is read unsorted (D-225); the state does not
+        depend on its order. Then the first and last listening days' writes, with their
+        entries and the peak and current RSS after them."""
         counts = {"user_logs": 0, "transactions": 0, "transactions_v2": 0}
         first: dict[str, int] = {}
         last: dict[str, int] = {}
@@ -244,6 +244,7 @@ class Consumer:
         flush("user_logs")
         loop["user_logs"] = time.perf_counter() - t0
         peak_after = {"user_logs": peak_rss_gb()}
+        rss_after = {"user_logs": current_rss_gb()} if measure is not None else {}
         for name in ("transactions", "transactions_v2"):
             t0 = time.perf_counter()
             for row in rows_of(name):
@@ -254,6 +255,8 @@ class Consumer:
             flush(name)
             loop[name] = time.perf_counter() - t0
             peak_after[name] = peak_rss_gb()
+            if measure is not None:
+                rss_after[name] = current_rss_gb()
         t0 = time.perf_counter()
         items = sorted(first)
         for i in range(0, len(items), batch):
@@ -272,11 +275,13 @@ class Consumer:
                     "write_seconds": round(write[name], 3),
                     **{k: v for k, v in stats[name].items() if k != "fetch_seconds"},
                     "peak_rss_gb_after": peak_after[name],
+                    "rss_gb_after": rss_after[name],
                 }
             measure["first_last_writes"] = {
                 "entries": len(items),
                 "seconds": round(time.perf_counter() - t0, 3),
                 "peak_rss_gb_after": peak_rss_gb(),
+                "rss_gb_after": current_rss_gb(),
             }
         return counts
 

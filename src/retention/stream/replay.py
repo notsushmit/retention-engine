@@ -18,7 +18,10 @@ configs/serving.yaml, streaming and step6.
   above 90% of it (6,838,415,452) is stop-and-ask. Valkey memory is judged for both
   replays together (databases 1 and 2 are kept until the report is read).
 - link_check: counts only: the cleaned table's rows dated before T for the dry run's
-  bucket against the stream's cleaned rows, on (source, source_row) and content.
+  bucket (or two buckets, D-227) against the stream's cleaned rows, on (source,
+  source_row) and content.
+- Memory: after every step, the process's running peak (step_peak_rss_gb) and its current
+  resident memory (step_rss_gb, D-227), which falls when a step gives memory back.
 """
 
 from __future__ import annotations
@@ -41,9 +44,8 @@ import pyarrow.ipc as ipc
 from retention.api import store
 from retention.api.config import load_serving
 from retention.api.schemas import never_used_hits
-from retention.data.sample import bucket_sql
 from retention.labels.config import LabelConfig
-from retention.models.resources import peak_rss_gb
+from retention.models.resources import current_rss_gb, peak_rss_gb
 from retention.stream import consumer as cs
 from retention.stream import move, producer, source
 
@@ -141,19 +143,22 @@ def run(
     main: tuple[str, ...],
     table_path: Path,
     throttled: bool = False,
-    bucket: int | None = None,
+    bucket: source.Buckets = None,
     t: date = source.STORE_DATE,
     n_chunks: int = move.WORK_CHUNKS,
     keep_link: bool = False,
 ) -> tuple[dict[str, Any], move.MoveResult]:
     """One replay into `database`: its report (counts, times, memory; no customer ID) and
     the move's result. Steps are timed under step_seconds and the process's running peak
-    memory after each step under step_peak_rss_gb (keys api.__main__.stamp never writes)."""
+    memory after each step under step_peak_rss_gb, and its current memory under step_rss_gb
+    (keys api.__main__.stamp never writes)."""
     producer.refuse_loaded_store(r)
     producer.require_database(r, database)
     rss_start = peak_rss_gb()
+    rss_now_start = current_rss_gb()
     step_seconds: dict[str, float] = {}
     step_peak: dict[str, float] = {}
+    step_rss: dict[str, float] = {}
     clock = time.time()
 
     def lap(name: str) -> None:
@@ -161,6 +166,7 @@ def run(
         now = time.time()
         step_seconds[name] = round(now - clock, 2)
         step_peak[name] = peak_rss_gb()
+        step_rss[name] = current_rss_gb()
         clock = now
 
     work = table_path.with_name(table_path.stem + "_work")
@@ -196,7 +202,7 @@ def run(
     return {
         "database": database,
         "speed": "throttled" if throttled else "full",
-        "bucket": bucket,
+        "bucket": list(bucket) if isinstance(bucket, tuple) else bucket,
         "chunks": n_chunks,
         "removed_keys_before": int(removed),
         "bootstrap_rows": boot,
@@ -210,8 +216,10 @@ def run(
         "store": written,
         "step_seconds": step_seconds,
         "step_peak_rss_gb": step_peak,
+        "step_rss_gb": step_rss,  # current memory after each step (D-227)
         "bootstrap_detail": bootstrap_detail,  # a measurement (D-223); stamp never writes it
         "process_peak_rss_gb_start": rss_start,
+        "process_rss_gb_start": rss_now_start,
         "process_peak_rss_gb": peak_rss_gb(),
         "valkey_used_memory_bytes_before": int(valkey_before),
         "valkey_used_memory_bytes_after": int(valkey_after),
@@ -227,7 +235,8 @@ def run(
 
 
 def project(dry: dict[str, Any], factor: float, replays: int = 2) -> dict[str, Any]:
-    """The full-sample projection of one bucket's replay, and the stop rules' verdict."""
+    """The full-sample projection of a dry run, and the stop rules' verdict. The factor is
+    the sample's buckets over the buckets replayed: 20 for one bucket, 10 for two (D-227)."""
     base = dry["process_peak_rss_gb_start"]
     peak = base + (dry["process_peak_rss_gb"] - base) * factor
     one = (dry["valkey_used_memory_bytes_after"] - dry["valkey_used_memory_bytes_before"]) * factor
@@ -251,11 +260,14 @@ def project(dry: dict[str, Any], factor: float, replays: int = 2) -> dict[str, A
     }
 
 
-def link_check(cleaned: Path, stream_tx: pd.DataFrame, t: date, bucket: int) -> dict[str, Any]:
-    """Counts only: Phase 1's cleaned rows before t of one bucket against the stream's."""
+def link_check(
+    cleaned: Path, stream_tx: pd.DataFrame, t: date, bucket: int | tuple[int, ...]
+) -> dict[str, Any]:
+    """Counts only: Phase 1's cleaned rows before t of the dry run's bucket or buckets
+    against the stream's."""
     batch = duckdb.sql(
         f"select {', '.join(LINK_COLUMNS)} from read_parquet('{cleaned}') "
-        f"where transaction_date < date '{t.isoformat()}' and {bucket_sql('msno')} = {int(bucket)}"
+        f"where transaction_date < date '{t.isoformat()}' and {source.bucket_where(bucket)}"
     ).df()
 
     def rows(df: pd.DataFrame) -> set[tuple]:

@@ -1,5 +1,12 @@
 """Command line entry: `python -m retention.stream <command>`.
 
+replay --db <database> --speed full|throttled [--bucket K [--bucket J]] [--rerun-reason R]:
+one replay (step6). With --bucket it is a dry run on one or two md5 buckets (D-227), not a
+mark, projected to the full sample by a factor of 20 over the buckets replayed.
+--rerun-reason reruns a dry run only: the earlier report and table are renamed with the
+earlier report's git head as a suffix (never overwritten) and the reason is recorded in the
+new report. A registered run (no --bucket) is never rerun.
+
 stream-parity --db <replay database>: judge the registered feature and score parity of
 the replayed 2016-11-01 store (configs/serving.yaml, streaming.pass_marks, amendment
 A9): the stream feature table at step6.outputs.stream_features against features.parquet
@@ -152,11 +159,14 @@ def interim(fraction):
     return interim_dir(fraction)
 
 
-def begin(args, name: str) -> tuple[Path, Path, float]:
-    """Clean tree and the run-once guard; returns (repo, report path, start time)."""
+def begin(args, name: str, set_aside=None) -> tuple[Path, Path, float]:
+    """Clean tree and the run-once guard; returns (repo, report path, start time). A dry
+    run's labelled rerun sets the earlier outputs aside first (`set_aside(path)`)."""
     repo = Path.cwd()
     api_cli.require_clean(repo)
     path = api_cli.out_dir(args.fraction) / name
+    if set_aside is not None:
+        set_aside(path)
     api_cli.run_once(path)
     return repo, path, time.time()
 
@@ -200,10 +210,59 @@ def cancel_ids_cmd(args, folder=None, scored=None) -> int:
     return 0
 
 
+MAX_DRY_BUCKETS = 2
+
+
+def buckets_of(args) -> tuple[int, ...] | None:
+    """The dry run's buckets in the order given (None for a registered run)."""
+    b = args.bucket
+    if b is None:
+        return None
+    return (int(b),) if isinstance(b, int) else tuple(int(k) for k in b)
+
+
+def bucket_arg(args) -> int | tuple[int, ...] | None:
+    """What the reader takes: one bucket as an int (as before D-227), two as a tuple."""
+    ks = buckets_of(args)
+    return ks if ks is None or len(ks) > 1 else ks[0]
+
+
+def bucket_tag(args) -> str:
+    ks = buckets_of(args)
+    return f"bucket{ks[0]}" if len(ks) == 1 else "buckets" + "_".join(map(str, ks))
+
+
 def replay_name(args) -> str:
     if args.bucket is not None:
-        return f"replay_dry_bucket{args.bucket}.json"
+        return f"replay_dry_{bucket_tag(args)}.json"
     return f"replay_{args.speed}.json"
+
+
+def set_aside(table: Path, reason: str, record: dict):
+    """A dry run's labelled rerun (D-227): rename the earlier report and table with the
+    earlier report's git head as a suffix, never overwriting, and note what was done."""
+
+    def run(path: Path) -> None:
+        if not path.exists():
+            raise SystemExit(f"--rerun-reason given but {path.name} does not exist")
+        head = json.loads(path.read_text()).get("git_head")
+        if not head:
+            raise SystemExit(f"{path.name} has no git_head; set it aside by hand")
+        moves = [(p, p.with_name(f"{p.stem}_{head}{p.suffix}")) for p in (path, table)]
+        for _, new in moves:
+            if new.exists():
+                raise SystemExit(f"{new} exists; nothing renamed")
+        for old, new in moves:
+            if old.exists():
+                old.rename(new)
+        record.update(
+            reason=reason,
+            earlier_git_head=head,
+            earlier_report=moves[0][1].name,
+            earlier_table=moves[1][1].name if moves[1][1].exists() else None,
+        )
+
+    return run
 
 
 def check_replay_args(args) -> None:
@@ -211,8 +270,16 @@ def check_replay_args(args) -> None:
     if args.db == int(dbs["loaded_store"]):
         raise SystemExit("database 0 holds the loaded store; step 6 never writes it")
     want = int(dbs["determinism_replay"] if args.speed == "throttled" else dbs["replay"])
-    if args.bucket is not None and args.speed != "full":
+    ks = buckets_of(args)
+    if ks is not None and args.speed != "full":
         raise SystemExit("the dry run replays one bucket at full speed")
+    if ks is not None and not (1 <= len(ks) <= MAX_DRY_BUCKETS and len(set(ks)) == len(ks)):
+        raise SystemExit("a dry run replays one bucket or two different buckets")
+    if getattr(args, "rerun_reason", None) is not None:
+        if ks is None:
+            raise SystemExit("only a dry run is rerun; a registered run runs once")
+        if not args.rerun_reason.strip():
+            raise SystemExit("--rerun-reason needs a reason")
     if args.db != want:
         raise SystemExit(f"a {args.speed}-speed replay goes to database {want}")
 
@@ -220,7 +287,7 @@ def check_replay_args(args) -> None:
 def table_path(args) -> Path:
     registered = Path(load_serving()["step6"]["outputs"]["stream_features"])
     if args.bucket is not None:
-        return registered.with_name(f"{registered.stem}_bucket{args.bucket}.parquet")
+        return registered.with_name(f"{registered.stem}_{bucket_tag(args)}.parquet")
     if args.speed == "throttled":
         return registered.with_name(f"{registered.stem}_throttled.parquet")
     return registered
@@ -273,7 +340,10 @@ def to_percent_of(fraction) -> int:
 
 def replay_cmd(args, gather=gather_replay) -> int:
     check_replay_args(args)
-    repo, path, t0 = begin(args, replay_name(args))
+    reason = getattr(args, "rerun_reason", None)
+    rerun: dict = {}
+    aside = set_aside(table_path(args), reason, rerun) if reason is not None else None
+    repo, path, t0 = begin(args, replay_name(args), aside)
     out = api_cli.out_dir(args.fraction)
     if args.speed == "throttled":
         full = out / "replay_full.json"
@@ -283,16 +353,19 @@ def replay_cmd(args, gather=gather_replay) -> int:
     report, result = replay.run(
         g["r"], args.db, g["folder"], g["cfg"], g["members"], g["is_scored"], g["c01"],
         g["seed"], g["columns"], g["main"], table_path(args),
-        throttled=args.speed == "throttled", bucket=args.bucket,
+        throttled=args.speed == "throttled", bucket=bucket_arg(args),
         keep_link=args.bucket is not None,
     )  # fmt: skip
     report["models_version"] = g["models_version"]
     code = 0
     if args.bucket is not None:
-        report["not_a_mark"] = "dry run on one md5 bucket"
-        report["projection"] = replay.project(report, factor=g["sample_buckets"])
+        n = len(buckets_of(args))
+        report["not_a_mark"] = f"dry run on {'one md5 bucket' if n == 1 else f'{n} md5 buckets'}"
+        if rerun:
+            report["rerun"] = rerun
+        report["projection"] = replay.project(report, factor=g["sample_buckets"] / n)
         report["source_row_link"] = replay.link_check(
-            g["cleaned"], result.link_rows, source.STORE_DATE, args.bucket
+            g["cleaned"], result.link_rows, source.STORE_DATE, bucket_arg(args)
         )
         code = {"proceed": 0, "stop_and_ask": 2, "stop": 1}[report["projection"]["verdict"]]
         code = code or (0 if report["source_row_link"]["met"] else 1)
@@ -335,7 +408,8 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--fraction", type=float, default=None)
     rp.add_argument("--db", type=int, required=True)
     rp.add_argument("--speed", choices=["full", "throttled"], required=True)
-    rp.add_argument("--bucket", type=int, default=None)
+    rp.add_argument("--bucket", type=int, action="append", default=None)
+    rp.add_argument("--rerun-reason", default=None)
     args = parser.parse_args(argv)
     if args.command == "recount":
         return recount_cmd(args)

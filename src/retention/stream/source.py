@@ -43,7 +43,7 @@ import duckdb
 from retention.api.config import load_serving
 from retention.data.sample import bucket_sql
 from retention.data.stream import USER_LOGS_TYPES
-from retention.models.resources import peak_rss_gb
+from retention.models.resources import current_rss_gb, peak_rss_gb
 
 CFG = load_serving()
 STORE_DATE = date.fromisoformat(CFG["streaming"]["replay"]["store_date_after"])  # 2016-11-01
@@ -118,8 +118,19 @@ def fields(src: Source) -> tuple[str, ...]:
     return (*src.columns, "source_row") if src.row_number else src.columns
 
 
+Buckets = int | tuple[int, ...] | None  # one md5 bucket, or the buckets of a dry run (D-227)
+
+
+def bucket_where(bucket: Buckets, column: str = "msno") -> str:
+    """The SQL test for one bucket (= k) or several (in (j, k)), by the sample's bucket rule."""
+    ks = (bucket,) if isinstance(bucket, int) else tuple(bucket)
+    if len(ks) == 1:
+        return f"{bucket_sql(column)} = {int(ks[0])}"
+    return f"{bucket_sql(column)} in ({', '.join(str(int(k)) for k in ks)})"
+
+
 def query(
-    src: Source, lo: date | None, hi: date, bucket: int | None = None, ordered: bool = True
+    src: Source, lo: date | None, hi: date, bucket: Buckets = None, ordered: bool = True
 ) -> str:
     """The one SQL statement a read runs: the window [lo, hi) of one file, in tie order
     (unordered only for the bootstrap's user_logs, D-225); with `bucket`, only that md5
@@ -129,7 +140,7 @@ def query(
     if lo is not None:
         where = f"{src.date_column} >= {day_number(lo)} and {where}"
     if bucket is not None:
-        where = f"{where} and {bucket_sql('msno')} = {int(bucket)}"
+        where = f"{where} and {bucket_where(bucket)}"
     order = [src.date_column, "msno", *(f"{c} asc nulls first" for c in src.columns if c != "msno")]
     reader = f"read_parquet('{src.path}')"
     if src.row_number:
@@ -158,8 +169,8 @@ def run(sql: str, batch_rows: int, stats: dict | None = None) -> Iterator[list[t
 
     With `stats` (a measurement only, D-223): seconds spent fetching; after the first batch
     (for a sorted read, DuckDB has sorted every row by then) the seconds, DuckDB's memory and
-    temporary storage and the process's running peak RSS; DuckDB's largest memory and
-    temporary storage."""
+    temporary storage, the process's running peak RSS and its current RSS (D-227); DuckDB's
+    largest memory and temporary storage."""
     con = duckdb.connect()
     try:
         t0 = time.perf_counter()
@@ -181,6 +192,7 @@ def run(sql: str, batch_rows: int, stats: dict | None = None) -> Iterator[list[t
                     stats["first_batch_seconds"] = round(time.perf_counter() - t0, 3)
                     stats["duckdb_memory_bytes_after_first_batch"] = used
                     stats["peak_rss_gb_after_first_batch"] = peak_rss_gb()
+                    stats["rss_gb_after_first_batch"] = current_rss_gb()
                     first = False
             if not rows:
                 return
@@ -195,7 +207,7 @@ def read(
     hi: date,
     ceiling: date = STORE_DATE,
     batch_rows: int = 50_000,
-    bucket: int | None = None,
+    bucket: Buckets = None,
     stats: dict | None = None,
     ordered: bool = True,
 ) -> Iterator[dict[str, Any]]:
@@ -219,7 +231,7 @@ def sort_key(src: Source, row: dict[str, Any]) -> tuple:
 
 
 def keyed(
-    src: Source, lo: date, hi: date, ceiling: date, bucket: int | None = None
+    src: Source, lo: date, hi: date, ceiling: date, bucket: Buckets = None
 ) -> Iterator[tuple]:
     """One file's rows with their tie-rule keys (its own function, so each stream keeps its
     own source)."""
@@ -232,7 +244,7 @@ def events(
     lo: date = FIRST_DAY,
     hi: date = STORE_DATE,
     ceiling: date = STORE_DATE,
-    bucket: int | None = None,
+    bucket: Buckets = None,
 ) -> Iterator[dict[str, Any]]:
     """The replay's events, numbered from 1 in the registered order."""
     streams = [keyed(s, lo, hi, ceiling, bucket) for s in sources(folder)]
@@ -241,7 +253,7 @@ def events(
 
 
 def bootstrap_rows(
-    folder: Path, source: str, bucket: int | None = None, stats: dict | None = None
+    folder: Path, source: str, bucket: Buckets = None, stats: dict | None = None
 ) -> Iterator[dict[str, Any]]:
     """One file's rows dated before the bootstrap snapshot (2016-10-01): the transaction
     files in tie order, user_logs in DuckDB's own order (D-225)."""

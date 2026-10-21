@@ -20,7 +20,7 @@ from retention.data.sample import bucket
 from retention.data.stream import USER_LOGS_TYPES
 from retention.stream import __main__ as cli
 from retention.stream import consumer as cs
-from retention.stream import move, parity, replay
+from retention.stream import move, parity, replay, source
 from test_stream_move import CFG, T, batch_table, no_test_unlock, raw  # noqa: F401
 from test_stream_parity import COLUMNS, MAIN, P, planted, tiny_models
 from test_stream_source import TX_TYPES, folder, log, tx, write  # noqa: F401
@@ -101,6 +101,9 @@ def test_a_full_replay_equals_batch_and_counts_every_october_event(valkey, raw, 
         "move_write_table", "store",
     }  # fmt: skip
     assert set(report["step_seconds"]) == set(report["step_peak_rss_gb"]) == steps
+    assert set(report["step_rss_gb"]) == steps  # current memory after each step (D-227)
+    assert all(0 < v <= report["step_peak_rss_gb"][k] for k, v in report["step_rss_gb"].items())
+    assert 0 < report["process_rss_gb_start"] <= report["process_peak_rss_gb_start"]
     assert "seconds" not in report  # stamp's key, written only by the command
     peaks = list(report["step_peak_rss_gb"].values())
     assert peaks == sorted(peaks) and peaks[0] >= report["process_peak_rss_gb_start"]
@@ -108,6 +111,10 @@ def test_a_full_replay_equals_batch_and_counts_every_october_event(valkey, raw, 
     detail = report["bootstrap_detail"]
     assert set(detail) == {"user_logs", "transactions", "transactions_v2", "first_last_writes"}
     assert {k: detail[k]["rows"] for k in report["bootstrap_rows"]} == report["bootstrap_rows"]
+    for k, d in detail.items():
+        assert 0 < d["rss_gb_after"] <= d["peak_rss_gb_after"]
+        if k != "first_last_writes":
+            assert 0 < d["rss_gb_after_first_batch"] <= d["peak_rss_gb_after_first_batch"]
 
 
 @pytest.mark.valkey
@@ -157,6 +164,29 @@ def test_a_bucket_replay_holds_that_bucket_only_and_links_to_phase_1(valkey, raw
     assert not bad["met"] and (bad["only_in_batch"], bad["only_in_stream"]) == (1, 1)
 
 
+@pytest.mark.valkey
+def test_a_two_bucket_replay_holds_both_buckets_only_and_links_to_phase_1(valkey, raw, tmp_path):  # noqa: F811
+    data, members_path = raw
+    population = batch_table(data, members_path).column("msno").to_pylist()
+    (k, n), (j, m) = Counter(bucket(x) for x in population).most_common(2)
+    report, result = one(valkey, raw, tmp_path, bucket=(k, j), keep_link=True)
+    stream = move.pq.read_table(tmp_path / "stream.parquet")
+    assert report["bucket"] == [k, j] and report["feature_rows"] == n + m
+    assert {bucket(x) for x in stream.column("msno").to_pylist()} == {k, j}
+    clean_path = tmp_path / "cleaned.parquet"
+    cleaned(data).to_parquet(clean_path)
+    link = replay.link_check(clean_path, result.link_rows, T, (k, j))
+    assert link["met"] and link["batch_rows"] == link["stream_rows"] == link["equal_rows"] > 0
+    single = replay.link_check(clean_path, result.link_rows, T, k)
+    assert not single["met"] and single["only_in_batch"] == 0 < single["only_in_stream"]
+
+
+def test_the_bucket_filter_takes_one_bucket_or_several():
+    assert source.bucket_where(3).endswith(" = 3")
+    assert source.bucket_where((3,)).endswith(" = 3")
+    assert source.bucket_where((2, 3)).endswith(" in (2, 3)")
+
+
 def dry(peak: float, valkey_after: int) -> dict:
     return {
         "process_peak_rss_gb_start": 0.5,
@@ -201,6 +231,10 @@ def args(**kw):
         ({"db": 2}, "goes to database 1"),
         ({"db": 1, "speed": "throttled"}, "goes to database 2"),
         ({"db": 2, "speed": "throttled", "bucket": 3}, "one bucket at full speed"),
+        ({"bucket": [1, 2, 3]}, "one bucket or two different buckets"),
+        ({"bucket": [2, 2]}, "one bucket or two different buckets"),
+        ({"rerun_reason": "again"}, "only a dry run is rerun"),
+        ({"bucket": [2], "rerun_reason": "  "}, "needs a reason"),
     ],
 )
 def test_the_replay_command_refuses_the_wrong_database_or_mode(kw, message):
@@ -320,6 +354,73 @@ def test_a_dry_run_with_a_broken_link_is_not_clean(quiet, monkeypatch):
     monkeypatch.setattr(replay, "run", fake_run())
     monkeypatch.setattr(replay, "link_check", lambda *a: {"met": False})
     assert cli.replay_cmd(args(bucket=3), gather=lambda a: GATHER) == 1
+
+
+def test_a_two_bucket_dry_run_projects_by_a_factor_of_10(quiet, monkeypatch):
+    monkeypatch.setattr(replay, "run", fake_run())
+    seen = []
+    monkeypatch.setattr(replay, "link_check", lambda *a: seen.append(a[3]) or {"met": True})
+    assert cli.replay_cmd(args(bucket=[2, 3]), gather=lambda a: GATHER) == 0
+    report = json.loads((quiet / "replay_dry_buckets2_3.json").read_text())
+    assert report["not_a_mark"] == "dry run on 2 md5 buckets"
+    assert report["projection"]["factor"] == 10 and seen == [(2, 3)]
+    assert report["projection"]["process_peak_gb_limit"] == 10  # the registered limit, unchanged
+    one_bucket = replay.project(dry(0.9, 101_000_000), factor=20)
+    assert one_bucket["factor"] == 20
+
+
+def test_bucket_flags_append_and_one_bucket_reads_as_before(monkeypatch):
+    got = []
+    monkeypatch.setattr(cli, "replay_cmd", lambda a: got.append(a) or 0)
+    cli.main(["replay", "--db", "1", "--speed", "full", "--bucket", "2", "--bucket", "3"])
+    cli.main(["replay", "--db", "1", "--speed", "full", "--bucket", "2", "--rerun-reason", "x"])
+    assert cli.bucket_arg(got[0]) == (2, 3) and got[0].rerun_reason is None
+    assert cli.bucket_arg(got[1]) == 2 and got[1].rerun_reason == "x"
+    assert cli.replay_name(got[0]) == "replay_dry_buckets2_3.json"
+    assert cli.table_path(got[0]).name == "stream_features_2016-11-01_buckets2_3.parquet"
+
+
+@pytest.fixture()
+def dry_outputs(quiet, monkeypatch, tmp_path):
+    """An earlier bucket-3 dry run's report and table, the table kept in a temporary folder."""
+    table = tmp_path / "stream_features_2016-11-01_bucket3.parquet"
+    monkeypatch.setattr(cli, "table_path", lambda a: table)
+    monkeypatch.setattr(replay, "run", fake_run())
+    monkeypatch.setattr(replay, "link_check", lambda *a: {"met": True})
+    (quiet / "replay_dry_bucket3.json").write_text(json.dumps({"git_head": "0da8916"}))
+    table.write_bytes(b"earlier table")
+    return quiet, table
+
+
+def test_a_dry_run_is_rerun_only_with_a_reason_and_keeps_the_earlier_outputs(dry_outputs):
+    out, table = dry_outputs
+    with pytest.raises(SystemExit, match="runs once"):
+        cli.replay_cmd(args(bucket=3), gather=lambda a: GATHER)
+    reason = "measured after a fix (D-225)"
+    assert cli.replay_cmd(args(bucket=3, rerun_reason=reason), gather=lambda a: GATHER) == 0
+    assert json.loads((out / "replay_dry_bucket3_0da8916.json").read_text()) == {
+        "git_head": "0da8916"
+    }
+    assert (table.parent / "stream_features_2016-11-01_bucket3_0da8916.parquet").read_bytes() == (
+        b"earlier table"
+    )
+    report = json.loads((out / "replay_dry_bucket3.json").read_text())
+    assert report["rerun"] == {
+        "reason": reason,
+        "earlier_git_head": "0da8916",
+        "earlier_report": "replay_dry_bucket3_0da8916.json",
+        "earlier_table": "stream_features_2016-11-01_bucket3_0da8916.parquet",
+    }
+
+
+def test_a_rerun_never_overwrites_and_needs_an_earlier_report(dry_outputs):
+    out, table = dry_outputs
+    (out / "replay_dry_bucket3_0da8916.json").write_text("{}")
+    with pytest.raises(SystemExit, match="exists; nothing renamed"):
+        cli.replay_cmd(args(bucket=3, rerun_reason="r"), gather=lambda a: pytest.fail("gathered"))
+    assert (out / "replay_dry_bucket3.json").exists() and table.exists()
+    with pytest.raises(SystemExit, match="does not exist"):
+        cli.replay_cmd(args(bucket=4, rerun_reason="r"), gather=lambda a: pytest.fail("gathered"))
 
 
 def test_table_paths_follow_the_registered_one():

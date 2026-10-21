@@ -354,6 +354,8 @@ def test_a_measured_read_returns_the_same_rows_and_records_duckdb_s_memory(folde
         "duckdb_memory_bytes_max",
         "duckdb_temporary_bytes_max",
         "peak_rss_gb_after_first_batch",
+        "rss_gb_after_first_batch",  # current memory (D-227)
     }
+    assert 0 < stats["rss_gb_after_first_batch"] <= stats["peak_rss_gb_after_first_batch"]
     assert stats["duckdb_memory_bytes_max"] >= stats["duckdb_memory_bytes_after_first_batch"] >= 0
     assert stats["duckdb_temporary_bytes_max"] >= 0 and stats["peak_rss_gb_after_first_batch"] > 0

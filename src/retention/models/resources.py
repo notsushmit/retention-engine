@@ -16,3 +16,11 @@ def peak_rss_children_gb() -> float:
     """Largest peak resident set size of any finished child process (bootstrap workers), in GB."""
     peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
     return round(peak / (1e9 if sys.platform == "darwin" else 1e6), 3)
+
+
+def current_rss_gb() -> float:
+    """Resident set size of this process now, in GB (psutil, the "api" group; D-227). Unlike
+    peak_rss_gb it falls when memory is given back, so it shows what a step keeps."""
+    import psutil
+
+    return round(psutil.Process().memory_info().rss / 1e9, 3)
