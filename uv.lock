@@ -2937,6 +2937,10 @@ api = [
     { name = "scikit-learn" },
     { name = "uvicorn" },
 ]
+dashboard = [
+    { name = "httpx" },
+    { name = "streamlit" },
+]
 dev = [
     { name = "httpx" },
     { name = "pre-commit" },
@@ -2998,6 +3002,10 @@ api = [
     { name = "redis", specifier = ">=5" },
     { name = "scikit-learn", specifier = ">=1.5" },
     { name = "uvicorn", specifier = ">=0.30" },
+]
+dashboard = [
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "streamlit", specifier = ">=1.36" },
 ]
 dev = [
     { name = "httpx", specifier = ">=0.27" },
