@@ -273,3 +273,44 @@ design_tokens:
     mono: {family: JetBrains Mono, weights: [regular], source: github.com/JetBrains/JetBrainsMono}
     formats: WOFF2 where the repository ships it, otherwise TTF or OTF; no conversion
     licence: open (OFL or similar), confirmed from the files; anything else stops the step
+
+# --- change C1: the reason heatmap replaced (a new key; registered entries above are kept, not edited) ---
+heatmap_replaced:
+  id: C1
+  date: "2026-10-22"
+  label: "found after a result (D-255: the heatmap showed 1 group at 7 days and 3 at 30 days)"
+  amends: [pages.model_sees, navigation, heatmap_rules, design.charts.allowed, captures.allowed]  # kept as registered; this entry governs
+  overview_bars:
+    where: the Overview page, one panel
+    charts: one bar chart per horizon, 7 days and 30 days
+    data: GET /summary reasons, segment "all" only  # the top 1,000 at that horizon, both main segments together
+    bar: one per first raising group, its share of the top 1,000
+    colour: accent on the leading group only (the most customers; ties by group name); bar_grey for every other bar
+    wording: "Share of at-risk customers whose top raising reason is <group>"  # moved from heatmap_rules.cell_text
+    attribution_line: "Reasons are model attributions, not causes."  # moved from heatmap_rules; still the one exact-string exception
+    sentence:
+      generated: from the /summary body at render time, never typed
+      one_group: "At <horizon> days all <population> share <group> as their first group"  # when one group holds every customer
+      several_groups: "At <horizon> days <group> leads with <customers> of <population>"  # an addition beside the user's sentence, for the case of more than one group
+  pages_after:
+    dropped: model_sees  # "What the model sees in at-risk customers"
+    remaining: [overview, at_risk_list, customer_profile, action_planner, model_health]  # five pages
+    navigation:
+      - group: Who to act on
+        pages: [overview, at_risk_list, customer_profile]
+      - group: What to do
+        pages: [action_planner]
+      - group: Can I trust it
+        pages: [model_health]
+    captures_allowed: [action_planner, model_health]  # overview, at_risk_list and customer_profile show customer IDs
+  heatmap: none anywhere
+  suppression:
+    min_cell_size: 20  # configs/serving.yaml dashboard_endpoints.summary.reasons.min_cell_size, unchanged
+    applies_to: every bar; a suppressed bar is drawn with no value and reads "fewer than 20"
+    nature: a display rule, not a disclosure control  # stated in docs/dashboard.md and the README Dashboard section
+    totals: none beside the bars  # as heatmap_rules.totals
+  summary_body: unchanged  # no schema is amended; the body still carries segment totals and per-segment cells
+  timeouts:
+    summary_seconds: 30  # GET /summary only (its first call computes the reasons; 5.370 s on 2016-11-01, D-255)
+    summary_first_load: a "computing" state until the answer arrives
+    every_other_call: source.client_timeout_seconds  # 10, unchanged
