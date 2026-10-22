@@ -32,3 +32,11 @@
 .re-tag { border: 1px solid #40454B; padding: 0 0.3rem; color: #413A31; }
 .re-risk-dot { display: inline-block; width: 0.6rem; height: 0.6rem; background: #FE5A00; }
 .re-id { font-family: "JetBrains Mono", monospace; }
+.re-app {
+  font-family: "Space Grotesk", sans-serif;
+  font-weight: 700;
+  font-size: 1.6rem;
+  color: #090B0E;
+  margin-bottom: 0.25rem;
+}
+.re-demo59 .re-label, .re-demo59 .re-badge { white-space: nowrap; }

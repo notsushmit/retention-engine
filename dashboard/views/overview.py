@@ -32,21 +32,23 @@ def takeaway(summary: dict[str, Any]) -> str:
 
 def buckets(summary: dict[str, Any]) -> None:
     b, c = summary["buckets"], summary["counts"]
-    cols = st.columns(4)
+    cols = st.columns(3)
     with cols[0]:
         cp.number("Days 1 to 7", cp.count(b["days_1_7"]), tip("days_1_7"))
     with cols[1]:
         cp.number("Days 8 to 30", cp.count(b["days_8_30"]), tip("days_8_30"))
     with cols[2]:
         cp.demo59("Days 31 to 59", cp.count(b["days_31_59"]["value"]), tip("days_31_59"))
-    with cols[3]:
+    tile, note = st.columns([1, 2])
+    with tile:
         share = c["outside_share_of_active"]
         cp.number(
             "Expiring more than 30 days ahead",
             "-" if share is None else cp.share(share),
             tip("outside"),
         )
-    st.caption(f"{b['label']}. {c['outside_label']}")
+    with note:
+        st.caption(f"{b['label']}. {c['outside_label']}")
 
 
 def reasons(summary: dict[str, Any]) -> None:
@@ -93,7 +95,7 @@ def top_tab(client: Client) -> None:
     rows = pd.DataFrame(
         [
             {
-                "rank": r["rank"],
+                "rank": f"{r['rank']:,}",
                 "customer": r["msno"],
                 "probability": r["text"],
                 "auto_renew": r["auto_renew"],

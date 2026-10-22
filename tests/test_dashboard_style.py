@@ -9,6 +9,7 @@ import re
 import tomllib
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from dashboard import components as cp
@@ -155,3 +156,71 @@ def test_every_bar_has_a_label_and_a_suppressed_bar_reads_fewer_than_20():
 def test_the_sentence_is_generated_from_the_body(horizon, expected):
     reasons = next(r for r in summary()["reasons"] if r["horizon"] == horizon)
     assert cp.sentence(reasons) == expected
+
+
+# --- found after a run (D-258): labels, formats, toolbar, layout, the application name ----------
+
+
+@pytest.mark.parametrize(
+    "values",
+    [[6171.5, 6171.5, 6100.0, 0.0, -7366.7], [5.0, 4.9, 4.8, 4.7], [1.0], [3.0, -2.0, 1.0]],
+)
+def test_spread_keeps_the_order_and_a_minimum_gap(values):
+    gap = 0.5
+    pos = cp.spread(values, gap)
+    order = sorted(range(len(values)), key=lambda i: -values[i])
+    ys = [pos[i] for i in order]
+    assert all(a - b >= gap - 1e-9 for a, b in zip(ys, ys[1:], strict=False))
+    assert all(p <= v for p, v in zip(pos, values, strict=True))
+
+
+def test_the_planner_end_labels_never_overlap():
+    from dashboard.views import action_planner as ap
+    from dashboard_fake import plans
+
+    rows = plans()["rows"]
+    for r in rows:  # the real run's crowding: the top strategies end at nearly the same value
+        if r["budget_label"] == "no limit":
+            r["net_value"] = {"optimizer": 6171.5, "highest_risk": 6171.5, "random": -7366.7}[
+                r["strategy"]
+            ]
+    df = pd.DataFrame(
+        [
+            {"strategy": r["strategy"], "budget": r["budget_label"], "net": r["net_value"]}
+            for r in rows
+        ]
+    )
+    order = ap.budget_order(rows)
+    ends = ap.label_positions(df, order).sort_values("label_y", ascending=False)
+    span = df.net.max() - df.net.min()
+    gaps = -ends.label_y.diff().dropna()
+    assert (gaps >= ap.LABEL_GAP * span - 1e-9).all()
+    spec = ap.chart(rows).to_dict()
+    text = next(layer for layer in spec["layer"] if layer["mark"]["type"] == "text")
+    assert (
+        text["encoding"]["y"]["field"] == "label_y"
+        and text["encoding"]["text"]["field"] == "strategy"
+    )
+
+
+def test_fixed_formats_use_separators_and_fixed_decimals():
+    assert cp.fixed(3017.587, 2) == "3,017.59"
+    assert cp.fixed(22.0208, 1) == "22.0"
+    assert cp.fixed(1000, 0) == "1,000"
+    assert cp.fixed(-0.0163, 4) == "-0.0163"
+    assert cp.fixed(None, 2) == "-"
+
+
+def test_the_toolbar_is_minimal_so_no_deploy_button():
+    assert THEME["client"]["toolbarMode"] == "minimal"
+
+
+def test_the_59_day_box_does_not_wrap_its_label():
+    assert re.search(r"\.re-demo59 \.re-label[^{]*\{[^}]*white-space:\s*nowrap", CSS)
+
+
+def test_the_application_name_uses_the_bold_grotesk_in_ink():
+    rule = re.search(r"\.re-app \{([^}]*)\}", CSS).group(1)
+    assert '"Space Grotesk"' in rule and "font-weight: 700" in rule
+    assert S.tokens["ink"] in rule
+    assert S.raw["app_name"]["text"] == "Retention Decision Engine"

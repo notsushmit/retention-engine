@@ -10,6 +10,9 @@ headless = true
 [browser]
 gatherUsageStats = false
 
+[client]
+toolbarMode = "minimal"  # no Deploy button or developer menu
+
 [theme]
 base = "light"
 primaryColor = "#090B0E"

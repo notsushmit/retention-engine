@@ -54,6 +54,33 @@ def money(x: float | None) -> str:
     return "-" if x is None else f"{x:,.2f} {S.money_unit}"
 
 
+def fixed(x: float | None, decimals: int) -> str:
+    """A table value: thousands separators and a fixed number of decimals."""
+    return "-" if x is None else f"{x:,.{decimals}f}"
+
+
+def as_text(df: pd.DataFrame, decimals: dict[str, int]) -> pd.DataFrame:
+    """A copy for display with each named numeric column formatted by `fixed`."""
+    out = df.copy()
+    for col, d in decimals.items():
+        if col in out:
+            out[col] = [fixed(None if pd.isna(v) else float(v), d) for v in out[col]]
+    return out
+
+
+def spread(values: list[float], gap: float) -> list[float]:
+    """Label positions for line ends: each label at its value unless that is closer than
+    `gap` to the label above it; then it moves down to keep the gap. Order is kept."""
+    order = sorted(range(len(values)), key=lambda i: -values[i])
+    out = [0.0] * len(values)
+    above = None
+    for i in order:
+        pos = values[i] if above is None else min(values[i], above - gap)
+        out[i] = pos
+        above = pos
+    return out
+
+
 def big(value: str, caption: str, help: str) -> None:
     """The one big number per page, in the italic serif."""
     st.markdown(
@@ -217,6 +244,7 @@ def frame(
 ) -> None:
     css()
     page = next(p for p in S.pages if p.key == key)
+    line(S.raw["app_name"]["text"], "re-app")
     line(S.banner, "re-banner")
     line(
         S.raw["every_page"]["breadcrumb"]

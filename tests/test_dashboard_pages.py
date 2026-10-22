@@ -209,7 +209,9 @@ def test_at_risk_list_reads_the_api_order_and_the_registered_filters():
     assert at.sidebar.selectbox[0].options == ["7 days", "30 days", "59 days (demonstration)"]
     assert at.sidebar.selectbox[3].options == ["50", "100", "500", "1000"]
     df = at.dataframe[0].value
-    assert df.customer.tolist() == f.IDS[:25] and df["rank"].tolist() == list(range(1, 26))
+    assert df.customer.tolist() == f.IDS[:25] and df["rank"].tolist() == [
+        str(i) for i in range(1, 26)
+    ]
 
 
 def test_at_59_days_the_list_carries_the_demonstration_badge():
@@ -343,3 +345,43 @@ def test_the_app_entry_point_opens_on_the_overview():
     at.run()
     assert not at.exception, [e.value for e in at.exception]
     assert "Who to act on / Overview" in visible(at)
+
+
+# --- found after a run (D-258) -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("key", PAGES)
+def test_every_page_opens_with_the_application_name(key):
+    at = render(key)
+    assert md(at)[0].value == '<p class="re-app">Retention Decision Engine</p>'
+
+
+@pytest.mark.parametrize("key", PAGES)
+def test_no_table_shows_a_raw_float(key):
+    at = render(key)
+    for df in at.dataframe:
+        floats = [c for c in df.value.columns if pd.api.types.is_float_dtype(df.value[c])]
+        assert floats == [], (key, floats)
+
+
+NUM = r"-?\d{1,3}(,\d{3})*"
+
+
+def test_the_planner_table_has_separators_and_fixed_decimals():
+    df = render("action_planner").dataframe[0].value
+    pattern = {"expected_retained_customers": 1, "expected_retained_value": 2, "net_value": 2}
+    for col, d in pattern.items():
+        assert df[col].str.fullmatch(NUM + rf"\.\d{{{d}}}").all(), col
+    assert "5,312.56" in df.net_value.tolist()
+
+
+def test_the_model_table_has_fixed_decimals():
+    df = render("model_health").dataframe[0].value
+    assert df.events.tolist() == ["937", "3,388"]
+    assert df.slope_after_fix.tolist() == ["0.9807", "1.0005"]
+
+
+def test_the_overview_buckets_sit_in_one_row_and_the_30_day_ahead_tile_below():
+    at = render("overview")
+    assert len(at.columns) == 5  # three bucket columns, then the tile and its note
+    assert at.metric[-1].label == "Expiring more than 30 days ahead"

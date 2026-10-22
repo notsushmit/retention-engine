@@ -22,6 +22,13 @@ HEADLINE = ("optimizer", "5,000")
 HEADLINE_CAPTION = (
     "Under the assumed relative base effect, the optimizer's net value at the 5,000 budget"
 )
+DECIMALS = {
+    "expected_retained_customers": 1,
+    "expected_retained_value": 2,
+    "expected_cost": 2,
+    "net_value": 2,
+    "contacted": 1,
+}
 COLUMNS = [
     "expected_retained_customers",
     "expected_retained_value",
@@ -36,6 +43,17 @@ def budget_order(rows: list[dict[str, Any]]) -> list[str]:
         return float("inf") if label == "no limit" else float(label.replace(",", ""))
 
     return sorted({r["budget_label"] for r in rows}, key=key)
+
+
+LABEL_GAP = 0.07  # share of the net-value range between two end labels
+
+
+def label_positions(df: pd.DataFrame, order: list[str]) -> pd.DataFrame:
+    """The line ends with label_y: each label by its value, spread to a minimum gap."""
+    ends = df[df.budget == order[-1]].copy()
+    span = float(df.net.max() - df.net.min()) or 1.0
+    ends["label_y"] = cp.spread(ends.net.astype(float).tolist(), LABEL_GAP * span)
+    return ends
 
 
 def chart(rows: list[dict[str, Any]]) -> alt.LayerChart:
@@ -55,11 +73,11 @@ def chart(rows: list[dict[str, Any]]) -> alt.LayerChart:
     lines = base.mark_line().encode(
         detail="strategy:N", color=alt.Color("colour:N", scale=None, legend=None)
     )
-    ends = df[df.budget == order[-1]]
+    ends = label_positions(df, order)
     labels = (
         alt.Chart(ends)
         .mark_text(align="left", dx=6, color=T["ink"], font="JetBrains Mono")
-        .encode(x=alt.X("budget:O", sort=order), y="net:Q", text="strategy:N")
+        .encode(x=alt.X("budget:O", sort=order), y="label_y:Q", text="strategy:N")
     )
     return (
         (lines + labels)
@@ -109,9 +127,9 @@ def render(client: Client, health: dict[str, Any], capture: bool) -> None:
         ]
     )
     st.dataframe(
-        table,
+        cp.as_text(table, DECIMALS),
         hide_index=True,
-        column_config={c: st.column_config.NumberColumn(help=tip("plan_values")) for c in COLUMNS},
+        column_config={c: st.column_config.TextColumn(help=tip("plan_values")) for c in COLUMNS},
     )
     st.caption(f"{p['effect_prefix']}. Comparison caption: {p['caption']}.")
     spread = [r for r in p["rows"] if r["range"]]

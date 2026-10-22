@@ -33,11 +33,13 @@ def render(client: Client, health: dict[str, Any], capture: bool) -> None:
         tip("calibration"),
     )
     table = pd.DataFrame(cal["horizons"])
+    decimals = {"horizon": 0, "events": 0}
+    decimals |= {c: 4 for c in table.columns if c.startswith(("slope", "intercept"))}
     st.dataframe(
-        table,
+        cp.as_text(table, decimals),
         hide_index=True,
         column_config={
-            c: st.column_config.NumberColumn(help=tip("calibration"), format="%.4f")
+            c: st.column_config.TextColumn(help=tip("calibration"))
             for c in table.columns
             if c.startswith(("slope", "intercept"))
         },

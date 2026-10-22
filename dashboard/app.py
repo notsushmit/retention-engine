@@ -17,7 +17,7 @@ import streamlit as st  # noqa: E402
 from dashboard.entry import run  # noqa: E402
 from dashboard.settings import load  # noqa: E402
 
-st.set_page_config(page_title="Retention dashboard", layout="wide")
+st.set_page_config(page_title=load().raw["app_name"]["browser_tab_title"], layout="wide")
 
 
 def page_for(key: str):

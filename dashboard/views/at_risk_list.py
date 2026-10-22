@@ -82,8 +82,9 @@ def render(client: Client, health: dict[str, Any], capture: bool) -> None:
     if horizon == 59:
         cp.demo59("59-day probabilities (demonstration)", "every value in this list", tip("p59"))
     df = frame_of(page)
+    shown = df.drop(columns=["probability"]) if not df.empty else df
     st.dataframe(
-        df.drop(columns=["probability"]) if not df.empty else df,
+        cp.as_text(shown, {"rank": 0}),
         hide_index=True,
         column_config={"text": st.column_config.TextColumn("probability", help=tip("probability"))},
     )
