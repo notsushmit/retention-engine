@@ -356,3 +356,16 @@ app_name:
   where: top of every page, above the replay banner; the banner keeps its place relative to the breadcrumb
   font: grotesk (Space Grotesk), bold, ink  # the registered heading role (design.fonts.roles.grotesk)
   browser_tab_title: "Retention Decision Engine"
+
+# --- change C4: the application name moved to the header bar (a new key; C3 is kept, not edited) -----
+app_name_header:
+  id: C4
+  date: "2026-10-22"
+  label: the user's request after seeing C3 on the page, registered before the code that moves it
+  amends: app_name.where  # C3 kept as registered; this entry governs the placement
+  where: >-
+    the header bar across the top of every page (fixed, above the sidebar and the main
+    content); the replay banner becomes the first line of the main content
+  size: larger than C3's line, about the size of a page heading
+  font: grotesk (Space Grotesk), bold, ink  # unchanged from C3
+  clicks: the bar lets clicks through (the sidebar control underneath keeps working)
