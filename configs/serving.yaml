@@ -1012,3 +1012,99 @@ api_memory_limit:
     api_empty_store_mib: 534.9  # D-238
     valkey_peak_mib: 369.2
   check_after_applying: GET /at-risk?auto_renew=on once (builds the filter index); API memory recorded under the limit; near the limit is reported with a higher proposal, nothing else tuned
+
+dashboard_endpoints:  # Phase 9; a new key, registered before any endpoint code; no registered entry is changed
+  label: registered before any /summary, /plans or /model code or run; the dashboard reads these and nothing else beside the four step 5 endpoints
+  parameters: none  # each of the three answers 422 to any query parameter, as /alerts
+  scan: >-
+    every body passes the response scan with no exemption (no customer ID appears in
+    any of the three); a test plants a never-used word in each field
+  pins:  # read once at startup like step5.pins; a missing or differing file refuses startup; never written
+    summary:
+      path: data/processed/kkbox/sample_020/optimize/summary.parquet
+      sha256: 9e7489f8062985408ea2c48964674fbb562b5f206f3bce5ca2af9dae0e5cffc1  # hashed as it stood on disk on 2026-10-22 (Phase 7's plan run), not regenerated
+    calibration:
+      path: data/processed/kkbox/sample_020/serving/calibration_before_after.json
+      sha256: b025b516c5efe58dbc236a23141fd9534a6a1ef436ce9e04d727aed9fd799eb8  # the calibration-table run of 2026-10-18 at 19e7e7d, as logged then
+  mounts: both pins read-only into the api container, beside step5.pins; nothing else under data/
+
+  summary:
+    endpoint: GET /summary
+    needs: a ready store (503 otherwise, as /at-risk)
+    store_date: the store's one date
+    cached: once per store date, as the /at-risk index
+    counts:
+      from: the stored /at-risk header counts (step5.store.keys.counts)
+      fields: [scored, outside_population by code, not_active]
+      outside_share_of_active: outside_population expiry_beyond_30_days / (scored + every outside_population code)  # 51,692 / 230,286 on 2016-11-01
+      outside_label: "Customers expiring more than 30 days ahead (22% of active customers on 2016-11-01) get no score."  # the fixed disclaimer, verbatim
+    buckets:
+      source: the stored rankings (final probabilities after the ordering fix, c01), every scored customer
+      population: scored customers only
+      days_1_7: math.fsum of p7
+      days_8_30: math.fsum of (p30 - p7) per customer
+      days_31_59: math.fsum of (p59 - p30) per customer
+      order: msno ascending before summing
+      grade_31_59: demonstration  # the field carries "demonstration", as every 59-day probability
+      label: "expected counts from the final probabilities, scored customers only"
+      not_from: dt01  # no survival-curve bucket
+    reasons:
+      horizons: [7, 30]  # no reasons at 59 days
+      population: the 1,000 scored customers ranked highest at the horizon, in the /at-risk order (final probability descending, ties by msno)
+      top_n: 1000
+      computed_by: the service's reasons path on the stored rows (contribution_part and service_reasons, amendment A3's masking), as POST /score
+      counted_as: each customer once, by raising_1, the first group the model lists as raising the probability; "no group listed" when none is listed
+      explains: "Reasons explain the probability before the ordering fix."
+      label: "among the 1,000 customers most at risk at <horizon> days"
+      by: main segment  # the row's segment: paid, discount100_only; plus "all" (both together)
+      cell: {horizon, segment, group}
+      fields: [customers, share]  # share = customers / the segment's customers among the top 1,000 at that horizon
+      min_cell_size: 20  # a cell with fewer than 20 customers is suppressed (customers and share null)
+      segment_below_min: a segment with fewer than 20 of the top 1,000 is suppressed whole
+      suppressed_reported: the number of suppressed cells per horizon
+      secondary_suppression: none  # a suppressed cell can be derived from the segment total and the shown cells; this rule is for reading, not disclosure control
+      hidden_rule: >-
+        as api.alerts.trend.hidden_dimensions with amendment A7: a group or segment whose
+        name holds a hidden dimension or a never-used word (whole word, the response
+        scan's own test) is removed before the body is built and counted in
+        hidden_by_rule; expected 0 (tenure is masked by A3; the hidden group is never named)
+      december_2016: reasons withheld with the registered code; counts and buckets served with the data warning
+    tests: the counts, buckets and cells equal a batch computation on hand-made rows; the 31-59 bucket carries "demonstration"; cells under 20 are null and counted
+
+  plans:
+    endpoint: GET /plans
+    needs: a ready store (503 otherwise); the store's date picks the rows
+    source: the pinned summary.parquet, scenario base, the store's date
+    rows: every strategy in the file for that date (optimizer, highest_risk, highest_assumed_uplift_x_value, random, fixed_action_reminder, no_action) at every registered budget level (configs/actions.yaml budget.levels)
+    fields: [strategy, budget_label, expected_retained_customers, expected_retained_value, expected_cost, net_value, contacted, contacted_reminder, contacted_autorenew_prompt, contacted_discount]
+    random_range: the p2_5 and p97_5 columns for random only, labelled with configs/actions.yaml strategies.random.range_label
+    values: as stored, exact (a float read back from the file unchanged); a missing value is null
+    no_plan: a date without plan rows answers plan_status "no plan for this date" and no rows
+    labels:
+      plan: "precomputed in Phase 7 from the 30-day probability before the ordering fix; not re-planned"
+      caption: configs/actions.yaml strategies.table_caption  # on the comparison, verbatim
+      effect_prefix: "Under the assumed relative base effect"  # configs/actions.yaml wording.sentence_prefix with the base scenario's form and level
+      effect_basis: assumed
+      instability_note: "The plan is unstable under 5 of 11 variants."
+      no_estimate_line: "No KKBox effect estimate exists; every effect is an assumption."
+      dates: "Plans exist for two dates only (2016-10-01 and 2016-11-01) and were built from the 30-day probability before the ordering fix."
+      money_unit: price units
+    replanning: none  # no optimizer call
+    tests: every value equals the pinned file's row on hand-made files; every label present; no row of another scenario or date
+
+  model:
+    endpoint: GET /model
+    needs: the loaded context only  # answers while the store is empty; carries model_checksums_match
+    fields: [registered_model, version, files, config_sha256, model_checksums_match, calibration, drift, retraining, grade_59]
+    files: the eight registered files and their SHA-256 (registry.bundle)
+    calibration:
+      source: the pinned calibration_before_after.json
+      horizons: [7, 30]
+      fields: [rows, rows_changed, events, slope_before_fix, intercept_before_fix, slope_after_fix, intercept_after_fix]
+      values: as stored, exact
+      label: "descriptive, no pass mark; selection half of 2016-10-01, P2 main; 2016 outcomes only"
+      no_59: "no 59-day row: its calibration was judged only in the Phase 3 59-day demonstration"
+    drift: "drift: not monitored (Phase 10)"
+    retraining: "none in this phase (Phase 10)"
+    grade_59: demonstration
+    tests: every calibration value equals the pinned file on hand-made files; the files equal the bundle; the labels present
