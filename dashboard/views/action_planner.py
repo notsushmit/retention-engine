@@ -45,7 +45,7 @@ def budget_order(rows: list[dict[str, Any]]) -> list[str]:
     return sorted({r["budget_label"] for r in rows}, key=key)
 
 
-LABEL_GAP = 0.07  # share of the net-value range between two end labels
+LABEL_GAP = 0.10  # share of the net-value range between two end labels (about 16 px at 280 px)
 
 
 def label_positions(df: pd.DataFrame, order: list[str]) -> pd.DataFrame:
