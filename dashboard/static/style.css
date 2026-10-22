@@ -19,10 +19,11 @@
   font-family: "Instrument Serif", serif;
   font-style: italic;
   font-size: 5rem;
-  line-height: 1;
+  line-height: 1.2;  /* room for the serif's descenders (p, comma) above the caption */
+  padding-bottom: 0.35rem;
   color: #090B0E;
 }
-.re-big-label { color: #413A31; }
+.re-big-label { color: #413A31; margin-top: 0.75rem; }
 .re-demo59 {
   border: 1px dashed #514A40;
   padding: 0.5rem 0.75rem;
@@ -32,11 +33,27 @@
 .re-tag { border: 1px solid #40454B; padding: 0 0.3rem; color: #413A31; }
 .re-risk-dot { display: inline-block; width: 0.6rem; height: 0.6rem; background: #FE5A00; }
 .re-id { font-family: "JetBrains Mono", monospace; }
+/* The application name in a header bar across the top (C4): fixed, the height of
+   Streamlit's own header (60 px in 1.65.0), and click-through so the controls underneath
+   keep working. */
 .re-app {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 60px;
+  margin: 0;
+  padding-left: 1.5rem;
+  display: flex;
+  align-items: center;
   font-family: "Space Grotesk", sans-serif;
   font-weight: 700;
-  font-size: 1.6rem;
+  font-size: 2rem;
+  letter-spacing: -0.01em;
   color: #090B0E;
-  margin-bottom: 0.25rem;
+  background: #F4EDE3;
+  border-bottom: 1px solid #514A40;
+  z-index: 999991;
+  pointer-events: none;
 }
 .re-demo59 .re-label, .re-demo59 .re-badge { white-space: nowrap; }

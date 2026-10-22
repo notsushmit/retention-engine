@@ -14,6 +14,7 @@ REGISTRATIONS = {
     "a4d88af": "8f96465e88b402591f182e26c24d3ed4b550aa76d08cc5fa872436abcb260738",  # C1
     "a9dea38": "5408ec56a32ea935efb781cefd08e3b50ee234d8111d6e58c3d97dab83653d06",  # C2
     "a18d9cd": "29668b2d52b0d77ccdbe0347235a37d09d56e197571fba06dc676ef318708070",  # C3
+    "7f1fd1e": "13f55f51a77bf6688ae416c56d41fa9686c0accca3c39eefe0fdd8d62eabfda9",  # C4
 }
 
 

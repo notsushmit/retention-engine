@@ -224,3 +224,21 @@ def test_the_application_name_uses_the_bold_grotesk_in_ink():
     assert '"Space Grotesk"' in rule and "font-weight: 700" in rule
     assert S.tokens["ink"] in rule
     assert S.raw["app_name"]["text"] == "Retention Decision Engine"
+
+
+def test_the_application_name_sits_in_a_header_bar_and_is_larger(  # C4
+):
+    rule = re.search(r"\.re-app \{([^}]*)\}", CSS).group(1)
+    for decl in ("position: fixed", "top: 0", "left: 0", "right: 0", "height: 60px"):
+        assert decl in rule, decl
+    assert "pointer-events: none" in rule  # the controls underneath keep working
+    size = float(re.search(r"font-size: ([\d.]+)rem", rule).group(1))
+    assert size > 1.6  # larger than C3's line
+    assert S.raw["app_name_header"]["amends"] == "app_name.where"
+
+
+def test_the_big_number_leaves_room_above_its_caption():
+    big = re.search(r"\.re-big \{([^}]*)\}", CSS).group(1)
+    assert float(re.search(r"line-height: ([\d.]+)", big).group(1)) >= 1.2
+    label = re.search(r"\.re-big-label \{([^}]*)\}", CSS).group(1)
+    assert float(re.search(r"margin-top: ([\d.]+)rem", label).group(1)) >= 0.75
