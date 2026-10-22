@@ -238,3 +238,38 @@ heatmap_rules:
     the /summary body itself carries segment totals and an "all" segment (paid plus
     discount100_only), so a suppressed cell can be derived from the body; the page shows
     neither, and the body is not changed
+
+# --- design tokens (sampled from the reference slide, registered before any dashboard code) -----------
+design_tokens:
+  label: >-
+    sampled on 2026-10-22 with Pillow and NumPy from the user's reference slide (a private
+    1600 x 882 RGB PNG, never committed); registered before any dashboard code
+  method:
+    fills: per-channel median of every pixel in a box inside one flat fill
+    text: >-
+      per-channel median of the darkest 5% of pixels (by Rec. 709 luminance) in a box
+      around the text, so anti-aliased edges are left out; the value moves with the
+      percentile (2% and 10% are reported beside it in the decision log)
+    rounding: nearest integer per channel
+  colours:  # hex, box (x0, y0, x1, y1) in slide pixels, method
+    background: {hex: "#F4EDE3", box: [1200, 20, 1580, 200], method: fills}  # cream
+    ink: {hex: "#090B0E", box: [80, 250, 680, 400], method: text}  # the big italic number
+    accent: {hex: "#FE5A00", box: [130, 592, 270, 608], method: fills}  # orange; fills and badges only, risk only
+    rust: {hex: "#942A11", box: [88, 60, 250, 84], method: text}  # the "THE PROBLEM" label; any orange text
+    card_grey: {hex: "#1B222C", box: [296, 560, 309, 660], method: fills}
+    bar_grey: {hex: "#40454B", box: [130, 518, 270, 533], method: fills}
+    body_grey: {hex: "#413A31", box: [730, 300, 1360, 410], method: text}
+    label_grey: {hex: "#514A40", box: [88, 815, 600, 842], method: text}
+  contrast_on_background:  # WCAG 2 ratio against #F4EDE3
+    ink: 16.95
+    rust: 6.95
+    body_grey: 9.64
+    label_grey: 7.52
+    accent: 2.71  # below 4.5: never used for text
+  other_colours: none  # the CSS and the theme use only these eight; white and black are not tokens
+  fonts:  # names given by the user; files self-hosted under dashboard/static/fonts with their licence texts
+    grotesk: {family: Space Grotesk, weights: [regular, bold], source: github.com/floriankarsten/space-grotesk}
+    serif_italic: {family: Instrument Serif, style: italic, source: github.com/Instrument/instrument-serif}
+    mono: {family: JetBrains Mono, weights: [regular], source: github.com/JetBrains/JetBrainsMono}
+    formats: WOFF2 where the repository ships it, otherwise TTF or OTF; no conversion
+    licence: open (OFL or similar), confirmed from the files; anything else stops the step
