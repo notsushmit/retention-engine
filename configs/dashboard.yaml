@@ -346,3 +346,13 @@ step3_conditions:
     source: every calculation text is derived from registered text in configs/ (dashboard.yaml, serving.yaml, actions.yaml); no new numeric claim
     test: every number in a tooltip appears in a config or a run report; every tooltip passes the wording rules
   several_groups_sentence: "At <horizon> days <group> leads with <customers> of the top 1,000 at risk"  # amends heatmap_replaced.overview_bars.sentence.several_groups; <population> named as the top 1,000 at risk
+
+# --- change C3: the application name (a new key; registered entries above are kept, not edited) ------
+app_name:
+  id: C3
+  date: "2026-10-22"
+  label: the user's request after the step 4 run, registered before the code that shows it
+  text: "Retention Decision Engine"
+  where: top of every page, above the replay banner; the banner keeps its place relative to the breadcrumb
+  font: grotesk (Space Grotesk), bold, ink  # the registered heading role (design.fonts.roles.grotesk)
+  browser_tab_title: "Retention Decision Engine"
