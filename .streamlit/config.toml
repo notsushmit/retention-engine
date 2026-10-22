@@ -1,0 +1,54 @@
+# The dashboard's theme and server (configs/dashboard.yaml serve and design_tokens).
+# Every colour is a registered token; the fonts are the self-hosted files.
+
+[server]
+address = "127.0.0.1"
+port = 8501
+enableStaticServing = true
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#090B0E"
+backgroundColor = "#F4EDE3"
+secondaryBackgroundColor = "#F4EDE3"
+textColor = "#090B0E"
+linkColor = "#942A11"
+codeBackgroundColor = "#F4EDE3"
+borderColor = "#514A40"
+dataframeHeaderBackgroundColor = "#F4EDE3"
+redColor = "#942A11"
+orangeColor = "#942A11"
+greenColor = "#40454B"
+blueColor = "#40454B"
+chartCategoricalColors = ["#40454B", "#514A40", "#413A31", "#1B222C"]
+chartSequentialColors = ["#F4EDE3", "#514A40", "#40454B", "#413A31", "#1B222C", "#090B0E"]
+font = "Space Grotesk, sans-serif"
+headingFont = "Space Grotesk, sans-serif"
+codeFont = "JetBrains Mono, monospace"
+baseRadius = "small"
+showSidebarBorder = true
+
+[[theme.fontFaces]]
+family = "Space Grotesk"
+url = "app/static/fonts/space-grotesk/SpaceGrotesk-Regular.woff2"
+weight = 400
+
+[[theme.fontFaces]]
+family = "Space Grotesk"
+url = "app/static/fonts/space-grotesk/SpaceGrotesk-Bold.woff2"
+weight = 700
+
+[[theme.fontFaces]]
+family = "Instrument Serif"
+url = "app/static/fonts/instrument-serif/InstrumentSerif-Italic.woff2"
+style = "italic"
+weight = 400
+
+[[theme.fontFaces]]
+family = "JetBrains Mono"
+url = "app/static/fonts/jetbrains-mono/JetBrainsMono-Regular.woff2"
+weight = 400

@@ -1,0 +1,34 @@
+/* The dashboard's one CSS file (configs/dashboard.yaml design and design_tokens).
+   Only registered tokens; the accent is never a text colour.
+   Streamlit 1.65.0: the selectors below are the dashboard's own classes, except the
+   two .stApp rules, which may break on a Streamlit upgrade. */
+
+.stApp .block-container { padding-left: 4rem; padding-right: 4rem; max-width: 72rem; }
+
+.re-label, .re-banner, .re-breadcrumb, .re-store-date, .re-footer, .re-tag, .re-badge {
+  font-family: "JetBrains Mono", monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.75rem;
+  color: #514A40;
+}
+.re-banner { color: #942A11; }
+.re-footer { margin-top: 3rem; border-top: 1px solid #514A40; padding-top: 1rem; text-transform: none; letter-spacing: 0; }
+.re-footer p { margin: 0.2rem 0; }
+.re-big {
+  font-family: "Instrument Serif", serif;
+  font-style: italic;
+  font-size: 5rem;
+  line-height: 1;
+  color: #090B0E;
+}
+.re-big-label { color: #413A31; }
+.re-demo59 {
+  border: 1px dashed #514A40;
+  padding: 0.5rem 0.75rem;
+  color: #514A40;
+}
+.re-badge { border: 1px solid #514A40; padding: 0 0.3rem; margin-left: 0.4rem; }
+.re-tag { border: 1px solid #40454B; padding: 0 0.3rem; color: #413A31; }
+.re-risk-dot { display: inline-block; width: 0.6rem; height: 0.6rem; background: #FE5A00; }
+.re-id { font-family: "JetBrains Mono", monospace; }
