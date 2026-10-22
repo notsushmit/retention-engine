@@ -211,8 +211,8 @@ def test_fixed_formats_use_separators_and_fixed_decimals():
     assert cp.fixed(None, 2) == "-"
 
 
-def test_the_toolbar_is_minimal_so_no_deploy_button():
-    assert THEME["client"]["toolbarMode"] == "minimal"
+def test_the_toolbar_is_for_viewers_so_no_deploy_button_but_the_menu_stays():
+    assert THEME["client"]["toolbarMode"] == "viewer"
 
 
 def test_the_59_day_box_does_not_wrap_its_label():
@@ -229,8 +229,10 @@ def test_the_application_name_uses_the_bold_grotesk_in_ink():
 def test_the_application_name_sits_in_a_header_bar_and_is_larger(  # C4
 ):
     rule = re.search(r"\.re-app \{([^}]*)\}", CSS).group(1)
-    for decl in ("position: fixed", "top: 0", "left: 0", "right: 0", "height: 60px"):
+    for decl in ("position: fixed", "top: 0", "left: 0", "height: 60px"):
         assert decl in rule, decl
+    right = float(re.search(r"right: ([\d.]+)rem", rule).group(1))
+    assert right >= 3  # Streamlit's main menu at the right stays visible
     assert "pointer-events: none" in rule  # the controls underneath keep working
     size = float(re.search(r"font-size: ([\d.]+)rem", rule).group(1))
     assert size > 1.6  # larger than C3's line

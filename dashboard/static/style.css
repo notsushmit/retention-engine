@@ -40,7 +40,7 @@
   position: fixed;
   top: 0;
   left: 0;
-  right: 0;
+  right: 4.5rem;  /* leaves Streamlit's main menu visible at the right */
   height: 60px;
   margin: 0 !important;  /* Streamlit's paragraph rules are more specific */
   padding-left: 1.5rem;

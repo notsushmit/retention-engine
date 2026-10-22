@@ -11,7 +11,7 @@ headless = true
 gatherUsageStats = false
 
 [client]
-toolbarMode = "minimal"  # no Deploy button or developer menu
+toolbarMode = "viewer"  # the main menu for viewers; no Deploy button, no developer options
 
 [theme]
 base = "light"
