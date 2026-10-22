@@ -314,3 +314,35 @@ heatmap_replaced:
     summary_seconds: 30  # GET /summary only (its first call computes the reasons; 5.370 s on 2016-11-01, D-255)
     summary_first_load: a "computing" state until the answer arrives
     every_other_call: source.client_timeout_seconds  # 10, unchanged
+
+# --- change C2: the user's step 3 conditions (a new key; registered entries above are kept, not edited) ---
+step3_conditions:
+  id: C2
+  date: "2026-10-22"
+  label: the user's conditions on approving step 3, registered before any dashboard code
+  capture_mode:
+    parameter: "capture=1"  # a query parameter of the dashboard URL
+    overview: omits the top-20 table and the cancel events; nothing else changes
+    other_pages: unchanged
+    test: no customer ID from the fake API's answers appears anywhere in the rendered Overview in capture mode
+    script:  # scripts/capture_pages.py
+      allowed: {overview: "capture=1 only", action_planner: always, model_health: always}
+      refused: [at_risk_list, customer_profile]
+    screenshots: taken by hand by the user in step 4; no capture tool is installed
+    docs: the capture-mode rule and the refusals are stated in docs/dashboard.md (step 5)
+  contrast:
+    accent: fill only; never text  # 2.71:1 on the background (design_tokens.contrast_on_background)
+    bar_labels: every bar carries its value as a direct label in ink
+    leading_group: named in the generated sentence
+    test: no accent colour in any text rule of the CSS or any text mark of a chart; every bar chart has direct labels
+  overview_layout:  # replaces pages.overview's order; its contents stay as registered and as C1
+    order:
+      - the big number
+      - the three bucket figures with the customers outside the population (22%)
+      - one chart with two panels, 7 and 30 days (C1's bars)
+      - two tabs, "Alerts" (each trend alert with the three registered labels) and "Top 20 at risk"
+    keep: ["no replay running", the computing state of /summary]
+  tooltips:
+    source: every calculation text is derived from registered text in configs/ (dashboard.yaml, serving.yaml, actions.yaml); no new numeric claim
+    test: every number in a tooltip appears in a config or a run report; every tooltip passes the wording rules
+  several_groups_sentence: "At <horizon> days <group> leads with <customers> of the top 1,000 at risk"  # amends heatmap_replaced.overview_bars.sentence.several_groups; <population> named as the top 1,000 at risk
