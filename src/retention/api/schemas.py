@@ -24,7 +24,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from retention.api.labels import LABELS
+from retention.api.labels import DASH, LABELS
 from retention.optimize.config import load_actions_config
 
 if LABELS.action_field != "highest_net_value_action":
@@ -409,3 +409,205 @@ class ErrorBody(Strict):
 
 def error_body(status_code: int, reason: str | None = None) -> ErrorBody:
     return ErrorBody(status_code=status_code, detail=LABELS.errors[status_code], reason=reason)
+
+
+# --- GET /summary, /plans and /model (configs/serving.yaml, dashboard_endpoints) ----------------
+# No customer ID appears in any of the three; each body is scanned with no exemption.
+
+
+class Bucket59(Strict):
+    value: float = Field(ge=0.0)
+    grade: Literal[LABELS.grade_59]
+
+
+class Buckets(Strict):
+    """Expected counts from the final probabilities (c01, after the fix), scored customers only."""
+
+    population: int = Field(ge=0)
+    days_1_7: float = Field(ge=0.0)
+    days_8_30: float = Field(ge=0.0)
+    days_31_59: Bucket59
+    label: Literal[DASH.bucket_label]
+
+
+class SummaryCounts(AtRiskCounts):
+    outside_share_of_active: float | None = Field(ge=0.0, le=1.0)
+    outside_label: Literal[DASH.outside_label]
+
+
+class ReasonCell(Strict):
+    group: str
+    customers: int | None = Field(ge=0)
+    share: float | None = Field(ge=0.0, le=1.0)
+    suppressed: bool
+
+    @model_validator(mode="after")
+    def suppressed_cells_are_empty(self) -> ReasonCell:
+        if self.suppressed != (self.customers is None) or self.suppressed != (self.share is None):
+            raise ValueError("a suppressed cell has no count and no share; a shown cell has both")
+        return self
+
+
+class ReasonSegment(Strict):
+    segment: str
+    customers: int | None = Field(ge=0)
+    suppressed: bool
+    cells: tuple[ReasonCell, ...]
+
+    @model_validator(mode="after")
+    def whole_segment(self) -> ReasonSegment:
+        if self.suppressed != (self.customers is None):
+            raise ValueError("a suppressed segment has no count")
+        if self.suppressed and self.cells:
+            raise ValueError("a suppressed segment shows no cells")
+        return self
+
+
+class HiddenReasons(Strict):
+    groups: int = Field(ge=0)
+    segments: int = Field(ge=0)
+    customers: int = Field(ge=0)
+
+
+class SummaryReasons(Strict):
+    horizon: Literal[7, 30]
+    top_n: int = Field(ge=1)
+    population: int = Field(ge=0)  # at most top_n: fewer when fewer customers are scored
+    label: str
+    explains: Literal[LABELS.reasons_fixed_line]
+    min_cell_size: int = Field(ge=1)
+    suppressed_cells: int = Field(ge=0)
+    hidden_by_rule: HiddenReasons
+    segments: tuple[ReasonSegment, ...]
+
+    @model_validator(mode="after")
+    def reading(self) -> SummaryReasons:
+        if self.label != DASH.reasons_label.replace("<horizon>", str(self.horizon)):
+            raise ValueError("the reasons label differs from the registered one")
+        if self.population > self.top_n:
+            raise ValueError("more customers than the registered top_n")
+        n = self.min_cell_size
+        for seg in self.segments:
+            if seg.customers is not None and seg.customers < n:
+                raise ValueError("a segment under the minimum cell size is shown")
+            for c in seg.cells:
+                if c.customers is not None and c.customers < n:
+                    raise ValueError("a cell under the minimum cell size is shown")
+        return self
+
+
+class Summary(Strict):
+    store_date: date
+    counts: SummaryCounts
+    buckets: Buckets
+    reasons: tuple[SummaryReasons, SummaryReasons] | None
+    reasons_withheld: Literal[LABELS.reasons_withheld_code] | None = None
+    data_warning: Literal[LABELS.december_warning] | None = None
+
+    @model_validator(mode="after")
+    def december(self) -> Summary:
+        dec = self.store_date.year == 2016 and self.store_date.month == 12
+        if dec != (self.reasons is None) or dec != (self.reasons_withheld is not None):
+            raise ValueError("reasons are withheld in December 2016 only")
+        if dec != (self.data_warning is not None):
+            raise ValueError("December 2016 carries the data warning, no other month does")
+        if self.reasons is not None and tuple(r.horizon for r in self.reasons) != (7, 30):
+            raise ValueError("reason shares come at 7 and 30 days, in that order")
+        return self
+
+
+PLAN_VALUES = (
+    "expected_retained_customers",
+    "expected_retained_value",
+    "expected_cost",
+    "net_value",
+    "contacted",
+    "contacted_reminder",
+    "contacted_autorenew_prompt",
+    "contacted_discount",
+)
+
+
+class PlanRange(Strict):
+    """The random strategy's spread over its draws (p2_5 and p97_5 of each value)."""
+
+    label: Literal[DASH.range_label]
+    p2_5: dict[str, float | None]
+    p97_5: dict[str, float | None]
+
+    @model_validator(mode="after")
+    def every_value(self) -> PlanRange:
+        if set(self.p2_5) != set(PLAN_VALUES) or set(self.p97_5) != set(PLAN_VALUES):
+            raise ValueError("the range must cover every plan value")
+        return self
+
+
+class PlanRow(Strict):
+    strategy: str
+    budget_label: str
+    expected_retained_customers: float | None
+    expected_retained_value: float | None
+    expected_cost: float | None
+    net_value: float | None
+    contacted: float | None
+    contacted_reminder: float | None
+    contacted_autorenew_prompt: float | None
+    contacted_discount: float | None
+    range: PlanRange | None
+
+    @model_validator(mode="after")
+    def random_only(self) -> PlanRow:
+        if (self.range is not None) != (self.strategy == "random"):
+            raise ValueError("a range is shown for the random strategy only")
+        return self
+
+
+class Plans(Strict):
+    store_date: date
+    plan_status: Literal[DASH.plan_label, DASH.no_plan_status]
+    scenario: Literal["base"]
+    effect_prefix: Literal[DASH.effect_prefix]
+    caption: Literal[DASH.caption]
+    effect_basis: Literal[DASH.effect_basis]
+    instability_note: Literal[DASH.instability_note]
+    no_estimate_line: Literal[DASH.no_estimate_line]
+    dates: Literal[DASH.dates]
+    money_unit: Literal[DASH.money_unit]
+    rows: tuple[PlanRow, ...]
+
+    @model_validator(mode="after")
+    def plan_or_none(self) -> Plans:
+        if (self.plan_status == DASH.no_plan_status) != (not self.rows):
+            raise ValueError("rows are shown exactly when a plan exists for the date")
+        return self
+
+
+class CalibrationRow(Strict):
+    horizon: Literal[7, 30]
+    events: int = Field(ge=0)
+    slope_before_fix: float
+    intercept_before_fix: float
+    slope_after_fix: float
+    intercept_after_fix: float
+
+
+class Calibration(Strict):
+    label: Literal[DASH.calibration_label]
+    no_59: Literal[DASH.no_59]
+    rows: int = Field(ge=0)
+    rows_changed: int = Field(ge=0)
+    horizons: tuple[CalibrationRow, CalibrationRow]
+
+    @model_validator(mode="after")
+    def seven_then_thirty(self) -> Calibration:
+        if tuple(h.horizon for h in self.horizons) != (7, 30):
+            raise ValueError("calibration rows come at 7 and 30 days, in that order")
+        return self
+
+
+class ModelInfo(ModelBlock):
+    model_checksums_match: bool
+    calibration: Calibration
+    drift: Literal[DASH.drift]
+    retraining: Literal[DASH.retraining]
+    grade_59: Literal[LABELS.grade_59]

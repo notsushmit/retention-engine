@@ -35,7 +35,7 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -44,7 +44,7 @@ import pandas as pd
 from pydantic import Field, StrictStr, field_validator
 from redis.exceptions import RedisError
 
-from retention.api import alerts, at_risk, registry, store
+from retention.api import alerts, at_risk, dashboard, registry, store
 from retention.api import schemas as sch
 from retention.api import scoring as sc
 from retention.api.config import SERVING_CONFIG, file_sha256, load_serving
@@ -119,15 +119,25 @@ class Health(sch.Strict):
 
 @dataclass
 class Pinned:
-    """The two pinned batch files, read once at startup and never written."""
+    """The pinned batch files, read once at startup and never written: the plans and
+    alerts of step5.pins, and the plan summary and calibration table of
+    dashboard_endpoints.pins."""
 
     pins: dict[str, tuple[Path, str]]  # name: (path, pinned SHA-256)
     plans: dict[date, dict[str, str]]  # the registered plan cell, {snapshot: {msno: action}}
     alerts: dict[str, Any]  # the Phase 5 alerts run
+    summary: pd.DataFrame  # Phase 7's plan summary (GET /plans)
+    calibration: dict[str, Any]  # the calibration table before and after the fix (GET /model)
+
+
+PIN_NAMES = ["alerts", "calibration", "plans", "summary"]
 
 
 def registered_pins(cfg: dict[str, Any] | None = None) -> dict[str, tuple[Path, str]]:
-    pins = (cfg if cfg is not None else load_serving())["step5"]["pins"]
+    cfg = cfg if cfg is not None else load_serving()
+    pins = cfg["step5"]["pins"] | cfg["dashboard_endpoints"]["pins"]
+    if sorted(pins) != PIN_NAMES:
+        raise ValueError("the registered pins must name exactly the four pinned files")
     return {name: (Path(p["path"]), p["sha256"]) for name, p in pins.items()}
 
 
@@ -146,15 +156,19 @@ def pin_problems(pins: dict[str, tuple[Path, str]]) -> list[str]:
 
 def load_pinned(pins: dict[str, tuple[Path, str]]) -> Pinned:
     """Both pinned files after their hashes match; refuses (PinRefused) otherwise."""
-    if sorted(pins) != ["alerts", "plans"]:
-        raise PinRefused("the pins must name exactly the plans and the alerts files")
+    if sorted(pins) != PIN_NAMES:
+        raise PinRefused(
+            "the pins must name exactly the plans, alerts, summary and calibration files"
+        )
     problems = pin_problems(pins)
     if problems:
         raise PinRefused("; ".join(problems))
     plans = at_risk.plan_cell(pd.read_parquet(pins["plans"][0]))
     run = json.loads(pins["alerts"][0].read_text())
     alerts.check_run(run)
-    return Pinned(dict(pins), plans, run)
+    summary = pd.read_parquet(pins["summary"][0])
+    calibration = json.loads(pins["calibration"][0].read_text())
+    return Pinned(dict(pins), plans, run, summary, calibration)
 
 
 @dataclass
@@ -175,6 +189,7 @@ class Context:
     replay_expected_events: int
     pinned: Pinned
     at_risk_index: at_risk.IndexCache
+    summary_cache: dashboard.SummaryCache = field(default_factory=dashboard.SummaryCache)
 
     def close(self) -> None:
         shutil.rmtree(self.workdir, ignore_errors=True)

@@ -20,7 +20,7 @@ from test_registry_rebase import make_read_only, make_writable, schema_version, 
 
 STEP7 = load_serving()["step7"]
 IMAGES = load_serving()["step7_images"]
-PINS = load_serving()["step5"]["pins"]
+PINS = load_serving()["step5"]["pins"] | load_serving()["dashboard_endpoints"]["pins"]
 COMPOSE = yaml.safe_load(Path("docker-compose.yml").read_text())
 DOCKERFILE = Path("Dockerfile").read_text()
 ALLOWED = ["src/", "configs/", "pyproject.toml", "uv.lock", "README.md"]
@@ -66,7 +66,7 @@ def test_the_api_memory_limit_is_the_registered_one_and_valkey_has_none():
     assert "mem_limit" not in COMPOSE["services"]["valkey"]
 
 
-def test_the_api_mounts_only_mlruns_and_the_two_pinned_files_read_only():
+def test_the_api_mounts_only_mlruns_and_the_four_pinned_files_read_only():
     mounts = COMPOSE["services"]["api"]["volumes"]
     assert all(m.endswith(":ro") for m in mounts)
     pairs = [m.removesuffix(":ro").split(":") for m in mounts]

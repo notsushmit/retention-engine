@@ -68,8 +68,11 @@ UNREGISTERED = (
     "msno must be a non-empty string; as_of must be written YYYY-MM-DD.",
     "A 422 body never returns the validation details, so no field name a caller sent comes back.",
     'Unknown paths and methods keep the framework\'s "Not Found" and "Method Not Allowed" bodies.',
-    "Every /health, /score, /at-risk and /alerts call hashes the downloaded model files and "
-    "both pinned files again.",
+    "Every /health, /score, /at-risk, /alerts, /summary and /plans call hashes the downloaded "
+    "model files and the four pinned files again; /model hashes the model files only.",
+    "A pinned file that differs after startup is named in the /health reason.",
+    "/summary reuses the /at-risk index (the three stored rankings) for its buckets and its "
+    "top 1,000.",
     "Startup refuses loaded model files that differ from the bundle the response schemas register.",
     "The /at-risk auto_renew filter takes on or off; in_plan takes true or false.",
     "An in_plan filter on a date without a plan is a 422.",
@@ -113,6 +116,52 @@ def stack_notes() -> list[str]:
         "no limit.",
     ]
     return ["## Notes on the stack and the runs", "", *[f"- {n}" for n in notes], ""]
+
+
+def dashboard_endpoints() -> list[str]:
+    """GET /summary, /plans and /model, from configs/serving.yaml dashboard_endpoints."""
+    e = CFG["dashboard_endpoints"]
+    s, p, m = e["summary"], e["plans"], e["model"]
+    r, b = s["reasons"], s["buckets"]
+    return [
+        "### GET /summary, GET /plans, GET /model",
+        "",
+        "The dashboard's aggregates. None takes a parameter (anything else is a 422) and no "
+        "customer ID appears in any of them; each body is scanned with no exemption. Two more "
+        "files are pinned beside the plans and alerts files: "
+        + ", ".join(f"{v['path']}" for v in e["pins"].values())
+        + "; a missing or differing file refuses startup.",
+        "",
+        f"/summary needs {s['needs']}. It serves the stored /at-risk header counts with "
+        "the share of active customers expiring more than 30 days ahead; three expected "
+        "counts over every scored "
+        f"customer, from the final probabilities: days 1 to 7 ({b['days_1_7']}), days 8 to 30 "
+        f"({b['days_8_30']}) and days 31 to 59 ({b['days_31_59']}, a demonstration, as every "
+        f'59-day probability), labelled "{b["label"]}"; and, at 7 and 30 days, '
+        f"{r['counted_as']}, counted among {r['population']}, by main segment and for both "
+        f"together. A cell with fewer than {r['min_cell_size']} customers is suppressed, and the "
+        "number suppressed is shown; there is no secondary suppression. A group or segment "
+        "whose name holds a hidden dimension or a never-used word is removed and counted, as "
+        "for the alerts (amendment A7). Computed once per store date.",
+        "",
+        f"/plans needs {p['needs']}. It serves {p['source']}; {p['rows']}. "
+        "Values are served as stored; the random strategy also carries its p2_5 and p97_5 "
+        "spread. Every answer carries "
+        f'"{p["labels"]["plan"]}", the registered comparison caption, the effect prefix '
+        f'"{p["labels"]["effect_prefix"]}", effect_basis "{p["labels"]["effect_basis"]}", '
+        "the instability note, the no-estimate line and the two-dates disclaimer. Nothing is "
+        "re-planned.",
+        "",
+        "/model (answers while the store is empty): the registered model, its version, the "
+        "eight files and their SHA-256, the config SHA-256, whether the model files still "
+        "match, and the calibration table before and after the ordering fix at 7 and 30 days "
+        f'("{m["calibration"]["label"]}"; "{m["calibration"]["no_59"]}"), with '
+        f'"{m["drift"]}" and retraining "{m["retraining"]}".',
+        "",
+        "The step 8 latency figure was measured before the 1.5 GiB memory limit and before "
+        "these three endpoints were added.",
+        "",
+    ]
 
 
 # --- schema field lists --------------------------------------------------------------------------
@@ -206,6 +255,7 @@ def build() -> str:
         "(amendment A7) and dimension_totals, and the number removed is shown. Each cancel "
         f'event reads "{LABELS.event_label}".',
         "",
+        *dashboard_endpoints(),
         "## Response fields",
         "",
     ]
@@ -215,6 +265,9 @@ def build() -> str:
         ("POST /score, not_active", sch.NotActive),
         ("GET /at-risk", sch.AtRiskPage),
         ("GET /alerts", sch.Alerts),
+        ("GET /summary", sch.Summary),
+        ("GET /plans", sch.Plans),
+        ("GET /model", sch.ModelInfo),
         ("GET /health", svc.Health),
         ("Error bodies", sch.ErrorBody),
     ):

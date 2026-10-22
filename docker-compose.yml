@@ -33,6 +33,8 @@ services:
       - ./mlruns:/app/mlruns:ro
       - ./data/processed/kkbox/sample_020/optimize/plans.parquet:/app/data/processed/kkbox/sample_020/optimize/plans.parquet:ro
       - ./data/processed/kkbox/sample_020/trends/alerts_run.json:/app/data/processed/kkbox/sample_020/trends/alerts_run.json:ro
+      - ./data/processed/kkbox/sample_020/optimize/summary.parquet:/app/data/processed/kkbox/sample_020/optimize/summary.parquet:ro
+      - ./data/processed/kkbox/sample_020/serving/calibration_before_after.json:/app/data/processed/kkbox/sample_020/serving/calibration_before_after.json:ro
     restart: unless-stopped
     healthcheck:
       # Alive when /health answers 200 (ready) or 503 (not ready, e.g. an empty store).

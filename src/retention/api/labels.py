@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from retention.api.config import load_serving
 
@@ -136,3 +139,91 @@ def load_labels(cfg: dict[str, Any] | None = None) -> Labels:
 
 
 LABELS = load_labels()
+
+
+# --- GET /summary, /plans and /model (configs/serving.yaml, dashboard_endpoints) --------------
+
+
+@dataclass(frozen=True)
+class DashboardLabels:
+    outside_label: str  # the fixed disclaimer, verbatim
+    bucket_label: str
+    top_n: int
+    reasons_label: str  # with "<horizon>"
+    min_cell_size: int
+    no_group: str
+    plan_label: str
+    no_plan_status: str
+    caption: str
+    effect_prefix: str
+    effect_basis: str
+    instability_note: str
+    no_estimate_line: str
+    dates: str
+    money_unit: str
+    range_label: str
+    calibration_label: str
+    no_59: str
+    drift: str
+    retraining: str
+
+
+NO_GROUP = re.compile(r'"(?P<text>no group listed)" when none is listed$')
+
+
+def load_dashboard_labels(cfg: dict[str, Any] | None = None, labels: Labels = LABELS):
+    c = cfg if cfg is not None else load_serving()
+    e = c["dashboard_endpoints"]
+    s, p, m = e["summary"], e["plans"], e["model"]
+    actions = yaml.safe_load(Path("configs/actions.yaml").read_text())
+    strategies = actions["strategies"]
+    pl = p["labels"]
+    disclaimers = c["wording"]["fixed_disclaimers"]
+    reasons = s["reasons"]
+    no_group = NO_GROUP.search(reasons["counted_as"])
+    if no_group is None:
+        raise ValueError("the registered no-group wording no longer fits its pattern")
+    if s["counts"]["outside_label"] not in disclaimers or pl["dates"] not in disclaimers:
+        raise ValueError("a /summary or /plans disclaimer differs from the fixed disclaimers")
+    if pl["caption"] != "configs/actions.yaml strategies.table_caption":
+        raise ValueError("the /plans caption must name the registered table caption")
+    if (
+        pl["instability_note"] != labels.instability_note
+        or pl["no_estimate_line"] != labels.no_estimate_line
+        or pl["effect_basis"] != labels.effect_basis
+        or reasons["explains"] != labels.reasons_fixed_line
+        or m["grade_59"] != labels.grade_59
+        or s["buckets"]["grade_31_59"] != labels.grade_59
+    ):
+        raise ValueError("a dashboard endpoint label differs from the contract's")
+    prefix = actions["wording"]["sentence_prefix"]
+    if prefix.replace("<scenario>", "relative").replace("<level>", "base") != pl["effect_prefix"]:
+        raise ValueError("the /plans effect prefix differs from the registered sentence prefix")
+    top_n = int(reasons["top_n"])
+    if f"{top_n:,}" not in reasons["label"]:
+        raise ValueError("the reasons label must name the registered top_n")
+    return DashboardLabels(
+        outside_label=s["counts"]["outside_label"],
+        bucket_label=s["buckets"]["label"],
+        top_n=top_n,
+        reasons_label=reasons["label"],
+        min_cell_size=int(reasons["min_cell_size"]),
+        no_group=no_group["text"],
+        plan_label=pl["plan"],
+        no_plan_status=c["api"]["at_risk"]["no_plan_status"],
+        caption=strategies["table_caption"],
+        effect_prefix=pl["effect_prefix"],
+        effect_basis=pl["effect_basis"],
+        instability_note=pl["instability_note"],
+        no_estimate_line=pl["no_estimate_line"],
+        dates=pl["dates"],
+        money_unit=pl["money_unit"],
+        range_label=strategies["random"]["range_label"],
+        calibration_label=m["calibration"]["label"],
+        no_59=m["calibration"]["no_59"],
+        drift=m["drift"],
+        retraining=m["retraining"],
+    )
+
+
+DASH = load_dashboard_labels()

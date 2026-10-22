@@ -51,6 +51,18 @@ Every plan field reads "plan built from the 30-day probability before the orderi
 
 Kinds: trend, event. A trend alert is shown when the registered rule holds: week start + 37 days on or before the store's date. Every trend alert carries the labels "exploratory", "false-alarm rate not validated", "detected in hindsight on the series through 2016-12-19", and its stored data-quality flags. The dimensions registered in api.alerts.trend.hidden_dimensions are removed from top_segments, too_small_segments (amendment A7) and dimension_totals, and the number removed is shown. Each cancel event reads "a cancel row, not a change in risk".
 
+### GET /summary, GET /plans, GET /model
+
+The dashboard's aggregates. None takes a parameter (anything else is a 422) and no customer ID appears in any of them; each body is scanned with no exemption. Two more files are pinned beside the plans and alerts files: data/processed/kkbox/sample_020/optimize/summary.parquet, data/processed/kkbox/sample_020/serving/calibration_before_after.json; a missing or differing file refuses startup.
+
+/summary needs a ready store (503 otherwise, as /at-risk). It serves the stored /at-risk header counts with the share of active customers expiring more than 30 days ahead; three expected counts over every scored customer, from the final probabilities: days 1 to 7 (math.fsum of p7), days 8 to 30 (math.fsum of (p30 - p7) per customer) and days 31 to 59 (math.fsum of (p59 - p30) per customer, a demonstration, as every 59-day probability), labelled "expected counts from the final probabilities, scored customers only"; and, at 7 and 30 days, each customer once, by raising_1, the first group the model lists as raising the probability; "no group listed" when none is listed, counted among the 1,000 scored customers ranked highest at the horizon, in the /at-risk order (final probability descending, ties by msno), by main segment and for both together. A cell with fewer than 20 customers is suppressed, and the number suppressed is shown; there is no secondary suppression. A group or segment whose name holds a hidden dimension or a never-used word is removed and counted, as for the alerts (amendment A7). Computed once per store date.
+
+/plans needs a ready store (503 otherwise); the store's date picks the rows. It serves the pinned summary.parquet, scenario base, the store's date; every strategy in the file for that date (optimizer, highest_risk, highest_assumed_uplift_x_value, random, fixed_action_reminder, no_action) at every registered budget level (configs/actions.yaml budget.levels). Values are served as stored; the random strategy also carries its p2_5 and p97_5 spread. Every answer carries "precomputed in Phase 7 from the 30-day probability before the ordering fix; not re-planned", the registered comparison caption, the effect prefix "Under the assumed relative base effect", effect_basis "assumed", the instability note, the no-estimate line and the two-dates disclaimer. Nothing is re-planned.
+
+/model (answers while the store is empty): the registered model, its version, the eight files and their SHA-256, the config SHA-256, whether the model files still match, and the calibration table before and after the ordering fix at 7 and 30 days ("descriptive, no pass mark; selection half of 2016-10-01, P2 main; 2016 outcomes only"; "no 59-day row: its calibration was judged only in the Phase 3 59-day demonstration"), with "drift: not monitored (Phase 10)" and retraining "none in this phase (Phase 10)".
+
+The step 8 latency figure was measured before the 1.5 GiB memory limit and before these three endpoints were added.
+
 ## Response fields
 
 ### POST /score, scored
@@ -193,6 +205,94 @@ Kinds: trend, event. A trend alert is shown when the registered rule holds: week
   - `date`
   - `label`
 
+### GET /summary
+
+- `store_date`
+- `counts`
+  - `scored`
+  - `outside_population`
+  - `not_active`
+  - `outside_share_of_active`
+  - `outside_label`
+- `buckets`
+  - `population`
+  - `days_1_7`
+  - `days_8_30`
+  - `days_31_59`
+    - `value`
+    - `grade`
+  - `label`
+- `reasons`
+  - `horizon`
+  - `top_n`
+  - `population`
+  - `label`
+  - `explains`
+  - `min_cell_size`
+  - `suppressed_cells`
+  - `hidden_by_rule`
+    - `groups`
+    - `segments`
+    - `customers`
+  - `segments`
+    - `segment`
+    - `customers`
+    - `suppressed`
+    - `cells`
+- `reasons_withheld`
+- `data_warning`
+
+### GET /plans
+
+- `store_date`
+- `plan_status`
+- `scenario`
+- `effect_prefix`
+- `caption`
+- `effect_basis`
+- `instability_note`
+- `no_estimate_line`
+- `dates`
+- `money_unit`
+- `rows`
+  - `strategy`
+  - `budget_label`
+  - `expected_retained_customers`
+  - `expected_retained_value`
+  - `expected_cost`
+  - `net_value`
+  - `contacted`
+  - `contacted_reminder`
+  - `contacted_autorenew_prompt`
+  - `contacted_discount`
+  - `range`
+    - `label`
+    - `p2_5`
+    - `p97_5`
+
+### GET /model
+
+- `registered_model`
+- `version`
+- `files`
+- `config_sha256`
+- `model_checksums_match`
+- `calibration`
+  - `label`
+  - `no_59`
+  - `rows`
+  - `rows_changed`
+  - `horizons`
+    - `horizon`
+    - `events`
+    - `slope_before_fix`
+    - `intercept_before_fix`
+    - `slope_after_fix`
+    - `intercept_after_fix`
+- `drift`
+- `retraining`
+- `grade_59`
+
 ### GET /health
 
 - `ready`
@@ -247,7 +347,9 @@ Kinds: trend, event. A trend alert is shown when the registered rule holds: week
 - msno must be a non-empty string; as_of must be written YYYY-MM-DD.
 - A 422 body never returns the validation details, so no field name a caller sent comes back.
 - Unknown paths and methods keep the framework's "Not Found" and "Method Not Allowed" bodies.
-- Every /health, /score, /at-risk and /alerts call hashes the downloaded model files and both pinned files again.
+- Every /health, /score, /at-risk, /alerts, /summary and /plans call hashes the downloaded model files and the four pinned files again; /model hashes the model files only.
+- A pinned file that differs after startup is named in the /health reason.
+- /summary reuses the /at-risk index (the three stored rankings) for its buckets and its top 1,000.
 - Startup refuses loaded model files that differ from the bundle the response schemas register.
 - The /at-risk auto_renew filter takes on or off; in_plan takes true or false.
 - An in_plan filter on a date without a plan is a 422.

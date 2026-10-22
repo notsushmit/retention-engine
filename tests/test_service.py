@@ -227,8 +227,65 @@ def alerts_run(**sentences) -> dict:
     return {"commit": "abc", "weeks": 45, "alerts": alerts}
 
 
-def write_pins(out: Path, run: dict | None = None) -> dict[str, tuple[Path, str]]:
-    """Hand-made plans and alerts files and their own hashes (the pins' test double)."""
+PLAN_VALUES = (
+    "expected_retained_customers",
+    "expected_retained_value",
+    "expected_cost",
+    "net_value",
+    "contacted",
+    "contacted_reminder",
+    "contacted_autorenew_prompt",
+    "contacted_discount",
+)
+
+
+def summary_rows() -> list[dict]:
+    """Phase 7's plan summary, shaped as stored: base rows for both dates, one row of
+    another scenario that GET /plans must never read, and a random row with its spread."""
+    rows = []
+    for t, k in (("2016-11-01", 1.0), ("2016-10-01", 2.0)):
+        for i, (strategy, budget) in enumerate(
+            [("optimizer", "5,000"), ("optimizer", "no limit"), ("random", "5,000")]
+        ):
+            vals = {v: k * (i + 1) * (j + 0.25) for j, v in enumerate(PLAN_VALUES)}
+            vals["net_value"] = -vals["net_value"] if strategy == "random" else vals["net_value"]
+            row = {"strategy": strategy, "scenario": "base", "snapshot": t, "budget_label": budget}
+            row |= vals | {"effect_basis": "assumed"}
+            for v in PLAN_VALUES:
+                lo = vals[v] - 0.5 if strategy == "random" else float("nan")
+                hi = vals[v] + 0.5 if strategy == "random" else float("nan")
+                row |= {f"{v}_p2_5": lo, f"{v}_p97_5": hi}
+            rows.append(row)
+    other = dict(rows[0]) | {"scenario": "absolute", "net_value": 999.0}
+    return [*rows, other]
+
+
+CALIBRATION = {
+    "rows": 100,
+    "rows_changed": 7,
+    "7": {
+        "events": 9,
+        "slope_before_fix": 0.95,
+        "intercept_before_fix": -0.06,
+        "slope_after_fix": 0.98,
+        "intercept_after_fix": 0.001,
+    },
+    "30": {
+        "events": 30,
+        "slope_before_fix": 1.005,
+        "intercept_before_fix": -0.001,
+        "slope_after_fix": 1.0004,
+        "intercept_after_fix": -0.016,
+    },
+    "descriptive": True,
+    "pass_mark": None,
+}
+
+
+def write_pins(
+    out: Path, run: dict | None = None, summary: list[dict] | None = None
+) -> dict[str, tuple[Path, str]]:
+    """Hand-made pinned files and their own hashes (the pins' test double)."""
     out.mkdir(parents=True, exist_ok=True)
     plans = out / "plans.parquet"
     table = pa.Table.from_pylist(plan_rows())
@@ -236,7 +293,19 @@ def write_pins(out: Path, run: dict | None = None) -> dict[str, tuple[Path, str]
     pq.write_table(table, plans)
     run_path = out / "alerts_run.json"
     run_path.write_text(json.dumps(alerts_run() if run is None else run))
-    return {"plans": (plans, file_sha256(plans)), "alerts": (run_path, file_sha256(run_path))}
+    summary_path = out / "summary.parquet"
+    pd.DataFrame(summary_rows() if summary is None else summary).to_parquet(summary_path)
+    cal = out / "calibration_before_after.json"
+    cal.write_text(json.dumps(CALIBRATION))
+    return {
+        name: (path, file_sha256(path))
+        for name, path in (
+            ("plans", plans),
+            ("alerts", run_path),
+            ("summary", summary_path),
+            ("calibration", cal),
+        )
+    }
 
 
 @pytest.fixture(scope="module")

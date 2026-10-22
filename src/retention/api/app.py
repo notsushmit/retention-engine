@@ -1,6 +1,7 @@
-"""The scoring API: GET /health, POST /score, GET /at-risk and GET /alerts.
+"""The scoring API: GET /health, POST /score, GET /at-risk and GET /alerts, and the
+dashboard's GET /summary, /plans and /model.
 
-configs/serving.yaml, contract, api and step5.
+configs/serving.yaml, contract, api, step5 and dashboard_endpoints.
 
 Startup loads the models through the registry alias with every check; a missing
 alias, a missing, extra or changed file, or a manifest that differs refuses
@@ -25,7 +26,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from retention.api import alerts, at_risk, store
+from retention.api import alerts, at_risk, dashboard, store
 from retention.api import schemas as sch
 from retention.api import service as svc
 
@@ -97,5 +98,31 @@ def create_app(
         ctx, r = request.app.state.ctx, request.app.state.valkey
         t = svc.ready_date(ctx, r)
         return JSONResponse(status_code=200, content=alerts.alerts_body(ctx.pinned.alerts, r, t))
+
+    def no_parameters(request: Request, path: str) -> None:
+        if request.query_params:
+            raise at_risk.Malformed(f"{path} takes no parameters")
+
+    @app.get("/summary", response_model=sch.Summary)
+    def get_summary(request: Request) -> JSONResponse:
+        no_parameters(request, "/summary")
+        ctx, r = request.app.state.ctx, request.app.state.valkey
+        t = svc.ready_date(ctx, r)
+        rankings = ctx.at_risk_index.get(r, t).rankings
+        return JSONResponse(status_code=200, content=ctx.summary_cache.get(ctx, r, t, rankings))
+
+    @app.get("/plans", response_model=sch.Plans)
+    def get_plans(request: Request) -> JSONResponse:
+        no_parameters(request, "/plans")
+        ctx, r = request.app.state.ctx, request.app.state.valkey
+        t = svc.ready_date(ctx, r)
+        return JSONResponse(status_code=200, content=dashboard.plans_body(ctx.pinned.summary, t))
+
+    @app.get("/model", response_model=sch.ModelInfo)
+    def get_model(request: Request) -> JSONResponse:
+        no_parameters(request, "/model")
+        ctx = request.app.state.ctx
+        body = dashboard.model_body(ctx, svc.model_problem(ctx) is None)
+        return JSONResponse(status_code=200, content=body)
 
     return app
