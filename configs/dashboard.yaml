@@ -1,0 +1,222 @@
+# Phase 9: the dashboard. Registered before any dashboard code or run, committed alone.
+# No value here is changed after a result is seen: a later change is a logged
+# amendment under a new key, and the registered entry stays as it is.
+# The design tokens (hex values, font names, font files and their licences) are not
+# in this commit: they are registered in their own key, in their own commit, before
+# any dashboard code (step 3). Everything else about the look is registered here.
+
+label: registered before any dashboard code, endpoint code or run
+
+# --- what the dashboard may read ----------------------------------------------------------
+source:
+  only: the scoring API over HTTP  # no Valkey client, no DuckDB, no Parquet or CSV reader, no file under data/
+  api_url:
+    env: RETENTION_API_URL
+    default: "http://127.0.0.1:8000"
+    loopback_only: true  # the client refuses any host other than 127.0.0.1, localhost or [::1]
+  calls:  # nothing else; any other path or method is refused by the client
+    - GET /health
+    - GET /at-risk
+    - GET /alerts
+    - GET /summary
+    - GET /plans
+    - GET /model
+    - POST /score
+  never_imported: [redis, duckdb, pyarrow, retention]  # the dashboard package imports none of these
+  never_called: [pandas.read_parquet, pandas.read_csv, open on any path under data/]
+  client_timeout_seconds: 10
+  errors_shown_as: the API's own error detail and reason, never a number in its place
+
+serve:
+  command: make dashboard  # streamlit run, server address 127.0.0.1 only
+  address: 127.0.0.1
+  port: 8501
+  telemetry: off  # browser.gatherUsageStats false
+  hosted: none in this phase  # Phase 10: check the KKBox data terms; hosting needs the API hosted too
+
+# --- on every page ---------------------------------------------------------------------------
+every_page:
+  banner: "Replay of 2016 data, not real-time."  # same place on every page, above the breadcrumb
+  breadcrumb: "<group> / <page>"
+  store_date_line: "Store date <store_date> (one date per loaded snapshot; no daily dates)"  # where a "last updated" line would go
+  footer_disclaimers: serving.yaml wording.fixed_disclaimers  # all four, verbatim, on every page
+  money_unit: "price units"  # every money figure; no conversion and no currency control
+  not_ready: the /health reason shown in place of every number; no figure from an earlier answer is shown
+  replay_progress:
+    running: "<consumed> of <expected_events> events replayed"
+    none: "no replay running"  # when produced and consumed are both 0; never "0 of 0"
+
+# --- pages -------------------------------------------------------------------------------------
+navigation:  # left sidebar, grouped
+  - group: Who to act on
+    pages: [overview, at_risk_list, customer_profile]
+  - group: What the model sees
+    pages: [model_sees, action_planner]
+  - group: Can I trust it
+    pages: [model_health]
+
+pages:
+  overview:
+    title: Overview
+    calls: [GET /health, GET /at-risk, GET /alerts, GET /summary]
+    shows:
+      - the store date, readiness and replay progress
+      - the population counts (scored, outside the population by code, not active)
+      - three expected-count buckets (days 1 to 7, 8 to 30, 31 to 59) on one panel with the customers outside the population
+      - the knowable trend alerts with their three labels and the number hidden by rule
+      - the top 20 at risk at 30 days
+      - reason-group shares among the 1,000 customers most at risk, labelled so
+    big_number: the expected count in days 1 to 7
+    takeaway: "About <expected_1_7> of <scored> scored customers are expected to lapse in the next 7 days"
+    shows_customer_ids: true  # the top 20 and the cancel events
+  model_sees:
+    title: What the model sees in at-risk customers
+    never_titled: ["why customers leave", causes, "reasons customers leave"]
+    calls: [GET /summary]
+    shows:
+      - reason-group share at 7 and 30 days by main segment (paid, discount100_only), one store date; a heatmap
+      - the number of cells suppressed under the minimum cell size
+    big_number: the most common first reason group at 30 days, as a share
+    takeaway: "Among the 1,000 customers most at risk at 30 days, <group> is the reason the model lists first most often"
+    shows_customer_ids: false
+  at_risk_list:
+    title: At-risk list
+    calls: [GET /at-risk]
+    paged: {limit_max: 1000, default: 50}
+    sort: the API's order only (final probability, descending; ties by ID)  # no client-side re-ranking
+    export: CSV of the displayed rows only, with columns store_date and horizon added
+    big_number: the number of customers matching the filters
+    takeaway: "<matching> customers match; the list is ordered by the final <horizon>-day probability"
+    shows_customer_ids: true
+  customer_profile:
+    title: Customer profile
+    calls: [POST /score]
+    shows:
+      - the three probabilities as three points (7 and 30 days in the normal style; 59 days in the demonstration style)
+      - the two reasons, with "Reasons explain the probability before the ordering fix."
+      - expected paid days in days 31 to 90 with its registered labels
+      - the action block with every label (see actions)
+      - the outside-population code or not_active answer, as served
+    big_number: the final 30-day probability
+    takeaway: "<text of the 30-day probability> chance of lapsing within 30 days"
+    shows_customer_ids: true
+  action_planner:
+    title: Action planner
+    calls: [GET /plans]
+    shows:
+      - the precomputed plan per registered budget level for the store's date
+      - the strategy comparison with its registered caption
+    plan_label: "precomputed in Phase 7 from the 30-day probability before the ordering fix; not re-planned"
+    no_optimizer_call: true
+    big_number: the optimizer's net value at the 5,000 budget
+    takeaway: "Under the assumed relative base effect, the 5,000 budget plan contacts <contacted> customers"
+    shows_customer_ids: false
+  model_health:
+    title: Model health
+    calls: [GET /health, GET /model]
+    shows:
+      - the registered model and version, the eight file hashes, the config hash
+      - the calibration table before and after the ordering fix (7 and 30 days)
+      - "drift: not monitored (Phase 10)"
+    big_number: the 30-day calibration slope after the fix
+    takeaway: "Model version <version>; every file matches its registered hash"  # only when model_checksums_match is true
+    shows_customer_ids: false
+
+# --- sidebar filters ---------------------------------------------------------------------------------
+filters:
+  allowed: [auto_renew, in_plan, horizon]  # applied only to GET /at-risk calls
+  auto_renew: [any, "on", "off"]
+  in_plan: [any, "true", "false"]  # disabled with "no plan for this date" when the date has no plan
+  horizon: [7, 30, 59]  # 59 carries the demonstration badge in the control's label
+banned_controls:  # a test fails if any widget's label, key or option contains one (whole word, any case)
+  never_used: serving.yaml wording.never_used  # age, gender, registered_via, tenure, city
+  words: [region, segment filter, date range, currency, what-if, budget input, optimize, re-plan]
+  no_store_date_picker: true  # one store date per loaded snapshot; no daily dates
+
+# --- the handoff items --------------------------------------------------------------------------------
+handoff:
+  region: dropped; no region control anywhere (item 1)
+  buckets:  # item 2
+    source: c01 final probabilities (after the ordering fix), from GET /summary
+    days_1_7: sum of p7
+    days_8_30: sum of p30 - p7
+    days_31_59: sum of p59 - p30  # demonstration
+    population: scored customers only
+    label: "expected counts from the final probabilities, scored customers only"
+    beside: the customers outside the population (22% of active customers on 2016-11-01), on the same panel
+    not_from: dt01  # no survival-curve bucket is shown
+  replanning: none (item 3)
+  what_if:  # item 4
+    control: none
+    line: "Counterfactuals cover 2.7% of explained rows and are model scores, not effects."
+  actions:  # item 5: from the API's action block, on every page that shows an action
+    tag: "assumed effect"
+    tag_hover: "The plan is unstable under 5 of 11 variants."
+    visible: [effect_basis, scenario, instability_note, no_estimate_line]
+  days_59:  # item 6
+    style: demonstration
+    badge: "demonstration"
+    never: [st.metric, the 7-day and 30-day style, a big number, a bucket card]
+
+# --- labels used verbatim ---------------------------------------------------------------------------------
+labels:
+  alerts: serving.yaml api.alerts.trend.labels  # "exploratory", "false-alarm rate not validated", "detected in hindsight on the series through 2016-12-19"
+  event: serving.yaml api.alerts.event.label
+  plan_field: serving.yaml api.at_risk.plan_label
+  reason_shares: "among the 1,000 customers most at risk at <horizon> days"
+  suppressed: "<n> cells with fewer customers than the minimum are not shown"
+  drift: "drift: not monitored (Phase 10)"
+  calibration: "descriptive, no pass mark; selection half of 2016-10-01"
+  no_calibration_59: "no 59-day row: its calibration was judged only in the Phase 3 59-day demonstration"
+  strategy_caption: actions.yaml strategies.table_caption
+  effect_prefix: actions.yaml wording.sentence_prefix  # every sentence with an effect, a retained value or a net value
+  random_range: actions.yaml strategies.random.range_label
+
+# --- tooltips -----------------------------------------------------------------------------------------------
+tooltips:
+  rule: every number shown has a tooltip naming its calculation and its API field
+  how: the help argument of st.metric, st.markdown, st.header or the table column config; never a hover-only element without a text alternative
+  source: a tooltip catalog in the dashboard code, keyed by API field; a test fails any number without an entry
+
+# --- public captures --------------------------------------------------------------------------------------------
+captures:
+  rule: no page that shows a customer ID is captured for the public repo or video until the user confirms the KKBox data terms
+  refused: every page with shows_customer_ids true  # overview, at_risk_list, customer_profile
+  allowed: [model_sees, action_planner, model_health]
+  script: refuses a refused page by name, with a test
+
+# --- wording ---------------------------------------------------------------------------------------------------------
+wording:
+  extends: [configs/actions.yaml wording_rules, configs/serving.yaml wording]  # both banned lists and their exceptions stay in force
+  scope: [every fixed string in the dashboard code, this file's labels and page texts, README section Dashboard, docs/dashboard.md]
+  real_time_exception: "Replay of 2016 data, not real-time."  # exact string only; any other "real-time" fails
+  horizon_59: "59 days"  # never "60 days"
+
+# --- the look (tokens registered separately, before step 3) ---------------------------------------------------------------
+design:
+  reference: the user's two slides (cream background, near-black text, one orange accent, grotesk headings, italic serif for the one big number, monospace uppercase labels)
+  never: [glassmorphism, glows, gradients, neon palettes, ticker bars, green or red delta pills, shadows]
+  theme: light, cream background
+  styling: .streamlit/config.toml and one small CSS file; no other styling layer
+  colours:
+    roles: [background (cream), ink (near-black), accent (orange, fills and badges, risk only), rust (orange text), greys]
+    other_hues: none
+    test: the CSS and the theme use no colour outside the registered tokens
+  fonts:
+    roles:
+      grotesk: headings and body
+      serif_italic: the one big number per page only
+      mono: small uppercase labels, footers, IDs
+    self_hosted: true  # no CDN or font-service request
+    licence: open (OFL or similar), each reported
+  layout: [left sidebar with grouped navigation, breadcrumb, banner in the same place on every page, store date line, wide margins, one big number then one chart then one table, page header states the takeaway]
+  charts:
+    allowed: [bar, line, dot, table, heatmap]  # one heatmap only, on model_sees
+    never: [pie, donut, radar, 3D, stacked area]
+    legends: none; direct labels
+    orange: only on at-risk items; everything else grey
+  components:
+    days_59: muted grey, dashed outline, "demonstration" badge
+    action_tag: small "assumed effect" tag with the instability note on hover and in text
+  streamlit_version: pinned in uv.lock; the CSS selectors may break on an upgrade
+  tokens: registered in their own key and commit before step 3 (hex values sampled from the slides, font names given by the user)
