@@ -23,7 +23,7 @@
   padding-bottom: 0.35rem;
   color: #090B0E;
 }
-.re-big-label { color: #413A31; margin-top: 0.75rem; }
+.re-big-label { color: #413A31; margin-top: 0.75rem !important; }
 .re-demo59 {
   border: 1px dashed #514A40;
   padding: 0.5rem 0.75rem;
@@ -42,13 +42,13 @@
   left: 0;
   right: 0;
   height: 60px;
-  margin: 0;
+  margin: 0 !important;  /* Streamlit's paragraph rules are more specific */
   padding-left: 1.5rem;
   display: flex;
   align-items: center;
   font-family: "Space Grotesk", sans-serif;
   font-weight: 700;
-  font-size: 2rem;
+  font-size: 2rem !important;
   letter-spacing: -0.01em;
   color: #090B0E;
   background: #F4EDE3;
