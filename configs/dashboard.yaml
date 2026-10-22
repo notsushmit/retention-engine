@@ -220,3 +220,21 @@ design:
     action_tag: small "assumed effect" tag with the instability note on hover and in text
   streamlit_version: pinned in uv.lock; the CSS selectors may break on an upgrade
   tokens: registered in their own key and commit before step 3 (hex values sampled from the slides, font names given by the user)
+
+# --- the reason heatmap (added after the first real /summary call, before any dashboard code) ---------
+heatmap_rules:
+  label: >-
+    the user's rules of 2026-10-22, registered before any dashboard code, after one real
+    /summary call at 2016-11-01 (not a mark); the registered top_n (1,000) and minimum cell
+    size (20) in configs/serving.yaml are unchanged
+  totals: none beside the heatmap  # no row total, no column total, no segment count, no "all" row shown next to it
+  cell_text: "Share of at-risk customers whose top raising reason is <group>"  # at-risk: the 1,000 most at risk at the horizon
+  attribution_line: "Reasons are model attributions, not causes."  # shown on the page, verbatim
+  attribution_exception: >-
+    the attribution line is a fixed disclaimer: exact string only, removed before the
+    banned-word scan as configs/actions.yaml does for its fixed disclaimers; any other
+    "causes" fails
+  body_note: >-
+    the /summary body itself carries segment totals and an "all" segment (paid plus
+    discount100_only), so a suppressed cell can be derived from the body; the page shows
+    neither, and the body is not changed
