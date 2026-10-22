@@ -1,4 +1,4 @@
-.PHONY: setup data labels features train test lint up down
+.PHONY: setup data labels features train test lint up down dashboard
 
 # Load .env if present (Kaggle credentials, SAMPLE_FRACTION).
 -include .env
@@ -42,6 +42,11 @@ up:
 
 down:
 	docker compose down
+
+# The dashboard (configs/dashboard.yaml serve): reads only the API at RETENTION_API_URL
+# (default http://127.0.0.1:8000), served on 127.0.0.1:8501 only.
+dashboard:
+	uv run streamlit run dashboard/app.py --server.address 127.0.0.1 --server.port 8501
 
 lint:
 	uv run ruff check .

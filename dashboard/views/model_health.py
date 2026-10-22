@@ -54,5 +54,5 @@ def render(client: Client, health: dict[str, Any], capture: bool) -> None:
         f"{m['registered_model']}; config SHA-256 {m['config_sha256']}.", help=tip("model_files")
     )
     st.caption(
-        f"{m['drift']}. Retraining: {m['retraining']}. Every 59-day probability: {m['grade_59']}."
+        f"{m['drift']}. Retraining: {m['retraining']}. Every 59-day probability is a demonstration."
     )

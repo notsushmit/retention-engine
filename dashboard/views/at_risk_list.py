@@ -80,7 +80,7 @@ def render(client: Client, health: dict[str, Any], capture: bool) -> None:
     )
     cp.big(cp.count(page["matching"]), "customers match the filters", tip("matching"))
     if horizon == 59:
-        cp.demo59("59-day probabilities", "every value in this list", tip("p59"))
+        cp.demo59("59-day probabilities (demonstration)", "every value in this list", tip("p59"))
     df = frame_of(page)
     st.dataframe(
         df.drop(columns=["probability"]) if not df.empty else df,

@@ -28,6 +28,7 @@ def catalog(s: Settings | None = None) -> dict[str, str]:
     risk = sv["contract"]["scored"]["risk"]
     calib = sv["ordering"]["descriptive"]["calibration_before_after_fix"]
     final = f"Final probability, {flat(risk['value'])}."
+    prefix = e["plans"]["labels"]["effect_prefix"]
     inactive = flat(sv["step5"]["known_customers"]["not_active"])
     order = flat(sv["api"]["at_risk"]["order"])
     before_fix = flat(sv["contract"]["scored"]["reasons"]["with"])
@@ -59,11 +60,12 @@ def catalog(s: Settings | None = None) -> dict[str, str]:
         "reason_probability": (f"/score reasons.probability_before_fix: {before_fix}."),
         "paid_days": f"/score paid_days: {flat(a2['name'])}; {flat(a2['definition'])}",
         "action_values": (
-            f"/score action: {flat(a4['definition'])}; net value = "
+            f"{prefix}, /score action: {flat(a4['definition'])}; net value = "
             f"{ac['budget']['net_value']}; pays: {flat(a4['pays'])}. Unit: {s.money_unit}."
         ),
         "plan_values": (
-            f"/plans rows: {flat(e['plans']['source'])}; net value = {ac['budget']['net_value']}. "
+            f"{prefix}, /plans rows: {flat(e['plans']['source'])}; "
+            f"net value = {ac['budget']['net_value']}. "
             f"Unit: {s.money_unit}."
         ),
         "plan_range": f"/plans rows.range: {ac['strategies']['random']['range_label']}.",

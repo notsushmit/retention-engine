@@ -17,6 +17,11 @@ from dashboard.tooltips import tip
 S = load()
 T = S.tokens
 HEADLINE = ("optimizer", "5,000")
+# One literal sentence, so the fixed text starts with the registered effect prefix
+# (configs/serving.yaml dashboard_endpoints.plans.labels.effect_prefix; tested).
+HEADLINE_CAPTION = (
+    "Under the assumed relative base effect, the optimizer's net value at the 5,000 budget"
+)
 COLUMNS = [
     "expected_retained_customers",
     "expected_retained_value",
@@ -87,7 +92,7 @@ def render(client: Client, health: dict[str, Any], capture: bool) -> None:
         )
         cp.big(
             cp.money(head["net_value"]),
-            f"{p['effect_prefix']}: optimizer net value at the 5,000 budget",
+            HEADLINE_CAPTION,
             tip("plan_values"),
         )
     st.markdown(
@@ -112,7 +117,8 @@ def render(client: Client, health: dict[str, Any], capture: bool) -> None:
     spread = [r for r in p["rows"] if r["range"]]
     if spread:
         st.caption(
-            f"random: {spread[0]['range']['label']}; net value from "
+            f"{p['effect_prefix']}, random targeting's net value ranges "
+            f"({spread[0]['range']['label']}) "
             + "; ".join(
                 f"{r['budget_label']}: {cp.money(r['range']['p2_5']['net_value'])} to "
                 f"{cp.money(r['range']['p97_5']['net_value'])}"
