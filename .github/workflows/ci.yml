@@ -25,10 +25,10 @@ jobs:
         with:
           fetch-depth: 0  # full history: a test reads the registered config commit
       - uses: astral-sh/setup-uv@v10.3.0
-      - name: Install Python, dev, training and api dependencies
+      - name: Install Python, dev, training, api and dashboard dependencies
         run: |
           uv python install 3.11
-          uv sync --group dev --group training --group api --locked
+          uv sync --group dev --group training --group api --group dashboard --locked
       - name: Ruff
         run: |
           uv run ruff check .
