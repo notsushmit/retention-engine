@@ -211,8 +211,9 @@ def test_fixed_formats_use_separators_and_fixed_decimals():
     assert cp.fixed(None, 2) == "-"
 
 
-def test_the_toolbar_is_for_viewers_so_no_deploy_button_but_the_menu_stays():
-    assert THEME["client"]["toolbarMode"] == "viewer"
+def test_the_full_menu_stays_and_the_deploy_button_is_hidden():
+    assert THEME["client"]["toolbarMode"] == "developer"
+    assert re.search(r'\[data-testid="stAppDeployButton"\]\s*\{\s*display:\s*none', CSS)
 
 
 def test_the_59_day_box_does_not_wrap_its_label():

@@ -11,7 +11,7 @@ headless = true
 gatherUsageStats = false
 
 [client]
-toolbarMode = "viewer"  # the main menu for viewers; no Deploy button, no developer options
+toolbarMode = "developer"  # the full main menu (Rerun, Clear cache, Settings, ...); Deploy hidden in style.css
 
 [theme]
 base = "light"
