@@ -108,7 +108,7 @@ def action_block(a: dict[str, Any]) -> None:
     st.caption(
         "Scenario: "
         + "; ".join(f"{k.replace('_', ' ')} {v}" for k, v in sc.items())
-        + f". {a['probability_basis']}"
+        + f". Action block: {a['probability_basis']}."
     )
     if a.get("price"):
         st.caption(a["price"])

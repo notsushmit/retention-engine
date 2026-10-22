@@ -137,7 +137,11 @@ def test_overview_order_big_number_buckets_chart_then_two_tabs():
     assert (
         "About 3,160 of 169,673 scored customers are expected to lapse in the next 7 days" in text
     )
-    assert [m.label for m in at.metric] == ["Days 1 to 7", "Days 8 to 30", "Outside the population"]
+    assert [m.label for m in at.metric] == [
+        "Days 1 to 7",
+        "Days 8 to 30",
+        "Expiring more than 30 days ahead",
+    ]
     assert [t.label for t in at.tabs] == ["Alerts", "Top 20 at risk"]
     assert "At 7 days all 1,000 share renewal_timing as their first group" in text
     assert "At 30 days renewal_timing leads with 823 of the top 1,000 at risk" in text

@@ -87,7 +87,7 @@ def render(client: Client, health: dict[str, Any], capture: bool) -> None:
         hide_index=True,
         column_config={"text": st.column_config.TextColumn("probability", help=tip("probability"))},
     )
-    st.caption(f"{page['header_note']} {page['plan_status']}.")
+    st.caption(f"{page['header_note']} Plan fields: {page['plan_status']}.")
     c = page["counts"]
     st.caption(
         f"Scored {cp.count(c['scored'])}; outside the population "

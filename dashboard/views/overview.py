@@ -42,7 +42,9 @@ def buckets(summary: dict[str, Any]) -> None:
     with cols[3]:
         share = c["outside_share_of_active"]
         cp.number(
-            "Outside the population", "-" if share is None else cp.share(share), tip("outside")
+            "Expiring more than 30 days ahead",
+            "-" if share is None else cp.share(share),
+            tip("outside"),
         )
     st.caption(f"{b['label']}. {c['outside_label']}")
 
@@ -105,7 +107,7 @@ def top_tab(client: Client) -> None:
         hide_index=True,
         column_config={"probability": st.column_config.TextColumn(help=tip("probability"))},
     )
-    st.caption(f"{page['header_note']} {page['plan_status']}.")
+    st.caption(f"{page['header_note']} Plan fields: {page['plan_status']}.")
 
 
 def render(client: Client, health: dict[str, Any], capture: bool) -> None:

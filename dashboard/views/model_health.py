@@ -43,8 +43,9 @@ def render(client: Client, health: dict[str, Any], capture: bool) -> None:
         },
     )
     st.caption(
-        f"{cal['label']}. {cp.count(cal['rows'])} rows, {cp.count(cal['rows_changed'])} moved by "
-        f"the ordering fix. {cal['no_59']}.",
+        f"Calibration: {cal['label']}. {cp.count(cal['rows'])} rows, "
+        f"{cp.count(cal['rows_changed'])} moved by "
+        f"the ordering fix. Note: {cal['no_59']}.",
         help=tip("calibration"),
     )
     cp.number("Version", str(m["version"]), tip("version"))

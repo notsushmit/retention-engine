@@ -113,7 +113,7 @@ def render(client: Client, health: dict[str, Any], capture: bool) -> None:
         hide_index=True,
         column_config={c: st.column_config.NumberColumn(help=tip("plan_values")) for c in COLUMNS},
     )
-    st.caption(f"{p['effect_prefix']}. {p['caption']}")
+    st.caption(f"{p['effect_prefix']}. Comparison caption: {p['caption']}.")
     spread = [r for r in p["rows"] if r["range"]]
     if spread:
         st.caption(
