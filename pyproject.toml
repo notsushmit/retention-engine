@@ -87,10 +87,11 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.isort]
 # Explicit, so import sorting does not depend on where the repo is cloned.
-known-first-party = ["retention"]
+known-first-party = ["retention", "dashboard"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]  # the dashboard package sits at the repository root
 addopts = "-q"
 markers = [
     "random2000: the random 2,000-row /score equality test; runs in CI, or alone with -m random2000",
