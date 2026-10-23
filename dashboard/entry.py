@@ -1,5 +1,7 @@
-"""Run one page inside the shared frame: the client from session state, capture mode from
-the URL (C2: ?capture=1)."""
+"""Run one page inside the shared frame: one API client for the whole app (cached with
+st.cache_resource, so browser sessions do not each leave connections open), capture mode
+from the URL (C2: ?capture=1). A client placed in session state (the tests' fake API)
+takes precedence."""
 
 from __future__ import annotations
 
@@ -12,10 +14,17 @@ from dashboard.views import VIEWS
 CLIENT = "client"
 
 
+@st.cache_resource
+def shared_client() -> Client:
+    """The one client every session uses (found after a run, D-258: one client per session
+    left connections to the API in CLOSE_WAIT)."""
+    return Client()
+
+
 def client() -> Client:
-    if CLIENT not in st.session_state:
-        st.session_state[CLIENT] = Client()
-    return st.session_state[CLIENT]
+    if CLIENT in st.session_state:
+        return st.session_state[CLIENT]
+    return shared_client()
 
 
 def capture() -> bool:

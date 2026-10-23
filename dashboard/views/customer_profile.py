@@ -83,7 +83,7 @@ def scored(body: dict[str, Any]) -> None:
     st.caption(S.raw["handoff"]["what_if"]["line"])
     pd_ = body["paid_days"]
     cp.number(pd_["name"], f"{pd_['value']:.1f}", tip("paid_days"))
-    st.caption("; ".join(pd_["labels"]))
+    st.caption("; ".join(x for x in pd_["labels"] if x != pd_["name"]))  # the name is the label
     cp.action_block(body["action"])
     st.caption(f"{body['archetype']['status']}.")
 

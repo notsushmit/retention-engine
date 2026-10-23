@@ -385,3 +385,26 @@ def test_the_overview_buckets_sit_in_one_row_and_the_30_day_ahead_tile_below():
     at = render("overview")
     assert len(at.columns) == 5  # three bucket columns, then the tile and its note
     assert at.metric[-1].label == "Expiring more than 30 days ahead"
+
+
+def test_one_api_client_is_shared_by_every_session():
+    from dashboard import entry
+
+    entry.shared_client.clear()
+    assert entry.shared_client() is entry.shared_client()
+    entry.shared_client.clear()
+
+
+def test_the_paid_days_name_is_shown_once():
+    at = render("customer_profile")
+    at.text_input[0].input(f.SCORED_ID).run()
+    name = "expected paid days in days 31 to 90, given no lapse by day 30"
+    assert visible(at).count(name) == 1
+
+
+def test_the_at_risk_list_says_plan_actions_appear_only_where_they_pay():
+    text = visible(render("at_risk_list"))
+    assert (
+        "Under the assumed relative base effect, plan actions: none scores 0, so an action with "
+        "negative net value is never chosen; unspent budget is reported, never forced." in text
+    )
