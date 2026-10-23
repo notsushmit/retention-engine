@@ -144,7 +144,7 @@ Valkey writes nothing to disk, so the store is empty after any restart and `/hea
 
 Parity over HTTP: the registered mark compared 1,000 seeded answers from the container with the host's answers as exact strings, and it was not met: 996 of 1,000 matched. The other 4 differed only in float values, at most 4 ulps apart (the smallest steps a float can take), with no text, action name or flag different; the likely source, untested, is the container's Linux libraries against the Mac's. Amendment A10, written after that result was seen, judges floats within a relative 1e-12 and every other field exactly; under it all 1,000 pass, and the 996 of 1,000 stays on record as not met as written. Step 6's score parity is a separate result: on all 169,673 scored rows of 2016-11-01 the replayed store gave the same scores as batch within the registered tolerance (final probabilities within a relative 1e-12; the largest gap was 0.0). The HTTP sample was 1,000 of the 169,673 scored customers (0.6%), drawn with one seed, scored customers only, at one store date; outside_population and not_active answers are covered by neither the parity mark nor the step 8 HTTP checks, and were checked in-process only (the tests and the step 5 smoke run, not over HTTP).
 
-Latency, p95 on this Mac, one run of 1,000 calls: p95 69.429 ms, with p99 97.809 ms and a maximum of 108.142 ms, measured before the 1.5 GiB limit, over loopback with one client and one connection, against a threshold of 100 ms (my unvalidated choice). The p50 was 59.242 ms. Every timed call includes the service's check of its model and pinned files, about 15 ms in an earlier in-process measurement.
+Latency, p95 on this Mac, one run of 1,000 calls: p95 69.429 ms, with p99 97.809 ms and a maximum of 108.142 ms, measured before the 1.5 GiB limit and before the dashboard endpoints, over loopback with one client and one connection, against a threshold of 100 ms (my unvalidated choice). The p50 was 59.242 ms. Every timed call includes the service's check of its model and pinned files, about 15 ms in an earlier in-process measurement.
 
 Memory: the API container is limited to 1.5 GiB, my choice. After one filtered `GET /at-risk` call it used 672.4 MiB, measured with swap above 0 (97.38 MB) and no concurrent clients; the filter index together with 8 concurrent clients was not measured, so the headroom is not established.
 
@@ -162,3 +162,35 @@ Unverified: `ps` showed Docker's VM process at 9.83 GB resident, above the VM's 
 | `make train` | Phase 3 (not yet implemented) |
 | `make up` | starts Valkey and the scoring API (docker compose), then prints `/health` |
 | `make down` | stops them |
+| `make dashboard` | serves the dashboard on 127.0.0.1:8501, reading only the API |
+
+## Dashboard
+
+> Replay of 2016 data, not real-time.
+
+A Streamlit app with five pages that reads only the scoring API: `GET /health`, `/at-risk`, `/alerts`, `/summary`, `/plans` and `/model`, and `POST /score`. It has no store client and no data reader, and it reads no file under `data/`; a test fails if one appears. Pages, API calls, tooltips and every change since the plan: [docs/dashboard.md](docs/dashboard.md).
+
+```bash
+make up         # the scoring API on 127.0.0.1:8000 (load the snapshot as above)
+make dashboard  # the dashboard on 127.0.0.1:8501 only; RETENTION_API_URL must be a loopback address
+```
+
+| Page | What it answers |
+| --- | --- |
+| Overview | how many scored customers are expected to lapse in days 1 to 7, 8 to 30 and 31 to 59 (a demonstration), the reason groups the model lists first among the 1,000 customers most at risk, the knowable trend alerts, and the top 20 at risk |
+| At-risk list | who is most at risk at 7, 30 or 59 days, with the auto_renew and in_plan filters and a CSV of the displayed rows |
+| Customer profile | one customer's three probabilities, two reasons, expected paid days and the labelled action block |
+| Action planner | the plans precomputed in Phase 7 for the store's date, per budget level, with the strategy comparison; nothing is re-planned |
+| Model health | the model version, its eight file hashes, the config hash and the calibration table before and after the ordering fix; drift is not monitored in this phase |
+
+![Overview, capture mode](docs/img/dashboard/overview.png)
+
+![Action planner](docs/img/dashboard/planner.png)
+
+![Model health](docs/img/dashboard/model_health.png)
+
+The Overview tile "Expiring more than 30 days ahead" shows 22%: 51,692 of the 230,286 customers with coverage on 2016-11-01 expire more than 30 days ahead and get no score. It is not the whole population left out: with the trial-only (8,890) and promo-only (31) customers, the customers outside the population are 60,613 of the same 230,286, about 26%.
+
+Look: one cream background, near-black text, one orange accent used only as a fill for the leading at-risk item, and greys. The eight colours were sampled from a reference slide: background #F4EDE3, ink #090B0E, accent #FE5A00, rust #942A11 (orange text), card grey #1B222C, bar grey #40454B, body grey #413A31, label grey #514A40. The orange's contrast on the background is 2.71:1, so it is never used for text. The fonts are self-hosted, with no font service: Space Grotesk (headings and body), Instrument Serif italic (the one big number on each page) and JetBrains Mono (small labels), each under the SIL Open Font License 1.1, whose text sits beside the font files in `dashboard/static/fonts/`.
+
+Captures: the screenshots above come from three pages only. The Overview is captured with `?capture=1`, which leaves out its top-20 table and the cancel events; the Action planner and Model health show no customer ID. The At-risk list and the Customer profile show customer IDs and are never captured; `scripts/capture_pages.py` refuses them. Capture mode is a convenience for screenshots, not access control: anyone who removes `?capture=1` sees the IDs again. The dashboard must never be hosted with customer rows.
