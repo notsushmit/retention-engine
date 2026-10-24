@@ -369,3 +369,15 @@ app_name_header:
   size: larger than C3's line, about the size of a page heading
   font: grotesk (Space Grotesk), bold, ink  # unchanged from C3
   clicks: the bar lets clicks through (the sidebar control underneath keeps working)
+
+# --- change C5: each bucket's share of the scored customers (a new key; entries above kept) ---------
+bucket_shares:
+  id: C5
+  date: "2026-10-24"
+  label: the user's request after the step 5 docs, registered before the code that shows it
+  where: under each of the three bucket figures on the Overview (days 1 to 7, 8 to 30, 31 to 59)
+  calculation: the bucket's expected count divided by buckets.population (the scored customers), from the same /summary answer
+  decimals: 1  # a percentage with one decimal
+  text: "<share> of the <scored> scored customers, expected (a sum of probabilities, not a headcount)"
+  days_31_59: inside the demonstration box, in its muted style; never a metric card
+  tooltip: "/summary buckets: the bucket's expected count / buckets.population (scored customers only)"
