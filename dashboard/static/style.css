@@ -82,3 +82,15 @@
   color: #514A40;
   margin-left: 0.2rem;
 }
+/* Uniform vertical rhythm in the main column: the space between elements is the column's
+   own gap only, so inner paragraph margins and heading padding are removed. The top
+   padding lines the first line up with the sidebar's first group. These target
+   Streamlit's own test ids (1.65.0) and may break on an upgrade. */
+[data-testid="stMainBlockContainer"] { padding-top: 30px !important; }  /* banner text level with "Who to act on" (measured at 1440 x 900) */
+[data-testid="stMainBlockContainer"] [data-testid="stMarkdownContainer"] p,
+[data-testid="stMainBlockContainer"] [data-testid="stCaptionContainer"] p { margin: 0 !important; }
+[data-testid="stMainBlockContainer"] [data-testid="stHeading"] h2 { padding: 0 !important; margin: 0 !important; }
+[data-testid="stMainBlockContainer"] [data-testid="stMarkdownContainer"] { margin-bottom: 0 !important; }
+[data-testid="stMainBlockContainer"] [data-testid="stMarkdownContainer"] p { line-height: 1.35; }
+[data-testid="stMainBlockContainer"] [data-testid="stVerticalBlock"] { gap: 1.5rem !important; }
+.re-footer { margin-top: 0 !important; }

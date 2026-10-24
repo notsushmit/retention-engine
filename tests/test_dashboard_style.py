@@ -245,3 +245,20 @@ def test_the_big_number_leaves_room_above_its_caption():
     assert float(re.search(r"line-height: ([\d.]+)", big).group(1)) >= 1.2
     label = re.search(r"\.re-big-label \{([^}]*)\}", CSS).group(1)
     assert float(re.search(r"margin-top: ([\d.]+)rem", label).group(1)) >= 0.75
+
+
+def test_one_uniform_gap_and_the_content_starts_level_with_the_sidebar():
+    """Found after a run: the main column's spacing is the column gap only (24 px),
+    inner paragraph margins are removed, and the top padding lines the banner up with
+    the sidebar's first group (measured at 1440 x 900: both at 78 px)."""
+    main = '[data-testid="stMainBlockContainer"]'
+    assert re.search(re.escape(main) + r" \{ padding-top: 30px !important; \}", CSS)
+    assert re.search(
+        re.escape(main) + r' \[data-testid="stVerticalBlock"\] \{ gap: 1\.5rem !important; \}', CSS
+    )
+    assert re.search(
+        re.escape(main)
+        + r' \[data-testid="stMarkdownContainer"\] \{ margin-bottom: 0 !important; \}',
+        CSS,
+    )
+    assert ".re-footer { margin-top: 0 !important; }" in CSS
