@@ -248,3 +248,17 @@ def test_the_readme_stays_short():
 
 def test_the_setup_doc_passes_every_wording_rule():
     assert check(Path("docs/setup.md").read_text()) == []
+
+
+def test_the_licence_file_badge_and_section_agree():
+    licence = Path("LICENSE").read_text()
+    assert licence.startswith("MIT License") and "Copyright (c) 2026 Sushmit Arora" in licence
+    assert "](LICENSE)" in "\n".join(LINES[:4])  # the badge, beside the CI badge
+    text = section("Data and licence")
+    for needed in (
+        "released under the [MIT licence](LICENSE)",
+        "stay under the Kaggle competition rules",
+        "SIL Open Font License 1.1",
+        "scikit-survival (GPL-3.0) is listed in the training group",
+    ):
+        assert needed in text

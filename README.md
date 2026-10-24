@@ -1,6 +1,6 @@
 # Retention decision engine
 
-[![CI](https://github.com/notsushmit/retention-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/notsushmit/retention-engine/actions/workflows/ci.yml)
+[![CI](https://github.com/notsushmit/retention-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/notsushmit/retention-engine/actions/workflows/ci.yml) [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 
 A churn-prediction and retention-planning project built on a replay of 2016 KKBox music-subscription data: a portfolio project, not a hosted service.
 
@@ -208,7 +208,7 @@ data/           local data only, ignored by git
 
 ## Data and licence
 
-The KKBox files are competition data from Kaggle. They are not included in this repository and are not redistributed; anyone using them must accept the competition rules on Kaggle. No licence file has been added to this repository yet.
+The code, docs and configs in this repository are released under the [MIT licence](LICENSE). The KKBox files are competition data from Kaggle: they are not part of this repository, are not redistributed, and stay under the Kaggle competition rules, which anyone using them must accept. The fonts in `dashboard/static/fonts/` keep their own licence, the SIL Open Font License 1.1, as listed in `dashboard/static/fonts/SOURCES.md` with an `OFL.txt` beside each font. scikit-survival (GPL-3.0) is listed in the training group; this repository's code does not import it, and two tests use it only as a reference to cross-check the project's concordance and Brier functions.
 
 ## Acknowledgements
 
