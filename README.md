@@ -4,7 +4,11 @@
 
 A churn-prediction and retention-planning project built on a replay of 2016 KKBox music-subscription data: a portfolio project, not a hosted service.
 
-A subscription service loses customers every month, and a retention team has to decide who is likely to leave soon and who is worth contacting with a limited budget. This project estimates, for each paying customer, the chance that their membership lapses within 7 and 30 days (and within 59 days, as a demonstration only), shows what moved the model's number for that customer, and compares budget plans for three simple actions. It uses the KKBox churn prediction challenge data (WSDM Cup 2018) on a 20% customer sample, served through a scoring API, a replay stream and a five-page dashboard. Everything runs on recorded 2016 data replayed through the service, with one snapshot date, 2016-11-01. The KKBox data could not identify the effect of a discount or any other action, so every action value rests on assumed effects and is labelled as such.
+Predicts which subscribers will churn and when, shows what drives each prediction, compares retention actions under assumed effects, and allocates a retention budget. The primary data is the KKBox churn prediction challenge (WSDM Cup 2018).
+
+A customer is anyone with at least one paid transaction or a full discount on a priced plan. Free trials and free promotional periods alone do not count.
+
+Everything runs on recorded 2016 data replayed through the service, with one snapshot date (2016-11-01), and every action value rests on assumed effects, because no KKBox discount effect was identified.
 
 <p><img src="docs/img/dashboard/overview.png" alt="Dashboard Overview: expected lapses in three windows, each with its share of scored customers, and the reason groups the model lists first for the customers most at risk" width="100%"></p>
 

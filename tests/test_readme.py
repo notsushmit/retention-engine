@@ -97,8 +97,11 @@ SOURCES = set().union(
 
 
 def brief() -> tuple[int, str]:
-    i = next(k for k, line in enumerate(LINES) if line.startswith("A subscription service"))
-    return i, LINES[i]
+    """The brief: the original opening restored at the user's request, with two phrases
+    changed for the wording rules, then one sentence of honest framing."""
+    i = next(k for k, line in enumerate(LINES) if line.startswith("Predicts which subscribers"))
+    j = next(k for k, line in enumerate(LINES) if line.startswith("Everything runs on recorded"))
+    return j, "\n".join(LINES[i : j + 1])
 
 
 def test_the_title_tagline_and_badge_come_first():
@@ -108,11 +111,14 @@ def test_the_title_tagline_and_badge_come_first():
     assert "replay of 2016 KKBox" in tagline and "not a hosted service" in tagline
 
 
-def test_the_brief_has_five_to_six_sentences_and_its_honest_framing():
+def test_the_brief_keeps_the_original_opening_and_its_honest_framing():
     _, text = brief()
-    assert 5 <= len(re.findall(r"[.!?](?:\s|$)", text)) <= 6
-    for needed in ("limited budget", "replayed", "assumed effects", "discount"):
+    assert "Predicts which subscribers will churn and when" in text
+    assert "The primary data is the KKBox churn prediction challenge (WSDM Cup 2018)." in text
+    assert "Free trials and free promotional periods alone do not count." in text
+    for needed in ("replayed", "assumed effects", "discount"):
         assert needed in text
+    assert "explains why" not in text and "works" not in text
 
 
 def test_the_first_image_comes_after_the_brief_and_within_25_lines():
