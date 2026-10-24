@@ -202,3 +202,28 @@ smoke:
     - GET /summary answers 200 with the synthetic label
     - the response scan finds 0 never-used words in every body
   ci_time_report: the added minutes of the first run of each job are reported after it, read from the run, not waited for
+
+# --- A13: usage telemetry off, the Prefect home, and where the ops group installs (a new key; nothing above is edited) ----
+amendment_A13:
+  id: A13
+  date: "2026-10-24"
+  label: >-
+    written after the ops group was installed and before any import or run of evidently
+    or prefect; the installed packages send usage data by default (found by reading their
+    source), which conflicts with hosting.chosen (a): nothing is uploaded anywhere
+  amends: [hosting.never, drift.tool, retrain.orchestrator]  # kept as registered; this entry adds conditions
+  environment:  # set in every process and container that imports evidently or prefect
+    DO_NOT_TRACK: "1"
+    PREFECT_SERVER_ANALYTICS_ENABLED: "false"
+    PREFECT_HOME: data/interim/ops/prefect  # inside the repository, under the ignored data folder; nothing is written under ~/.prefect
+  set_in: [the Makefile targets that run drift or the flow, the compose services that import either package, every workflow that installs the ops group, the flows and the drift code before their first import, and the test fixtures]
+  why_both: evidently turns reporting off only when DO_NOT_TRACK is not set at all (any value turns it off); prefect's client reads DO_NOT_TRACK and its server reads PREFECT_SERVER_ANALYTICS_ENABLED
+  checks:
+    - a test sets the three variables, blocks outbound sockets, runs a tiny Evidently report and a tiny Prefect flow, and fails if either tries to connect  # written with the drift and flow code
+    - after any flow or drift run, nothing exists under ~/.prefect that was not there before
+    - no flow run uses a Prefect server, a Prefect Cloud account or an API URL
+  never: the three variables are unset, overridden or defaulted in a way that sends data
+  ci_install:
+    ops_group: installed only in the workflow .github/workflows/ops.yml; not in make setup and not in the main ci.yml job
+    tests_needing_ops_group: 'skip in the main job with the loud reason "not checked: ops group not installed", and run in ops.yml'
+    ops_yml_mark: the ops.yml job fails if any of those tests is skipped
