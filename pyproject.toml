@@ -63,6 +63,12 @@ dashboard = [
     "streamlit>=1.36",
     "httpx>=0.27",
 ]
+# "ops": drift reports and the retraining flow (Phase 10). Not in the API image, which installs
+# "api" only; installed by `make setup` and CI.
+ops = [
+    "evidently>=0.4",
+    "prefect>=2.19",
+]
 dev = [
     "pytest>=8",
     "ruff>=0.6",

@@ -2962,6 +2962,10 @@ models = [
     { name = "umap-learn" },
     { name = "xgboost" },
 ]
+ops = [
+    { name = "evidently" },
+    { name = "prefect" },
+]
 serving = [
     { name = "evidently" },
     { name = "fastapi" },
@@ -3026,6 +3030,10 @@ models = [
     { name = "shap", specifier = ">=0.46" },
     { name = "umap-learn", specifier = ">=0.5" },
     { name = "xgboost", specifier = ">=2.1" },
+]
+ops = [
+    { name = "evidently", specifier = ">=0.4" },
+    { name = "prefect", specifier = ">=2.19" },
 ]
 serving = [
     { name = "evidently", specifier = ">=0.4" },
