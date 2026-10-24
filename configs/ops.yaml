@@ -1,0 +1,204 @@
+# Phase 10: operations. Registered before any Phase 10 code, install use or run, committed alone.
+# No value here is changed after a result is seen: a later change is a labelled amendment
+# under a new key, and the registered entry stays as it is. Every number below marked
+# "my unvalidated choice" was set by hand before any run and has no validation behind it.
+# The serving.yaml key ops_endpoints (R4) and the dashboard.yaml key C8 (R5) follow in
+# their own commits, before the code that uses them.
+
+label: registered before any Phase 10 code or run
+
+# --- R0: hosting, the status of the data terms, and the Done-when items ---------------------
+hosting:
+  id: R0
+  date: "2026-10-24"
+  chosen: (a)  # the user's choice
+  meaning: >-
+    a one-command stack and a CI image build; no public URL, no account, no token, no
+    spend; nothing is uploaded anywhere
+  options_not_taken:
+    (b): a hosted demo on synthetic data; needs the KKBox data terms read and an account and token the user has not approved
+    (c): a hosted demo on real data; needs the KKBox data terms read and shown to allow it; never customer rows
+  data_terms:
+    read_by_user: false  # as of 2026-10-24
+    consequence: >-
+      nothing derived from KKBox (a number, a model file, an aggregate, a screenshot of
+      a customer row) is uploaded or hosted; (b) and (c) stay listed as needing the terms
+  phase_9: closed with two Done-when items not done by the user's choice (waived, never met)  # the under-a-minute test and the demo video
+  never: [public URL, hosted dashboard, hosted API, uploaded model file, uploaded aggregate, Prefect Cloud, any third-party account]
+
+done_when:  # the phase plan's Phase 10 items, with how each is checked
+  shifted_replay_triggers_drift_alert:
+    check: R1 below; the shifted store's alert and the margin over the unshifted store
+  retraining_flow_runs_end_to_end:
+    check: R2 below; every task ends Completed, on synthetic data in CI and once on the 20% sample
+  fresh_machine_starts_stack_with_one_command:
+    check: >-
+      a fresh CI runner runs the one command of the demo profile and the R3 smoke marks pass;
+      a fresh clone on the user's Mac does the same, only with the user's Docker permission
+    command: "docker compose --profile demo up -d --wait"  # fixed here; the compose file is changed after this commit
+    limit: Linux x86 runner and one Mac; the demo profile serves synthetic data, not KKBox results
+  live_link_works:
+    check: not met as written, see A11
+
+amendments:
+  A11:
+    label: written at planning, before any Phase 10 code or result
+    amends: done_when.live_link_works  # the phase plan's item on a reachable hosted link
+    as_written: the phase plan asks for the dashboard and API on a free-tier VM or Hugging Face Spaces, with the link reachable
+    judged_as_written: NOT MET, by the user's choice of option (a); decided now, not after a result
+    replaced_by: >-
+      "the CI-built image and the demo profile start with one command" (the fresh-machine
+      item above), reported as a different check and never as the hosted link
+    wording: the docs never claim a hosted link; the word "live" appears only in its one registered sentence
+
+# --- R1: drift ------------------------------------------------------------------------------
+drift:
+  id: R1
+  date: "2026-10-24"
+  purpose: show that the mechanism raises an alert on a planted shift; it is not evidence that drift monitoring is effective in operation
+  tool: evidently  # version pinned in uv.lock; installed in the ops group only
+  compared:
+    features: the 46 primary features (features.spec.PRIMARY_FEATURES) minus tenure_days and registered_via
+    predictions: [p7, p30, p59]  # final probabilities; p59 is a demonstration
+    count: 47 columns  # 46 primary features - 2 never-used attributes + 3 predictions
+    never_compared: [age, gender, registered_via, tenure, city, tenure_days]  # never-used attributes: not a column of any drift report, body or tooltip
+    id_columns: none  # no customer ID in any drift output
+  reference:
+    features: P2 main rows at the fit months 2016-08-01 and 2016-09-01
+    predictions: P2 main rows at 2016-10-01 scored in batch by the registered model (a month the classifier was not fit on; part of it chose settings and calibrated)
+    note: the two references are different months; stated in the report beside the result
+  current: the replay's store after October 2016 (store date 2016-11-01), scored customers only
+  thresholds: >-
+    Evidently's defaults at the pinned version: no stattest, no threshold and no
+    drift-share argument is passed; the installed defaults are read and recorded in the log
+    at the first run, before any result is looked at. A reason to change one must be
+    registered before the first run.
+  alert: the dataset-level drift flag of the report (share of drifted columns at or above the library's default share)
+  unshifted_store:
+    run: replay of October 2016 as it is, into a Valkey database other than 0
+    reported: drifted-column share and which columns drifted, no pass mark
+    rule: if the unshifted store already raises the alert, that is reported at the top of the result
+  shift:
+    where: the October 2016 user_logs events only, in the producer, before the store sees them; transaction events are never touched
+    rule: total_secs multiplied by 0.5; num_25, num_50, num_75, num_985, num_100 and num_unq each halved and rounded down  # listening halved, the count of events unchanged
+    expected_to_move: the usage group (23 columns, 23 of 47 compared) and the predictions; not the transaction group
+    run: replay of October 2016 with the shift, into a Valkey database other than 0
+  sequence: >-
+    one replay held in Valkey at a time: the unshifted replay is run and its report
+    written, the user is asked to clear it, then the shifted replay is run; database 0 is
+    never touched; no replay is run without the user's Docker permission
+  pass_marks:
+    margin_rule:
+      statement: the drifted-column share of the shifted store exceeds the unshifted store's by at least 0.20
+      margin: 0.20  # my unvalidated choice
+      reason: >-
+        set before any run: about 10 of the 47 compared columns; the usage group alone is
+        23 columns, so a halving of listening should move many of them, while a margin
+        under about 4 columns would sit inside a month-to-month difference nobody has
+        measured here. It has no validation behind it and is not changed after a result.
+    alert_rule: the shifted store raises the alert
+    both_required: true
+    result_words: met only if both hold; otherwise "not met", with the shares, the columns and the largest and smallest column statistics
+    unshifted_alert_effect: if the unshifted store raises the alert, the alert rule alone is not evidence and the margin rule decides
+  batch_size_indicator:
+    what: events per replayed day (all three sources) against a band from the days of 2016-09
+    band: mean of the daily counts of 2016-09-01 to 2016-09-30 plus and minus 3 sample standard deviations
+    reported: the replayed days outside the band, with their counts
+    mark: none  # descriptive; a weekly pattern is not modelled and the band is crude
+    shift_effect: the halving changes no event count, so the indicator is expected equal in both replays
+  can_show: the statistics are computed, a planted shift of the registered size crosses the registered rule, the alert reaches the API and the Model health page, and how the 2016-11-01 store compares with the fit months
+  cannot_show: that the monitor catches drift in operation, how early it does, its false-alarm rate over time, that the thresholds are right, or that drift goes with lost accuracy
+  label: "Drift on replayed 2016 data: it demonstrates the mechanism, not that monitoring is effective in operation."  # fixed sentence for the docs, the API and the page
+  outcomes: none are read by the drift code; no 2017 data
+
+# --- R2: monthly retraining -----------------------------------------------------------------
+retrain:
+  id: R2
+  date: "2026-10-24"
+  orchestrator: prefect  # version pinned in uv.lock; ops group only
+  prefect:
+    mode: flows run in the same process on the local machine; no server, no deployment, no schedule, no Prefect Cloud, no API key
+    home: a folder under data/interim/ops (PREFECT_HOME)
+    schedule: "documented only: 0 3 1 * * (03:00 on the 1st of each month); no scheduler runs in this phase"
+  tasks: [labels, features, train, evaluate, register]  # in this order; a task that fails stops the flow
+  candidate:
+    what: the classifier c01 at 7 and 30 days with the registered hyperparameters, refit; no tuning
+    fit_rows: P2 main rows of 2016-08-01, 2016-09-01 and 2016-10-01
+    not_retrained: [dt01 survival model, the 59-day model, Platt calibration, the ordering fix]  # so the candidate cannot replace the served bundle of 8 files
+    registered_as: model name retention-candidate, alias candidate, in a separate tracking store under data/processed/kkbox/sample_020/ops
+    never: [move the alias serving, change retention-scoring, write mlruns/mlflow.db, replace a file the API reads]
+    registry_unchanged_check: mlruns/mlflow.db and every file under mlruns hashed before and after the flow, equal
+  evaluation:
+    month: 2016-11-01, P2 main rows
+    outcomes: 2016 outcomes only; the 30-day label with the data as of 2016-12-31 (snapshot + 30 + the 30-day renewal window); read through the existing outcome guard
+    compared: the raw classifier scores of the current model and the candidate on the same rows
+    metric: AUC at 30 days
+    rule: register the candidate only if the lower end of the 95% paired customer bootstrap interval of (candidate AUC minus current AUC) is above 0  # 1000 replicates, level 0.95, cluster customer, as configs/evaluation.yaml bootstrap
+    tie: a tie or an interval that includes 0 leaves the current model in place (the candidate is not registered)
+    also_reported: AUC at 7 days with the same interval (no mark), and the unchanged note that the interval covers which customers were in the month
+    seed: 20161001  # the project's bootstrap seed
+  month_use:
+    check_month_amendment: A12
+    note: >-
+      configs/evaluation.yaml reserves 2016-11-01 as the check month, never used to fit,
+      calibrate or test. A12 (below) registers its use here, before any result.
+  memory: the existing registered ceiling of 10 GB per step; swap read before and after; one run at a clean commit under caffeinate -i
+  runs:
+    synthetic: every task for real on the synthetic dataset (R3), in the CI smoke path and locally
+    sample_020: once, at the user's OK; the labels and features tasks peak near 7.8 GB and 4.7 GB (Phase 2 item 19), so the user is asked first whether they rebuild or are reused, and the report says which
+  label: "The comparison demonstrates the retraining mechanism only: one month decides it, and that month has a 7-day excess in its zero-paid group that is not explained."
+
+amendment_A12:
+  id: A12
+  date: "2026-10-24"
+  label: written at planning, before any Phase 10 result
+  amends: configs/evaluation.yaml check_month  # kept as registered; this entry governs the use in retrain.evaluation
+  rule: 2016-11-01 may be used once to compare the candidate with the current model, as registered in retrain.evaluation
+  after_the_run: 2016-11-01 is no longer an unseen month; any later use of it as an unseen month is refused in the docs
+  related: D-062 (the 7-day excess in the zero-paid group of 2016-11 is unexplained)
+  never: score-test, TestUnlock, any 2017 outcome, 2016-12 explained
+
+# --- R3: the synthetic dataset and the CI smoke test ---------------------------------------------
+synthetic:
+  id: R3
+  date: "2026-10-24"
+  purpose: let a fresh machine and CI start and test the stack without any KKBox file
+  seed: 20261024
+  size_cap:
+    customers: 3000
+    log_rows: 200000
+    total_files_bytes: 100000000  # 100 MB for everything the generator writes
+  not_fitted: >-
+    every distribution parameter is a constant set by hand and written in the generator
+    with the comment "set by hand"; none is computed from, copied from or tuned against a
+    KKBox file, table, report or model; the generator opens no path under data/raw,
+    data/interim or data/processed/kkbox (a test fails if it does) and imports none of the
+    pipeline's data readers
+  shape: the same table names and columns as the KKBox files the pipeline reads (transactions, user_logs, members), so the pipeline code runs unchanged
+  location: data/synthetic/ only; never a path the KKBox sample uses
+  labelled:
+    files: every file the generator writes sits beside a SYNTHETIC marker file holding the sentence below, and its file names start with "synthetic_"
+    sentence: "Synthetic data generated by hand-set rules; it is not KKBox data and says nothing about KKBox customers."
+    outputs: every report, model file, API answer, dashboard page and screenshot made from it carries the word "synthetic" in its label or banner
+    metrics: every metric computed on it is labelled synthetic and is never quoted beside a KKBox figure
+  customer_ids: random strings from the seed; not a hash or a pattern of any KKBox ID
+
+smoke:
+  id: R3
+  job_ceiling_minutes: 10  # my unvalidated choice; the job fails if it takes longer
+  runs_when:
+    workflow: .github/workflows/ops.yml  # separate from ci.yml; the existing ci.yml is not changed by this key
+    triggers:
+    - push to main
+    - pull request that changes Dockerfile, docker-compose.yml, the synthetic generator or its script, or configs/ops.yaml
+    never: every commit
+  jobs:
+    - image build (no push, no registry login)
+    - smoke on synthetic data
+  marks:
+    - GET /health answers 200 and ready with the synthetic store date
+    - POST /score for a known synthetic customer answers status scored and the registered fields
+    - the number of customers GET /at-risk reports equals the number the generator says are scored
+    - GET /summary answers 200 with the synthetic label
+    - the response scan finds 0 never-used words in every body
+  ci_time_report: the added minutes of the first run of each job are reported after it, read from the run, not waited for
