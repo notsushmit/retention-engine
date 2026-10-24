@@ -227,3 +227,49 @@ amendment_A13:
     ops_group: installed only in the workflow .github/workflows/ops.yml; not in make setup and not in the main ci.yml job
     tests_needing_ops_group: 'skip in the main job with the loud reason "not checked: ops group not installed", and run in ops.yml'
     ops_yml_mark: the ops.yml job fails if any of those tests is skipped
+
+# --- A14: the demo and the one-command start are dropped (a new key; nothing above is edited) ----------------
+amendment_A14:
+  id: A14
+  date: "2026-10-25"
+  label: >-
+    written at the user's instruction after the step 4 finding (D-267) and before any step 5
+    code; registered values are not edited and this entry supersedes the ones it names
+  supersedes:
+    - amendment A11.replaced_by  # the substitute for the hosted-link item
+    - done_when.fresh_machine_starts_stack_with_one_command
+    - smoke.marks  # the five API marks
+    - dashboard.yaml ops_dashboard.api_host_in_container  # C8, kept as registered
+    - dashboard.yaml ops_dashboard.demo_label  # C8, kept as registered
+  dropped:
+    a11_substitute: >-
+      "the CI-built image and the demo profile start with one command" is dropped
+    why: >-
+      the scoring API starts only from the registered KKBox model files and pinned files
+      (eight model files, four pinned files, the registered store counts), so it cannot serve
+      a synthetic store; a separate demo service would be a second code path that differs from
+      the scoring API
+  live_link_works:
+    status: NOT MET  # as written, by the user's choice of hosting option (a); never recorded as met
+    substitute: none
+  not_run_dropped_with_A14:  # each is recorded as "not run: dropped with A14", never as met
+    - the R3 API smoke mark: GET /health answers 200 and ready with the synthetic store date
+    - the R3 API smoke mark: POST /score for a known synthetic customer answers scored with the registered fields
+    - the R3 API smoke mark: the number GET /at-risk reports equals the number the generator says are scored
+    - the R3 API smoke mark: GET /summary answers 200 with the synthetic label
+    - the R3 API smoke mark: the response scan finds 0 never-used words in every body
+    - the demo profile of the compose file and its one-command text
+    - the fresh-clone check on a CI runner and on the user's Mac
+    - the dashboard environment variable RETENTION_API_ALLOW_HOST (exact host "api")
+    - the dashboard environment variable RETENTION_DEMO_LABEL and its banner
+  stays:
+    - the synthetic dataset and its small-data path
+    - the CI smoke job on the synthetic path (the path and the ops tests; no API mark)
+    - the images job (the API image and the dashboard image build; this is evidence that they build, not that they start or serve)
+    - drift (R1), retraining (R2 and A12), the telemetry rule (A13)
+    - the model card and the docs
+    - hosting option (a): no public URL, no account, no token, no spend
+  public_wording:
+    rule: no tracked public file says "demo" or claims a hosted version, a live link or a one-command start
+    real_stack: the real stack needs the KKBox data; the README gives the setup steps for someone who has it
+    change_due: README.md, in step 7  # the sentence "There is no hosted demo." is the one to reword
