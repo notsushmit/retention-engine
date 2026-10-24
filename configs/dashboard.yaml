@@ -403,3 +403,58 @@ bucket_shares_brackets:
   amends: bucket_shares_beside.share  # kept as registered; this entry governs the format
   share: "(<share>)"  # for example 3,160 (1.9%); the same for the 59-day share in its muted style
   spacing: one space and a small gap between the number and the bracket; even spacing between the label, the number and the note
+
+# --- change C8: the operations panel, the container host and the demo label (a new key; no earlier entry is edited) ----
+ops_dashboard:
+  id: C8
+  date: "2026-10-24"
+  label: registered before any code that shows drift, retraining or the container host
+  amends: [source.api_url.loopback_only, source.calls, serve.address, pages.model_health]  # kept as registered; this entry governs
+
+  api_host_in_container:
+    env: RETENTION_API_ALLOW_HOST
+    accepted_value: api  # exact, case-sensitive; the docker compose service name of the API
+    default: unset  # loopback only, as registered
+    rule: >-
+      when the variable is exactly "api", the client also accepts the host "api" and no
+      other; when it is unset the client refuses every host but 127.0.0.1, localhost and
+      [::1]; any other value (empty, "API", "api.example.com", an address, a list) stops
+      the app at startup with an error and changes nothing else
+    url: RETENTION_API_URL may then be http://api:8000; the path and method rules of source.calls stay
+    tests: [loopback accepted with the variable unset, host "api" refused with it unset, host "api" accepted with it set to "api", every other value stops startup, a third host refused in both cases]
+    bind_in_container: the container runs streamlit on 0.0.0.0:8501 inside; the compose file publishes it only as 127.0.0.1:8501 on the host
+
+  calls_added: [GET /drift]  # source.calls plus this one; any other path or method is still refused
+
+  model_health_panel:
+    drift:
+      shows: [status, dataset_alert, drift_share, columns_compared, columns_drifted, margin_met, the names of the drifted columns, batch_size flagged days]
+      label: 'the /drift label verbatim, "Drift on replayed 2016 data: it demonstrates the mechanism, not that monitoring is effective in operation."'
+      not_monitored: 'when /model.drift is the registered "drift: not monitored (Phase 10)" the page shows that line and no number'
+      never: a customer ID, a per-customer value, a never-used attribute
+    last_retrain:
+      shows: [run_date, decision, candidate_auc_30, current_auc_30, interval]
+      label: the /model last_retrain label verbatim
+      none: when last_retrain is null the page shows the registered "none in this phase (Phase 10)" line and no number
+    tooltips: every number on the panel has a tooltip naming its API field and quoting registered text from configs/ops.yaml or configs/serving.yaml ops_endpoints; the existing tooltip test covers it
+    grade_59: p59 appears only inside the demonstration style
+
+  demo_label:
+    env: RETENTION_DEMO_LABEL
+    accepted_value: synthetic  # exact; any other non-empty value stops startup
+    default: unset
+    banner: "Synthetic data, not KKBox."  # an exact string, shown on every page directly under the replay banner when the variable is set
+    wording_exception: none  # the string holds no banned word
+    note: the variable is set only by the demo profile of the compose file; the profile that serves KKBox data never sets it
+    captures: the capture rules above are unchanged; no image of the At-risk list or the Customer profile is added to the repository for either profile
+
+  embedding_origins:
+    rule: >-
+      the origins Streamlit lists as allowed to embed the app (read from /_stcore/host-config
+      on the running app) are set explicitly in the app's config file to the loopback
+      origins only (http://127.0.0.1:8501 and http://localhost:8501); no cloud domain of
+      any hosting service is listed
+    check: the running app's host-config is read once after the change and the list is reported as found
+
+  wording: extends wording above; the new strings pass the same tests; "live" is not used
+  tests: [both host cases, the demo banner present only with the variable set, the panel with a drift body and with the absent body, the panel with last_retrain set and null, the wording and tooltip tests over the panel, the isolation test unchanged]
