@@ -3,15 +3,15 @@
 Both are inside the registered wording scope (configs/serving.yaml, wording.scope) and
 pass every wording rule. Every number in them comes from configs/serving.yaml, from a
 run report under the sample's serving folder, or from LISTED, where each figure names
-the run it comes from. The run reports are local; without them the number check prints
-"numbers NOT checked (local reports absent)" in the test output instead of passing
-quietly.
+the run it comes from. The run reports are local; without them the number check skips
+with the message "not checked: local run reports absent" instead of passing.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -199,14 +199,23 @@ def test_every_listed_figure_names_its_source_run_and_is_still_needed():
 
 
 @pytest.mark.parametrize("name", list(TEXTS))
-def test_every_number_comes_from_the_config_a_run_report_or_the_listed_set(name, capsys):
+def test_every_number_comes_from_the_config_a_run_report_or_the_listed_set(name):
     found = report_numbers()
     if found is None:
-        with capsys.disabled():
-            print(f"\n{name}: numbers NOT checked (local reports absent)")
-        return
+        pytest.skip("not checked: local run reports absent")
     sources = numbers(Path(SERVING_CONFIG).read_text()) | found | set(LISTED)
     assert numbers(TEXTS[name]) - sources == set()
+
+
+@pytest.mark.parametrize("name", list(TEXTS))
+def test_without_the_local_run_reports_the_number_check_skips_and_does_not_pass(
+    name, tmp_path, monkeypatch
+):
+    """Found after a CI run (D-265): the check passed in CI without checking a number."""
+    monkeypatch.setattr(sys.modules[__name__], "REPORTS", tmp_path)  # an empty folder
+    test = test_every_number_comes_from_the_config_a_run_report_or_the_listed_set
+    with pytest.raises(pytest.skip.Exception, match="^not checked: local run reports absent$"):
+        test(name)
 
 
 def test_a_number_with_no_source_is_caught():
