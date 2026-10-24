@@ -24,7 +24,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from retention.api.labels import DASH, LABELS
+from retention.api.labels import DASH, LABELS, OPS
 from retention.optimize.config import load_actions_config
 
 if LABELS.action_field != "highest_net_value_action":
@@ -605,9 +605,93 @@ class Calibration(Strict):
         return self
 
 
+class LastRetrain(Strict):
+    """The last retraining comparison (configs/serving.yaml ops_endpoints.model_additions)."""
+
+    run_date: date
+    decision: Literal.__getitem__(OPS.decisions)
+    candidate_auc_30: float
+    current_auc_30: float
+    difference: float
+    interval_low: float
+    interval_high: float
+    rows: int
+    month: str
+    synthetic: bool
+    serving_alias_unchanged: Literal[True]
+    label: Literal[OPS.retrain_label]
+
+
 class ModelInfo(ModelBlock):
     model_checksums_match: bool
     calibration: Calibration
-    drift: Literal[DASH.drift]
+    drift: Literal.__getitem__((DASH.drift, OPS.drift_see))
     retraining: Literal[DASH.retraining]
     grade_59: Literal[LABELS.grade_59]
+    last_retrain: LastRetrain | None = None
+
+
+class DriftColumn(Strict):
+    column: str
+    method: str
+    threshold: float
+    statistic: float
+
+
+class DriftCompared(Strict):
+    count: int
+    hidden_by_rule: int
+
+
+class DriftMargin(Strict):
+    required: float
+    unshifted_share: float
+    shifted_share: float
+    difference: float
+    margin_met: bool
+    shifted_alert: bool
+    unshifted_alert: bool
+    met: bool
+
+
+class DriftBatch(Strict):
+    band_low: float
+    band_high: float
+    reference_days: int
+    current_days: int
+    days_outside_band: dict[str, int]
+    mark: Literal["none"]
+
+
+class DriftBody(Strict):
+    """GET /drift with a valid drift file (configs/serving.yaml ops_endpoints.drift)."""
+
+    status: Literal["monitored"]
+    report_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reference: dict[str, Any]
+    current: dict[str, Any]
+    columns_compared: DriftCompared
+    columns_drifted: list[DriftColumn]
+    drift_share: float = Field(ge=0.0, le=1.0)
+    dataset_alert: bool
+    margin: DriftMargin
+    margin_met: bool
+    shifted: bool
+    batch_size: DriftBatch
+    library_defaults: dict[str, Any]
+    synthetic: bool
+    label: str
+
+    @model_validator(mode="after")
+    def registered_label(self) -> DriftBody:
+        want = OPS.drift_label + (" " + OPS.synthetic_sentence if self.synthetic else "")
+        if self.label != want:
+            raise ValueError("the drift label differs from the registered one")
+        return self
+
+
+class DriftAbsent(Strict):
+    """GET /drift without a usable drift file: no number, the registered sentence."""
+
+    status: Literal["not monitored", "unreadable"]
+    label: Literal[DASH.drift]

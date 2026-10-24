@@ -38,9 +38,9 @@ from typing import Any
 
 import pandas as pd
 
+from retention.api import ops, store
 from retention.api import schemas as sch
 from retention.api import scoring as sc
-from retention.api import store
 from retention.api.labels import DASH, LABELS
 
 REASON_HORIZONS = (7, 30)
@@ -314,7 +314,7 @@ def calibration(table: dict[str, Any]) -> sch.Calibration:
     )
 
 
-def model_body(ctx, checksums_match: bool) -> dict[str, Any]:
+def model_body(ctx, checksums_match: bool, ops_dir=None) -> dict[str, Any]:
     body = sch.ModelInfo(
         registered_model=ctx.registered_model,
         version=ctx.models.version,
@@ -322,8 +322,9 @@ def model_body(ctx, checksums_match: bool) -> dict[str, Any]:
         config_sha256=ctx.config_sha256,
         model_checksums_match=checksums_match,
         calibration=calibration(ctx.pinned.calibration),
-        drift=DASH.drift,
+        drift=ops.drift_line(ops_dir),
         retraining=DASH.retraining,
         grade_59=LABELS.grade_59,
+        last_retrain=ops.last_retrain(ops_dir),
     )
     return body.model_dump(mode="json")

@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from retention.api import schemas as sch
 from retention.api import service as svc
 from retention.api.config import load_serving
-from retention.api.labels import LABELS
+from retention.api.labels import DASH, LABELS, OPS
 from retention.optimize.config import load_actions_config
 from retention.optimize.report import wording_violations as phase7_violations
 
@@ -164,6 +164,36 @@ def dashboard_endpoints() -> list[str]:
     ]
 
 
+def ops_endpoints() -> list[str]:
+    """GET /drift and the /model additions, from configs/serving.yaml ops_endpoints."""
+    e = CFG["ops_endpoints"]
+    d, m = e["drift"], e["model_additions"]
+    return [
+        "### GET /drift, and two additions to GET /model",
+        "",
+        "GET /drift takes no parameter (anything else is a 422) and needs nothing from the store. "
+        f"It serves {d['source']}; the file is not pinned, so the body carries its own SHA-256 as "
+        "`report_sha256`. Without a usable file it answers 200 with status `not monitored` (file "
+        "missing) or `unreadable` (too big, not valid, naming a never-used word or holding a "
+        f'customer-ID-shaped string) and the sentence "{DASH.drift}", and no number. A column '
+        "whose name holds a never-used word is removed before the body is built and counted in "
+        "`hidden_by_rule`; the never-used attributes are never compared. Every body carries "
+        f'"{d["label"]}" The file is written by the drift run; it holds no customer ID, no '
+        "per-customer value and no outcome.",
+        "",
+        "GET /model carries two additions. `drift` reads "
+        f'"{OPS.drift_see}" when a valid drift file is present and "{DASH.drift}" otherwise. '
+        "`last_retrain` is null until the retraining flow has written its file, and then holds "
+        f"the run date, the decision ({' or '.join(repr(x) for x in OPS.decisions)}), the "
+        "30-day AUC of the candidate and of the current model with the interval of their "
+        "difference, and the statement that the serving alias is unchanged, with "
+        f'"{m["label"]}"',
+        "",
+        f"The ops folder is mounted read-only ({e['mounts']}).",
+        "",
+    ]
+
+
 # --- schema field lists --------------------------------------------------------------------------
 
 
@@ -256,6 +286,7 @@ def build() -> str:
         f'event reads "{LABELS.event_label}".',
         "",
         *dashboard_endpoints(),
+        *ops_endpoints(),
         "## Response fields",
         "",
     ]
@@ -268,6 +299,7 @@ def build() -> str:
         ("GET /summary", sch.Summary),
         ("GET /plans", sch.Plans),
         ("GET /model", sch.ModelInfo),
+        ("GET /drift", sch.DriftBody),
         ("GET /health", svc.Health),
         ("Error bodies", sch.ErrorBody),
     ):

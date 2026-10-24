@@ -227,3 +227,45 @@ def load_dashboard_labels(cfg: dict[str, Any] | None = None, labels: Labels = LA
 
 
 DASH = load_dashboard_labels()
+
+
+@dataclass(frozen=True)
+class OpsLabels:
+    """The registered fixed strings of GET /drift and the /model additions (ops_endpoints)."""
+
+    drift_label: str
+    drift_absent: str  # the sentence an absent drift file answers with
+    drift_see: str  # /model.drift when a valid drift file is present
+    synthetic_sentence: str
+    retrain_label: str
+    decisions: tuple[str, ...]
+
+
+QUOTED = re.compile(r'"([^"]+)"')
+
+
+def load_ops_labels(cfg: dict[str, Any] | None = None) -> OpsLabels:
+    c = cfg if cfg is not None else load_serving()
+    e = c["ops_endpoints"]
+    ops = yaml.safe_load(Path("configs/ops.yaml").read_text())
+    d, m = e["drift"], e["model_additions"]
+    if d["label"] != ops["drift"]["label"] or m["label"] != ops["retrain"]["label"]:
+        raise ValueError("an ops_endpoints label differs from configs/ops.yaml")
+    absent = QUOTED.findall(d["absent"])
+    see = QUOTED.findall(" ".join(str(m["drift_field"]).split()))
+    synthetic = QUOTED.findall(d["synthetic"])
+    if len(absent) < 2 or not see or not synthetic:
+        raise ValueError("the registered ops_endpoints wording no longer fits its patterns")
+    return OpsLabels(
+        drift_label=d["label"],
+        drift_absent=absent[1],
+        drift_see=see[0],
+        synthetic_sentence=synthetic[0],
+        retrain_label=m["label"],
+        decisions=tuple(m["decision_values"]),
+    )
+
+
+OPS = load_ops_labels()
+if OPS.drift_absent != DASH.drift:
+    raise ValueError("the absent-drift sentence must be the registered /model drift line")

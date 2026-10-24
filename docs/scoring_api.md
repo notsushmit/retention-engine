@@ -63,6 +63,14 @@ The dashboard's aggregates. None takes a parameter (anything else is a 422) and 
 
 The step 8 latency figure was measured before the 1.5 GiB memory limit and before these three endpoints were added.
 
+### GET /drift, and two additions to GET /model
+
+GET /drift takes no parameter (anything else is a 422) and needs nothing from the store. It serves the file ops/drift_latest.json in the ops folder (R1 writes it); read at each call, at most 1 MB; the file is not pinned, so the body carries its own SHA-256 as `report_sha256`. Without a usable file it answers 200 with status `not monitored` (file missing) or `unreadable` (too big, not valid, naming a never-used word or holding a customer-ID-shaped string) and the sentence "drift: not monitored (Phase 10)", and no number. A column whose name holds a never-used word is removed before the body is built and counted in `hidden_by_rule`; the never-used attributes are never compared. Every body carries "Drift on replayed 2016 data: it demonstrates the mechanism, not that monitoring is effective in operation." The file is written by the drift run; it holds no customer ID, no per-customer value and no outcome.
+
+GET /model carries two additions. `drift` reads "drift: see GET /drift (replayed 2016 data; mechanism demonstration)" when a valid drift file is present and "drift: not monitored (Phase 10)" otherwise. `last_retrain` is null until the retraining flow has written its file, and then holds the run date, the decision ('registered as candidate' or 'current model left in place'), the 30-day AUC of the candidate and of the current model with the interval of their difference, and the statement that the serving alias is unchanged, with "The comparison demonstrates the retraining mechanism only: one month decides it, and that month has a 7-day excess in its zero-paid group that is not explained."
+
+The ops folder is mounted read-only (the ops folder (data/processed/kkbox/sample_020/ops, or its synthetic equivalent in the demo profile) read-only into the api container; nothing else under data/).
+
 ## Response fields
 
 ### POST /score, scored
@@ -292,6 +300,57 @@ The step 8 latency figure was measured before the 1.5 GiB memory limit and befor
 - `drift`
 - `retraining`
 - `grade_59`
+- `last_retrain`
+  - `run_date`
+  - `decision`
+  - `candidate_auc_30`
+  - `current_auc_30`
+  - `difference`
+  - `interval_low`
+  - `interval_high`
+  - `rows`
+  - `month`
+  - `synthetic`
+  - `serving_alias_unchanged`
+  - `label`
+
+### GET /drift
+
+- `status`
+- `report_sha256`
+- `reference`
+- `current`
+- `columns_compared`
+  - `count`
+  - `hidden_by_rule`
+- `columns_drifted`
+  - `column`
+  - `method`
+  - `threshold`
+  - `statistic`
+- `drift_share`
+- `dataset_alert`
+- `margin`
+  - `required`
+  - `unshifted_share`
+  - `shifted_share`
+  - `difference`
+  - `margin_met`
+  - `shifted_alert`
+  - `unshifted_alert`
+  - `met`
+- `margin_met`
+- `shifted`
+- `batch_size`
+  - `band_low`
+  - `band_high`
+  - `reference_days`
+  - `current_days`
+  - `days_outside_band`
+  - `mark`
+- `library_defaults`
+- `synthetic`
+- `label`
 
 ### GET /health
 

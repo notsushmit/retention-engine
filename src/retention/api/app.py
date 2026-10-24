@@ -1,5 +1,5 @@
-"""The scoring API: GET /health, POST /score, GET /at-risk and GET /alerts, and the
-dashboard's GET /summary, /plans and /model.
+"""The scoring API: GET /health, POST /score, GET /at-risk and GET /alerts, the
+dashboard's GET /summary, /plans and /model, and GET /drift (ops_endpoints).
 
 configs/serving.yaml, contract, api, step5 and dashboard_endpoints.
 
@@ -26,7 +26,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from retention.api import alerts, at_risk, dashboard, store
+from retention.api import alerts, at_risk, dashboard, ops, store
 from retention.api import schemas as sch
 from retention.api import service as svc
 
@@ -117,6 +117,11 @@ def create_app(
         ctx, r = request.app.state.ctx, request.app.state.valkey
         t = svc.ready_date(ctx, r)
         return JSONResponse(status_code=200, content=dashboard.plans_body(ctx.pinned.summary, t))
+
+    @app.get("/drift", response_model=sch.DriftBody | sch.DriftAbsent)
+    def get_drift(request: Request) -> JSONResponse:
+        no_parameters(request, "/drift")
+        return JSONResponse(status_code=200, content=ops.drift_body())
 
     @app.get("/model", response_model=sch.ModelInfo)
     def get_model(request: Request) -> JSONResponse:
