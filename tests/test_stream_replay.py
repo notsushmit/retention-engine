@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import duckdb
 import pytest
 
+from id_search import assert_no_ids
 from retention.api import __main__ as api_cli
 from retention.api import store
 from retention.data.clean import _build_transactions, _load_transactions
@@ -64,7 +65,7 @@ def test_cancel_ids_counts_only(tmp_path):
         "by_word": {"age": 1},
     }
     text = json.dumps(report)
-    assert not any(m in text for m in ("x/age+01", "c1", "c2", "c3", "n/city+02"))
+    assert_no_ids(text, ("x/age+01", "c1", "c2", "c3", "n/city+02"), "the cancel report")
 
 
 # --- one replay ----------------------------------------------------------------------------------
