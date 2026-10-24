@@ -10,13 +10,13 @@ Every page carries the same frame: the application name in a header bar, the rep
 
 | Page | API calls | What it shows |
 | --- | --- | --- |
-| Overview | `GET /health`, `GET /summary`, `GET /alerts`, `GET /at-risk` | the expected lapse count in days 1 to 7 as the page's big number; the three expected counts (days 1 to 7, 8 to 30, and 31 to 59 as a demonstration) beside the share of customers expiring more than 30 days ahead; one chart with two panels (7 and 30 days) of the first reason group among the 1,000 customers most at risk; then two tabs, "Alerts" (the knowable trend alerts with their three labels) and "Top 20 at risk" |
+| Overview | `GET /health`, `GET /summary`, `GET /alerts`, `GET /at-risk` | the expected lapse count in days 1 to 7 as the page's big number; the three expected counts (days 1 to 7, 8 to 30, and 31 to 59 as a demonstration), each with its share of the scored customers, beside the share of customers expiring more than 30 days ahead; one chart with two panels (7 and 30 days) of the first reason group among the 1,000 customers most at risk; then two tabs, "Alerts" (the knowable trend alerts with their three labels) and "Top 20 at risk" |
 | At-risk list | `GET /at-risk` | the ranking at 7, 30 or 59 days in the API's order, the auto_renew and in_plan filters, pages of up to 1,000 rows and a CSV of the displayed rows with the store date and horizon |
 | Customer profile | `POST /score` | the three probabilities (the 59-day one as a demonstration), the two reasons, expected paid days and the action block with every label; the outside-population and not-active answers as served |
 | Action planner | `GET /plans` | the plans precomputed in Phase 7 for the store's date at every registered budget level, the strategy comparison with its registered caption and the random strategy's spread; nothing calls an optimizer |
 | Model health | `GET /health`, `GET /model` | the model version, the eight file hashes, the config hash and the calibration table before and after the ordering fix at 7 and 30 days; "drift: not monitored (Phase 10)" |
 
-The three expected counts come from the final probabilities of the scored customers only: the sum of p7, of p30 - p7 and of p59 - p30. No survival curve is used.
+The three expected counts come from the final probabilities of the scored customers only: the sum of p7, of p30 - p7 and of p59 - p30. No survival curve is used. Each share is the expected count divided by the number of scored customers (C5): an expected share, not a share of named people.
 
 Every action carries the tag "assumed effect", the full scenario, "The plan is unstable under 5 of 11 variants." and "No KKBox effect estimate exists; every effect is an assumption." Every 59-day figure is muted, outlined with a dashed line and badged "demonstration"; it is never a metric card.
 
@@ -36,6 +36,7 @@ The dashboard accepts `?capture=1`. In that mode the Overview leaves out its top
 
 - C1, found after a result: the first `/summary` call on 2016-11-01 showed one reason group at 7 days and three at 30 days, so the planned heatmap was replaced by the bars on the Overview, the page "What the model sees in at-risk customers" was dropped (five pages remain), and the generated sentences name the leading group.
 - C2: the conditions set when the dashboard code was approved (capture mode, the accent as a fill only, the Overview layout, tooltips from registered text only, the wording of the several-groups sentence). Registered before any dashboard code; not a change made after a result.
+- C5: each bucket's share of the scored customers, at the user's request after the docs were written.
 - C3 and C4: the application name, "Retention Decision Engine", first at the top of every page and then in a header bar, at the user's request after the first local run.
 - Found after a run, the first local run against the stack (commit 8fb8960): the tile showing 22% was labelled "Outside the population" although it counts only the customers expiring more than 30 days ahead; it now reads "Expiring more than 30 days ahead". Four captions that started a registered lower-case text after a full stop now introduce it ("Plan fields:", "Action block:", "Comparison caption:", "Calibration:", "Note:").
 - Found after the same run, later commits: the planner's end labels are spread to a minimum gap; every table shows thousands separators and fixed decimals; the Overview's bucket figures sit in one row; the Deploy button is hidden while the main menu stays; one API client is shared by every browser session; the paid-days name is shown once; the At-risk list states that plan actions appear only where their net value is positive under the assumed effect.

@@ -60,3 +60,4 @@
 /* Streamlit's Deploy button (developer mode shows it on localhost). A Streamlit selector:
    it may break on an upgrade (tests/test_dashboard_style.py checks the rule is here). */
 [data-testid="stAppDeployButton"] { display: none !important; }
+.re-demo59-note { font-size: 0.8rem; color: #514A40; }

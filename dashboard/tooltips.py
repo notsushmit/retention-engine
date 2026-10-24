@@ -41,6 +41,7 @@ def catalog(s: Settings | None = None) -> dict[str, str]:
             f"/summary buckets.days_31_59: {b['days_31_59']}; {b['label']}; "
             "every 59-day probability is a demonstration."
         ),
+        "bucket_share": s.raw["bucket_shares"]["tooltip"],
         "outside": f"/summary counts: {flat(c['outside_share_of_active'])}. {c['outside_label']}",
         "scored": "/summary counts.scored: customers with a score at the store's date.",
         "not_active": f"/summary counts.not_active: {inactive}.",

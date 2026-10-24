@@ -95,14 +95,24 @@ def number(label: str, value: str, help: str) -> None:
     st.metric(label, value, help=help)
 
 
-def demo59(label: str, value: str, help: str) -> None:
-    """A 59-day figure: muted, dashed outline, the demonstration badge; never st.metric."""
+def demo59(label: str, value: str, help: str, note: str | None = None) -> None:
+    """A 59-day figure: muted, dashed outline, the demonstration badge; never st.metric.
+    `note` adds a line inside the box (C5's share of the scored customers)."""
+    extra = f'<br><span class="re-demo59-note">{esc(note)}</span>' if note else ""
     st.markdown(
         f'<div class="re-demo59"><span class="re-label">{esc(label)}</span>'
-        f'<span class="re-badge">{DEMO}</span><br>{esc(value)}</div>',
+        f'<span class="re-badge">{DEMO}</span><br>{esc(value)}{extra}</div>',
         unsafe_allow_html=True,
         help=help,
     )
+
+
+def bucket_share(expected: float, population: int) -> str:
+    """C5: a bucket's expected count as a share of the scored customers, one decimal."""
+    c5 = S.raw["bucket_shares"]
+    d = int(c5["decimals"])
+    pct = "-" if not population else f"{100 * expected / population:.{d}f}%"
+    return c5["text"].replace("<share>", pct).replace("<scored>", f"{population:,}")
 
 
 # --- the action block -----------------------------------------------------------------------------

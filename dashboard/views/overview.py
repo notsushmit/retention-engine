@@ -32,13 +32,17 @@ def takeaway(summary: dict[str, Any]) -> str:
 
 def buckets(summary: dict[str, Any]) -> None:
     b, c = summary["buckets"], summary["counts"]
+    n = b["population"]
     cols = st.columns(3)
     with cols[0]:
         cp.number("Days 1 to 7", cp.count(b["days_1_7"]), tip("days_1_7"))
+        st.caption(cp.bucket_share(b["days_1_7"], n), help=tip("bucket_share"))
     with cols[1]:
         cp.number("Days 8 to 30", cp.count(b["days_8_30"]), tip("days_8_30"))
+        st.caption(cp.bucket_share(b["days_8_30"], n), help=tip("bucket_share"))
     with cols[2]:
-        cp.demo59("Days 31 to 59", cp.count(b["days_31_59"]["value"]), tip("days_31_59"))
+        value = b["days_31_59"]["value"]
+        cp.demo59("Days 31 to 59", cp.count(value), tip("days_31_59"), cp.bucket_share(value, n))
     tile, note = st.columns([1, 2])
     with tile:
         share = c["outside_share_of_active"]

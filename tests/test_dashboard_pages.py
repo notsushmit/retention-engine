@@ -408,3 +408,24 @@ def test_the_at_risk_list_says_plan_actions_appear_only_where_they_pay():
         "Under the assumed relative base effect, plan actions: none scores 0, so an action with "
         "negative net value is never chosen; unspent budget is reported, never forced." in text
     )
+
+
+# --- C5: each bucket's share of the scored customers ------------------------------------------
+
+
+def test_each_bucket_shows_its_share_of_the_scored_customers():
+    at = render("overview")
+    tail = " of the 169,673 scored customers, expected (a sum of probabilities, not a headcount)"
+    captions = [c.value for c in at.caption]
+    assert f"1.9%{tail}" in captions  # 3,159.76 / 169,673
+    assert f"2.9%{tail}" in captions  # 4,871.57 / 169,673
+    demo = next(m.value for m in md(at) if "re-demo59" in m.value)
+    assert f"2.0%{tail}" in demo and "demonstration" in demo  # 3,408.13 / 169,673
+    assert not any("%" in m.value for m in at.metric if m.label.startswith("Days"))
+
+
+def test_the_bucket_share_uses_one_decimal_and_the_registered_text():
+    from dashboard import components as cp
+
+    assert cp.bucket_share(3159.7587096676675, 169673).startswith("1.9% of the 169,673")
+    assert cp.bucket_share(1.0, 0).startswith("- of the 0")
