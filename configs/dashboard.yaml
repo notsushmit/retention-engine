@@ -394,3 +394,12 @@ bucket_shares_beside:
   note_below: "of the <scored> scored customers, expected (a sum of probabilities, not a headcount)"  # small, under each bucket
   serif_roles_after: [the one big number per page, the Overview bucket shares]
   tooltip: bucket_shares.tooltip  # unchanged
+
+# --- change C7: the bucket shares in brackets (a new key; C6 kept) ------------------------------------
+bucket_shares_brackets:
+  id: C7
+  date: "2026-10-24"
+  label: the user's request after seeing C6 on the page, registered before the code
+  amends: bucket_shares_beside.share  # kept as registered; this entry governs the format
+  share: "(<share>)"  # for example 3,160 (1.9%); the same for the 59-day share in its muted style
+  spacing: one space and a small gap between the number and the bracket; even spacing between the label, the number and the note
