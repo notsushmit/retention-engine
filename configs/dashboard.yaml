@@ -381,3 +381,16 @@ bucket_shares:
   text: "<share> of the <scored> scored customers, expected (a sum of probabilities, not a headcount)"
   days_31_59: inside the demonstration box, in its muted style; never a metric card
   tooltip: "/summary buckets: the bucket's expected count / buckets.population (scored customers only)"
+
+# --- change C6: the bucket shares beside their numbers, in the serif (a new key; C5 kept) ----------
+bucket_shares_beside:
+  id: C6
+  date: "2026-10-24"
+  label: the user's request after seeing C5 on the page (the shares were hard to see), registered before the code
+  amends: [bucket_shares.where, bucket_shares.text, design.fonts.roles.serif_italic]  # kept as registered; this entry governs
+  share: right beside each bucket's number, as "<share>"
+  font: serif italic (Instrument Serif), bold, ink  # bold is synthesized: only the regular italic file is self-hosted
+  days_31_59: beside its number inside the demonstration box, serif italic, label_grey, not bold  # never the 7/30-day style
+  note_below: "of the <scored> scored customers, expected (a sum of probabilities, not a headcount)"  # small, under each bucket
+  serif_roles_after: [the one big number per page, the Overview bucket shares]
+  tooltip: bucket_shares.tooltip  # unchanged
