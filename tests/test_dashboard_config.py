@@ -17,6 +17,7 @@ REGISTRATIONS = {
     "7f1fd1e": "13f55f51a77bf6688ae416c56d41fa9686c0accca3c39eefe0fdd8d62eabfda9",  # C4
     "344398c": "fd1d6159422085f20098c4335e0fc5d4405e376be5e0e94d4b177cdb44da6303",  # C5
     "a0895b6": "a75e4efcad77bd06e7f09ee0834b40d2c0dd47120835ebffaf3e05958c2f89db",  # C6
+    "78f94dd": "26d4784ab4eeee217f15bd31d8189d0b3c71382106f228e113194def28321b0e",  # C7
 }
 
 

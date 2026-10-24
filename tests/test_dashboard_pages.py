@@ -429,10 +429,10 @@ def test_each_bucket_shows_its_share_beside_its_number():  # C5, C6
         ("Days 8 to 30", "4,872", "2.9%"),
     ):
         v = blocks[label].value
-        assert f'bucket-value">{number}<span class="re-bucket-share">{share}</span>' in v
+        assert f'bucket-value">{number} <span class="re-bucket-share">({share})</span>' in v
         assert note in v and blocks[label].proto.help  # 3,159.76 and 4,871.57 / 169,673
     demo = next(m.value for m in md(at) if "re-demo59" in m.value)
-    assert '3,408 <span class="re-demo59-share">2.0%</span>' in demo and "demonstration" in demo
+    assert '3,408 <span class="re-demo59-share">(2.0%)</span>' in demo and "demonstration" in demo
     assert note in demo
 
 

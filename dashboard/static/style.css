@@ -60,10 +60,10 @@
 /* Streamlit's Deploy button (developer mode shows it on localhost). A Streamlit selector:
    it may break on an upgrade (tests/test_dashboard_style.py checks the rule is here). */
 [data-testid="stAppDeployButton"] { display: none !important; }
-.re-demo59-note { font-size: 0.8rem; color: #514A40; }
+.re-demo59-note { font-size: 0.8rem; line-height: 1.4; color: #514A40; display: inline-block; margin-top: 0.5rem; }
 /* C6: the 7 and 30-day buckets, with each share beside its number in the bold serif.
    Bold is synthesized (only the regular italic file is self-hosted). */
-.re-bucket-label { font-size: 0.875rem !important; color: #090B0E; margin: 0 0 0.25rem 0 !important; }
+.re-bucket-label { font-size: 0.875rem !important; color: #090B0E; margin: 0 0 0.4rem 0 !important; }
 .re-bucket-value { font-size: 2.25rem !important; line-height: 1.2; color: #090B0E; margin: 0 !important; }
 .re-bucket-share {
   font-family: "Instrument Serif", serif;
@@ -71,14 +71,14 @@
   font-weight: 700;
   font-size: 2.25rem;
   color: #090B0E;
-  margin-left: 0.6rem;
+  margin-left: 0.2rem;
 }
-.re-bucket-note { font-size: 0.8rem !important; color: #514A40; margin: 0.35rem 0 0 0 !important; }
+.re-bucket-note { font-size: 0.8rem !important; line-height: 1.4; color: #514A40; margin: 0.5rem 0 0 0 !important; }
 .re-demo59-share {
   font-family: "Instrument Serif", serif;
   font-style: italic;
   font-weight: 400;
   font-size: 1.4rem;
   color: #514A40;
-  margin-left: 0.4rem;
+  margin-left: 0.2rem;
 }

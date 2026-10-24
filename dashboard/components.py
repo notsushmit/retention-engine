@@ -100,7 +100,7 @@ def demo59(
 ) -> None:
     """A 59-day figure: muted, dashed outline, the demonstration badge; never st.metric.
     `share` sits beside the value in the muted serif and `note` below it (C6)."""
-    beside = f' <span class="re-demo59-share">{esc(share)}</span>' if share else ""
+    beside = f' <span class="re-demo59-share">{esc(bracketed(share))}</span>' if share else ""
     below = f'<br><span class="re-demo59-note">{esc(note)}</span>' if note else ""
     st.markdown(
         f'<div class="re-demo59"><span class="re-label">{esc(label)}</span>'
@@ -114,6 +114,11 @@ def bucket_pct(expected: float, population: int) -> str:
     """C5: a bucket's expected count as a share of the scored customers, one decimal."""
     d = int(S.raw["bucket_shares"]["decimals"])
     return "-" if not population else f"{100 * expected / population:.{d}f}%"
+
+
+def bracketed(share: str) -> str:
+    """C7: the share as shown beside its number, in brackets."""
+    return S.raw["bucket_shares_brackets"]["share"].replace("<share>", share)
 
 
 def bucket_note(population: int) -> str:
@@ -130,8 +135,8 @@ def bucket(label: str, value: str, share: str, note: str, help: str) -> None:
     """A 7 or 30-day bucket: the number, its share beside it in the bold serif (C6), a note."""
     st.markdown(
         f'<div class="re-bucket"><p class="re-bucket-label">{esc(label)}</p>'
-        f'<p class="re-bucket-value">{esc(value)}'
-        f'<span class="re-bucket-share">{esc(share)}</span></p>'
+        f'<p class="re-bucket-value">{esc(value)} '
+        f'<span class="re-bucket-share">{esc(bracketed(share))}</span></p>'
         f'<p class="re-bucket-note">{esc(note)}</p></div>',
         unsafe_allow_html=True,
         help=help,
