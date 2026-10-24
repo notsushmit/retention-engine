@@ -137,10 +137,11 @@ def test_overview_order_big_number_buckets_chart_then_two_tabs():
     assert (
         "About 3,160 of 169,673 scored customers are expected to lapse in the next 7 days" in text
     )
-    assert [m.label for m in at.metric] == [
+    assert [m.label for m in at.metric] == ["Expiring more than 30 days ahead"]
+    blocks = [m.value for m in md(at) if "re-bucket" in m.value]
+    assert [re.search(r'bucket-label">([^<]+)<', v).group(1) for v in blocks] == [
         "Days 1 to 7",
         "Days 8 to 30",
-        "Expiring more than 30 days ahead",
     ]
     assert [t.label for t in at.tabs] == ["Alerts", "Top 20 at risk"]
     assert "At 7 days all 1,000 share renewal_timing as their first group" in text
@@ -172,6 +173,8 @@ def test_capture_mode_changes_nothing_else_on_the_overview():
     a, b = render("overview"), render("overview", capture=True)
     assert [m.value for m in a.metric] == [m.value for m in b.metric]
     assert [h.value for h in a.header] == [h.value for h in b.header]
+    buckets = [m.value for m in md(a) if "re-bucket" in m.value or "re-demo59" in m.value]
+    assert buckets == [m.value for m in md(b) if "re-bucket" in m.value or "re-demo59" in m.value]
 
 
 def test_a_summary_timeout_leaves_the_computing_state():
@@ -413,15 +416,34 @@ def test_the_at_risk_list_says_plan_actions_appear_only_where_they_pay():
 # --- C5: each bucket's share of the scored customers ------------------------------------------
 
 
-def test_each_bucket_shows_its_share_of_the_scored_customers():
+def test_each_bucket_shows_its_share_beside_its_number():  # C5, C6
     at = render("overview")
-    tail = " of the 169,673 scored customers, expected (a sum of probabilities, not a headcount)"
-    captions = [c.value for c in at.caption]
-    assert f"1.9%{tail}" in captions  # 3,159.76 / 169,673
-    assert f"2.9%{tail}" in captions  # 4,871.57 / 169,673
+    note = "of the 169,673 scored customers, expected (a sum of probabilities, not a headcount)"
+    blocks = {
+        re.search(r'bucket-label">([^<]+)<', m.value).group(1): m
+        for m in md(at)
+        if "re-bucket" in m.value
+    }
+    for label, number, share in (
+        ("Days 1 to 7", "3,160", "1.9%"),
+        ("Days 8 to 30", "4,872", "2.9%"),
+    ):
+        v = blocks[label].value
+        assert f'bucket-value">{number}<span class="re-bucket-share">{share}</span>' in v
+        assert note in v and blocks[label].proto.help  # 3,159.76 and 4,871.57 / 169,673
     demo = next(m.value for m in md(at) if "re-demo59" in m.value)
-    assert f"2.0%{tail}" in demo and "demonstration" in demo  # 3,408.13 / 169,673
-    assert not any("%" in m.value for m in at.metric if m.label.startswith("Days"))
+    assert '3,408 <span class="re-demo59-share">2.0%</span>' in demo and "demonstration" in demo
+    assert note in demo
+
+
+def test_the_59_day_share_stays_muted_and_the_others_use_the_bold_serif_in_ink():
+    css = Path("dashboard/static/style.css").read_text()
+    share = re.search(r"\.re-bucket-share \{([^}]*)\}", css).group(1)
+    assert '"Instrument Serif"' in share and "font-style: italic" in share
+    assert "font-weight: 700" in share and S.tokens["ink"] in share
+    demo = re.search(r"\.re-demo59-share \{([^}]*)\}", css).group(1)
+    assert "font-weight: 400" in demo and S.tokens["label_grey"] in demo
+    assert S.tokens["ink"] not in demo
 
 
 def test_the_bucket_share_uses_one_decimal_and_the_registered_text():

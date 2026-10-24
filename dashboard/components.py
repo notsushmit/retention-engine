@@ -95,24 +95,47 @@ def number(label: str, value: str, help: str) -> None:
     st.metric(label, value, help=help)
 
 
-def demo59(label: str, value: str, help: str, note: str | None = None) -> None:
+def demo59(
+    label: str, value: str, help: str, share: str | None = None, note: str | None = None
+) -> None:
     """A 59-day figure: muted, dashed outline, the demonstration badge; never st.metric.
-    `note` adds a line inside the box (C5's share of the scored customers)."""
-    extra = f'<br><span class="re-demo59-note">{esc(note)}</span>' if note else ""
+    `share` sits beside the value in the muted serif and `note` below it (C6)."""
+    beside = f' <span class="re-demo59-share">{esc(share)}</span>' if share else ""
+    below = f'<br><span class="re-demo59-note">{esc(note)}</span>' if note else ""
     st.markdown(
         f'<div class="re-demo59"><span class="re-label">{esc(label)}</span>'
-        f'<span class="re-badge">{DEMO}</span><br>{esc(value)}{extra}</div>',
+        f'<span class="re-badge">{DEMO}</span><br>{esc(value)}{beside}{below}</div>',
         unsafe_allow_html=True,
         help=help,
     )
 
 
-def bucket_share(expected: float, population: int) -> str:
+def bucket_pct(expected: float, population: int) -> str:
     """C5: a bucket's expected count as a share of the scored customers, one decimal."""
-    c5 = S.raw["bucket_shares"]
-    d = int(c5["decimals"])
-    pct = "-" if not population else f"{100 * expected / population:.{d}f}%"
-    return c5["text"].replace("<share>", pct).replace("<scored>", f"{population:,}")
+    d = int(S.raw["bucket_shares"]["decimals"])
+    return "-" if not population else f"{100 * expected / population:.{d}f}%"
+
+
+def bucket_note(population: int) -> str:
+    """C6: the line under each bucket, naming what the share is of."""
+    return S.raw["bucket_shares_beside"]["note_below"].replace("<scored>", f"{population:,}")
+
+
+def bucket_share(expected: float, population: int) -> str:
+    """The full C5 sentence (the share and what it is of), for tests and tooltips."""
+    return f"{bucket_pct(expected, population)} {bucket_note(population)}"
+
+
+def bucket(label: str, value: str, share: str, note: str, help: str) -> None:
+    """A 7 or 30-day bucket: the number, its share beside it in the bold serif (C6), a note."""
+    st.markdown(
+        f'<div class="re-bucket"><p class="re-bucket-label">{esc(label)}</p>'
+        f'<p class="re-bucket-value">{esc(value)}'
+        f'<span class="re-bucket-share">{esc(share)}</span></p>'
+        f'<p class="re-bucket-note">{esc(note)}</p></div>',
+        unsafe_allow_html=True,
+        help=help,
+    )
 
 
 # --- the action block -----------------------------------------------------------------------------
