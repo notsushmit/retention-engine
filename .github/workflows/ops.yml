@@ -1,0 +1,67 @@
+# Phase 10 operations checks (configs/ops.yaml: R3 smoke, A13 telemetry, A11 hosting (a)).
+# Separate from ci.yml, which does not install the ops group. No push to any registry, no secrets,
+# no account: the images are built and thrown away. Nothing here is hosted.
+name: ops
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - configs/ops.yaml
+      - configs/synthetic_kkbox.yaml
+      - pyproject.toml
+      - uv.lock
+      - src/retention/synthetic/**
+      - scripts/make_synthetic.py
+      - tests/test_synthetic.py
+      - tests/test_ops_*.py
+      - tests/ops_group.py
+      - Dockerfile
+      - Dockerfile.dashboard
+      - docker-compose.yml
+      - .dockerignore
+      - .github/workflows/ops.yml
+
+permissions:
+  contents: read
+
+env:
+  DO_NOT_TRACK: "1"  # A13: evidently and prefect send usage data unless this is set
+  PREFECT_SERVER_ANALYTICS_ENABLED: "false"
+  PREFECT_HOME: data/interim/ops/prefect
+  OPS_TESTS_MUST_RUN: "1"  # a test that needs the ops group fails here instead of skipping
+
+jobs:
+  images:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20  # my unvalidated choice; the API image took 369 s to build once on a Mac
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the API image
+        run: docker build -f Dockerfile -t retention-api:ci .
+      - name: Build the dashboard image
+        run: docker build -f Dockerfile.dashboard -t retention-dashboard:ci .
+      - name: Import check inside each image
+        run: |
+          docker run --rm --entrypoint python retention-api:ci -c "import retention.api.app"
+          docker run --rm --entrypoint python retention-dashboard:ci -c "import streamlit, httpx, yaml, dashboard.settings"
+      - name: Image sizes
+        run: docker image ls --format '{{.Repository}}:{{.Tag}} {{.Size}}' | grep '^retention-'
+
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10  # configs/ops.yaml smoke.job_ceiling_minutes (my unvalidated choice)
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # full history: the config tests read the registered commits
+      - uses: astral-sh/setup-uv@v10.3.0
+      - name: Install Python and the groups, ops included
+        run: |
+          uv python install 3.11
+          uv sync --group dev --group training --group api --group dashboard --group ops --locked
+      - name: Synthetic dataset through labels, features and a small classifier
+        run: uv run python -m retention.synthetic all
+      - name: Ops and synthetic tests
+        run: uv run pytest -rs tests/test_synthetic.py tests/test_id_search.py tests/test_ops_config.py tests/test_ops_group.py tests/test_ops_workflow.py
