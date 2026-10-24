@@ -2,6 +2,8 @@
 *
 !src/
 !configs/
+!dashboard/
+!.streamlit/
 !pyproject.toml
 !uv.lock
 !README.md
