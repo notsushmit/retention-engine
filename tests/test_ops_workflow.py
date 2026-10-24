@@ -98,10 +98,29 @@ def test_only_the_ops_workflow_installs_the_ops_group():
 def test_the_smoke_job_runs_the_synthetic_path_and_the_ops_tests():
     smoke = steps_text("smoke")
     assert "uv run python -m retention.synthetic all" in smoke
-    for t in ("tests/test_synthetic.py", "tests/test_ops_config.py", "tests/test_ops_group.py"):
+    for t in (
+        "tests/test_synthetic.py",
+        "tests/test_ops_config.py",
+        "tests/test_ops_group.py",
+        "tests/test_ops_drift.py",
+        "tests/test_ops_telemetry.py",
+    ):
         assert t in smoke
     checkout = workflow()["jobs"]["smoke"]["steps"][0]
     assert checkout["with"] == {"fetch-depth": 0}  # the config tests read the registered commits
+
+
+def test_the_smoke_job_runs_no_test_that_needs_valkey():
+    """The job has no Valkey service, and a skipped Valkey test fails a run under CI."""
+    run = [s["run"] for s in workflow()["jobs"]["smoke"]["steps"] if "pytest" in s.get("run", "")][
+        0
+    ]
+    files = re.findall(r"tests/test_\w+\.py", run)
+    assert files
+    for f in files:
+        text = Path(f).read_text()
+        assert not re.search(r"^@pytest\.mark\.valkey", text, re.M), f
+        assert not re.search(r"def test_\w+\([^)]*\bvalkey\b", text), f
 
 
 def test_the_workflow_says_no_registry_account_or_hosting():
