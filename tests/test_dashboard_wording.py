@@ -121,7 +121,7 @@ def test_every_tooltip_number_is_registered_and_the_tooltip_passes_the_rules(key
 
 def test_every_tooltip_names_its_api_field():
     for key, text in catalog().items():
-        assert re.search(r"/(summary|health|at-risk|score|plans|model|alerts)\b", text), key
+        assert re.search(r"/(summary|health|at-risk|score|plans|model|alerts|drift)\b", text), key
 
 
 def test_the_planner_caption_starts_with_the_registered_prefix():

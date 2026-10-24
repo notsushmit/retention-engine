@@ -16,7 +16,7 @@ import httpx
 
 from retention.api import schemas as sch
 from retention.api import service as svc
-from retention.api.labels import DASH, LABELS
+from retention.api.labels import DASH, LABELS, OPS
 
 NOV = date(2016, 11, 1)
 IDS = [f"fakeid{i:02d}AbCdEfGh" for i in range(25)]
@@ -241,7 +241,7 @@ def plans(t: date = NOV) -> dict[str, Any]:
     )
 
 
-def model() -> dict[str, Any]:
+def model(monitored: bool = False, last_retrain: dict | None = None) -> dict[str, Any]:
     cal = {
         7: (
             937,
@@ -282,11 +282,81 @@ def model() -> dict[str, Any]:
                     for h, c in cal.items()
                 ),
             ),
-            drift=DASH.drift,
+            drift=OPS.drift_see if monitored else DASH.drift,
             retraining=DASH.retraining,
             grade_59=LABELS.grade_59,
+            last_retrain=last_retrain,
         )
     )
+
+
+def drift(synthetic: bool = True, alert: bool = False) -> dict[str, Any]:
+    """A GET /drift body for a monitored run: 14 of 47 columns drifted (hand-made)."""
+    cols = [
+        sch.DriftColumn(
+            column=f"col_{k}", method="Wasserstein distance (normed)", threshold=0.1, statistic=0.4
+        )
+        for k in range(14)
+    ]
+    label = OPS.drift_label + (" " + OPS.synthetic_sentence if synthetic else "")
+    return dump(
+        sch.DriftBody(
+            status="monitored",
+            report_sha256="b" * 64,
+            reference={"features": "hand-made"},
+            current={"rows": 100},
+            columns_compared=sch.DriftCompared(count=47, hidden_by_rule=0),
+            columns_drifted=cols,
+            drift_share=14 / 47,
+            dataset_alert=alert,
+            margin=sch.DriftMargin(
+                required=0.2,
+                unshifted_share=2 / 47,
+                shifted_share=14 / 47,
+                difference=12 / 47,
+                margin_met=True,
+                shifted_alert=alert,
+                unshifted_alert=False,
+                met=alert,
+            ),
+            margin_met=alert,
+            shifted=True,
+            batch_size=sch.DriftBatch(
+                band_low=1.0,
+                band_high=2.0,
+                reference_days=31,
+                current_days=30,
+                days_outside_band={"20160915": 3},
+                mark="none",
+            ),
+            library_defaults={"evidently_version": "0.7.23"},
+            synthetic=synthetic,
+            label=label,
+        )
+    )
+
+
+def retrain() -> dict[str, Any]:
+    return dump(
+        sch.LastRetrain(
+            run_date=NOV,
+            decision=OPS.decisions[1],
+            candidate_auc_30=0.8123,
+            current_auc_30=0.8101,
+            difference=0.0022,
+            interval_low=-0.0011,
+            interval_high=0.0055,
+            rows=1000,
+            month="2016-11-01",
+            synthetic=True,
+            serving_alias_unchanged=True,
+            label=OPS.retrain_label,
+        )
+    )
+
+
+def not_monitored() -> dict[str, Any]:
+    return {"status": "not monitored", "label": DASH.drift}
 
 
 def scenario() -> sch.Scenario:
@@ -399,6 +469,8 @@ class FakeApi:
             return httpx.Response(200, json=plans())
         if path == "/model":
             return httpx.Response(200, json=model())
+        if path == "/drift":
+            return httpx.Response(200, json=not_monitored())
         if path == "/score":
             msno = json.loads(request.content)["msno"]
             if msno == OUT_ID:

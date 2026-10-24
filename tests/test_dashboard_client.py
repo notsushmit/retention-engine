@@ -39,7 +39,8 @@ def test_the_default_is_the_registered_loopback_url(monkeypatch):
     assert Client(transport=httpx.MockTransport(FakeApi())).base_url == "http://127.0.0.1:8000"
 
 
-def test_only_the_seven_registered_calls_are_allowed():
+def test_only_the_registered_calls_are_allowed():
+    """The seven of source.calls and C8's GET /drift (ops_dashboard.calls_added)."""
     assert sorted(S.calls) == sorted(
         [
             ("GET", "/health"),
@@ -49,6 +50,7 @@ def test_only_the_seven_registered_calls_are_allowed():
             ("GET", "/plans"),
             ("GET", "/model"),
             ("POST", "/score"),
+            ("GET", "/drift"),
         ]
     )
     c = client()

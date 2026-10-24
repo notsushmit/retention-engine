@@ -80,5 +80,8 @@ class Client:
     def model(self) -> dict[str, Any]:
         return self.call("GET", "/model")
 
+    def drift(self) -> dict[str, Any]:
+        return self.call("GET", "/drift")
+
     def score(self, msno: str) -> dict[str, Any]:
         return self.call("POST", "/score", json={"msno": msno})

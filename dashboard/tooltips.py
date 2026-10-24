@@ -34,6 +34,9 @@ def catalog(s: Settings | None = None) -> dict[str, str]:
     before_fix = flat(sv["contract"]["scored"]["reasons"]["with"])
     horizons = ", ".join(map(str, calib["horizons"]))
     knowable = sv["api"]["alerts"]["trend"]["knowable_rule"]
+    ops = s.ops
+    d, margin = ops["drift"], ops["drift"]["pass_marks"]["margin_rule"]
+    rt = ops["retrain"]["evaluation"]
     return {
         "days_1_7": f"/summary buckets.days_1_7: {b['days_1_7']}; {b['label']}.",
         "days_8_30": f"/summary buckets.days_8_30: {b['days_8_30']}; {b['label']}.",
@@ -76,6 +79,21 @@ def catalog(s: Settings | None = None) -> dict[str, str]:
         ),
         "model_files": f"/model files: {flat(sv['registry']['load'])}",
         "version": f"/model version: the version under the alias {sv['registry']['alias']}.",
+        "drift_share": (
+            f"/drift drift_share: drifted columns / compared columns ({d['compared']['count']}); "
+            f"the alert is the library's dataset flag: {flat(d['alert'])}."
+        ),
+        "drift_margin": f"/drift margin: {flat(margin['statement'])}.",
+        "drift_columns": (
+            f"/drift columns_drifted: {flat(d['thresholds'])} "
+            f"Compared: {d['compared']['count']}, the model's primary features and "
+            f"{', '.join(d['compared']['predictions'])}."
+        ),
+        "drift_batch": (
+            f"/drift batch_size: {flat(d['batch_size_indicator']['what'])}; "
+            f"{d['batch_size_indicator']['band']}."
+        ),
+        "retrain_auc": f"/model last_retrain: {rt['metric']}; {flat(rt['rule'])}.",
         "alert_rates": (f"/alerts trend: stored Phase 5 values; shown when {knowable}."),
     }
 

@@ -56,7 +56,13 @@ class Settings:
 
     @property
     def calls(self) -> tuple[tuple[str, str], ...]:
-        return tuple(tuple(c.split(" ", 1)) for c in self.raw["source"]["calls"])  # type: ignore[misc]
+        calls = [*self.raw["source"]["calls"], *self.raw["ops_dashboard"]["calls_added"]]  # C8
+        return tuple(tuple(c.split(" ", 1)) for c in calls)  # type: ignore[misc]
+
+    @property
+    def ops(self) -> dict[str, Any]:
+        """configs/ops.yaml, read on use (C8's panel quotes its registered text)."""
+        return read("ops.yaml")
 
     @property
     def timeout(self) -> float:
