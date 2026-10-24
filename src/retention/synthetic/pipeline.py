@@ -33,6 +33,7 @@ from retention.features.spec import PRIMARY_FEATURES
 from retention.labels.__main__ import run_clean, run_labels, run_quality_cmd, run_timeline
 from retention.labels.config import LabelConfig, parse_label_config
 from retention.models.classifier import Classifier
+from retention.models.frames import add_target
 from retention.models.protocol import Threads
 from retention.synthetic import SYNTHETIC_SENTENCE
 from retention.synthetic.generate import MARKER, generate
@@ -129,20 +130,56 @@ def training_rows(setup: Setup, snapshots: list[date], horizon: int) -> pd.DataF
     """P2 main rows (expiring within 30 days, paid or 100%-discount) with a known outcome."""
     out = setup.processed
     snaps = ", ".join(f"date '{s}'" for s in snapshots)
+    known = f"and churned_{horizon} is not null" if horizon in (7, 30) else ""
     lab = duckdb.sql(
-        f"""select msno, snapshot_date, churned_{horizon} as y
+        f"""select msno, snapshot_date, churned_7, churned_30, event_observed, days_to_event
         from read_parquet('{out}/labels.parquet')
         where snapshot_date in ({snaps}) and in_exp30
-          and segment in ('paid', 'discount100_only') and churned_{horizon} is not null"""
+          and segment in ('paid', 'discount100_only') {known}"""
     ).df()
+    lab = add_target(lab, horizon)[["msno", "snapshot_date", "y"]]
+    return lab.merge(feature_rows(setup, snapshots), on=["msno", "snapshot_date"], validate="1:1")
+
+
+def feature_rows(setup: Setup, snapshots: list[date], features: Path | None = None) -> pd.DataFrame:
+    """The primary features of the snapshots' rows (no outcome column is read here)."""
+    features = features or setup.processed / "features.parquet"
+    snaps = ", ".join(f"date '{s}'" for s in snapshots)
     cols = ", ".join(f'"{c}"' for c in PRIMARY_FEATURES)
-    feat = duckdb.sql(
-        f"select msno, snapshot_date, {cols} from read_parquet('{out}/features.parquet') "
+    return duckdb.sql(
+        f"select msno, snapshot_date, {cols} from read_parquet('{features}') "
         f"where snapshot_date in ({snaps})"
     ).df()
-    df = lab.merge(feat, on=["msno", "snapshot_date"], how="inner", validate="one_to_one")
-    df["y"] = df.y.astype(int)
-    return df
+
+
+def p2_main_keys(setup: Setup, snapshots: list[date]) -> pd.DataFrame:
+    """The (customer, snapshot) pairs of the P2 main population, from pre-snapshot columns only."""
+    snaps = ", ".join(f"date '{s}'" for s in snapshots)
+    return duckdb.sql(
+        f"""select msno, snapshot_date from read_parquet('{setup.processed}/labels.parquet')
+        where snapshot_date in ({snaps}) and in_exp30 and segment in ('paid', 'discount100_only')"""
+    ).df()
+
+
+def fit_models(setup: Setup) -> dict[int, Classifier]:
+    """One small classifier per configured horizon, fit on the fit snapshots."""
+    tr = setup.raw["training"]
+    fit = [date.fromisoformat(str(s)) for s in tr["fit_snapshots"]]
+    candidate = {
+        k: tr[k] for k in ("num_leaves", "n_estimators", "learning_rate", "min_child_samples")
+    }
+    models = {}
+    for h in tr["horizons"]:
+        clf = Classifier(
+            list(PRIMARY_FEATURES),
+            CATEGORICAL,
+            candidate,
+            FIXED,
+            Threads(int(tr["threads"])),
+            int(tr["seed"]),
+        )
+        models[int(h)] = clf.fit(training_rows(setup, fit, int(h)))
+    return models
 
 
 def train(setup: Setup) -> dict[str, Any]:
@@ -151,7 +188,6 @@ def train(setup: Setup) -> dict[str, Any]:
     tr = setup.raw["training"]
     fit = [date.fromisoformat(str(s)) for s in tr["fit_snapshots"]]
     score = date.fromisoformat(str(tr["score_snapshot"]))
-    columns = list(PRIMARY_FEATURES)
     report: dict[str, Any] = {
         "synthetic": True,
         "label": SYNTHETIC_SENTENCE,
@@ -164,18 +200,11 @@ def train(setup: Setup) -> dict[str, Any]:
         },
         "horizons": {},
     }
-    models = setup.processed / "models"
-    setup.mark(models)
-    for h in tr["horizons"]:
-        fit_rows = training_rows(setup, fit, h)
-        score_rows = training_rows(setup, [score], h)
-        candidate = {
-            k: tr[k] for k in ("num_leaves", "n_estimators", "learning_rate", "min_child_samples")
-        }
-        clf = Classifier(
-            columns, CATEGORICAL, candidate, FIXED, Threads(int(tr["threads"])), int(tr["seed"])
-        )
-        clf.fit(fit_rows)
+    models_dir = setup.processed / "models"
+    setup.mark(models_dir)
+    models = fit_models(setup)
+    for h, clf in models.items():
+        fit_rows, score_rows = training_rows(setup, fit, h), training_rows(setup, [score], h)
         p, unseen = clf.predict(score_rows)
         both = score_rows.y.nunique() == 2
         report["horizons"][str(h)] = {
@@ -185,11 +214,11 @@ def train(setup: Setup) -> dict[str, Any]:
             "score_events": int(score_rows.y.sum()),
             "auc_synthetic": float(roc_auc_score(score_rows.y, p)) if both else None,
             "unseen_levels": unseen,
-            "feature_columns": len(columns),
+            "feature_columns": len(PRIMARY_FEATURES),
         }
-        clf.booster.save_model(str(models / f"synthetic_classifier_{h}.txt"))
+        clf.booster.save_model(str(models_dir / f"synthetic_classifier_{h}.txt"))
     report["seconds"] = round(time.time() - t0, 1)
-    (models / "synthetic_train_report.json").write_text(json.dumps(report, indent=1) + "\n")
+    (models_dir / "synthetic_train_report.json").write_text(json.dumps(report, indent=1) + "\n")
     return report
 
 

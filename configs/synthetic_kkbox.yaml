@@ -45,10 +45,19 @@ labels:
 training:  # hand-set for a few thousand rows; not the registered KKBox classifier settings
   fit_snapshots: [2016-07-01, 2016-08-01]
   score_snapshot: 2016-09-01
-  horizons: [7, 30]
+  horizons: [7, 30, 59]  # 59: the third probability the drift report compares
   num_leaves: 7
   n_estimators: 60
   learning_rate: 0.1
   min_child_samples: 20
   seed: 20261024
   threads: 2
+
+drift:  # hand-set analogue of the registered KKBox replay (configs/ops.yaml, R1); synthetic only
+  reference_fit_snapshots: [2016-07-01, 2016-08-01]  # features: the fit months
+  reference_prediction_snapshot: 2016-09-01  # predictions: a month the classifiers were not fit on
+  current_snapshot: 2016-10-01  # the store date of the synthetic replay
+  shift_first_day: 2016-09-01  # listening halved in the month before the store date
+  shift_last_day: 2016-09-30
+  batch_reference_month: 2016-08  # daily event counts for the band
+  batch_current_month: 2016-09
