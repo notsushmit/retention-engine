@@ -23,7 +23,16 @@ IMAGES = load_serving()["step7_images"]
 PINS = load_serving()["step5"]["pins"] | load_serving()["dashboard_endpoints"]["pins"]
 COMPOSE = yaml.safe_load(Path("docker-compose.yml").read_text())
 DOCKERFILE = Path("Dockerfile").read_text()
-ALLOWED = ["src/", "configs/", "pyproject.toml", "uv.lock", "README.md"]
+# The API image copies src and configs only (test above); the dashboard image also copies the app.
+ALLOWED = [
+    "src/",
+    "configs/",
+    "dashboard/",
+    ".streamlit/",
+    "pyproject.toml",
+    "uv.lock",
+    "README.md",
+]
 
 
 # --- the compose file ---------------------------------------------------------------------------
