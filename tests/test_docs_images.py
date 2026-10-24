@@ -3,8 +3,11 @@ the four earlier charts at the top level and, under dashboard/, only the three c
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
+
+import pytest
 
 IMG = Path("docs/img")
 TOP = {
@@ -28,10 +31,31 @@ def files() -> set[str]:
 
 
 def test_docs_img_holds_only_the_registered_images():
-    allowed = TOP | {f"dashboard/{c}" for c in CAPTURES}
-    assert files() - allowed == set()
+    extra = {f for f in files() if not f.startswith("dashboard/")} - TOP
+    assert extra == set()
 
 
-def test_the_dashboard_folder_holds_only_the_three_captures():
+PAGES = ("overview", "planner", "model_health")
+NAME = re.compile(r"^(" + "|".join(PAGES) + r")(_\d+)?\.png$")
+MAGIC = {".png": b"\x89PNG\r\n\x1a\n", ".svg": b"<svg"}
+
+
+def test_the_dashboard_folder_holds_only_page_pngs():
     found = {f.removeprefix("dashboard/") for f in files() if f.startswith("dashboard/")}
-    assert found <= CAPTURES
+    assert {f for f in found if not NAME.match(f)} == set()
+    assert CAPTURES <= found
+
+
+@pytest.mark.parametrize("name", sorted(CAPTURES))
+def test_each_capture_is_really_a_png(name):
+    path = IMG / "dashboard" / name
+    assert path.read_bytes()[:8] == MAGIC[".png"]
+
+
+def test_every_image_file_matches_its_extension():
+    for f in files():
+        path = IMG / f
+        magic = MAGIC.get(path.suffix)
+        assert magic is not None, f
+        head = path.read_bytes()[:256]
+        assert (magic in head) if path.suffix == ".svg" else head.startswith(magic), f

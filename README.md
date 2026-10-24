@@ -1,126 +1,135 @@
 # Retention decision engine
 
-Predicts which subscribers will churn and when, explains why, estimates which retention action works for each customer, and allocates a retention budget. The primary data is the KKBox churn prediction challenge (WSDM Cup 2018).
+[![CI](https://github.com/notsushmit/retention-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/notsushmit/retention-engine/actions/workflows/ci.yml)
 
-A customer is anyone with at least one paid transaction or a full discount on a priced plan. Free trials and free promotional periods alone do not count.
+A churn-prediction and retention-planning project built on a replay of 2016 KKBox music-subscription data: a portfolio project, not a hosted service.
 
-Status: Phase 1 (data and churn labels).
+A subscription service loses customers every month, and a retention team has to decide who is likely to leave soon and who is worth contacting with a limited budget. This project estimates, for each paying customer, the chance that their membership lapses within 7 and 30 days (and within 59 days, as a demonstration only), shows what moved the model's number for that customer, and compares budget plans for three simple actions. It uses the KKBox churn prediction challenge data (WSDM Cup 2018) on a 20% customer sample, served through a scoring API, a replay stream and a five-page dashboard. Everything runs on recorded 2016 data replayed through the service, with one snapshot date, 2016-11-01. The KKBox data could not identify the effect of a discount or any other action, so every action value rests on assumed effects and is labelled as such.
 
-## Setup
+<p><img src="docs/img/dashboard/overview.png" alt="Dashboard Overview: expected lapses in three windows, each with its share of scored customers, and the reason groups the model lists first for the customers most at risk" width="100%"></p>
 
-Requires [uv](https://docs.astral.sh/uv/). uv installs Python 3.11 itself, so you don't need a system Python 3.11.
+*Overview: expected lapses by window and what the model sees in the 1,000 customers most at risk. Replayed 2016 data, one store date (2016-11-01); the 59-day window is a demonstration.*
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/img/dashboard/planner.png" alt="Action planner: precomputed budget plans and the strategy comparison" width="100%"></td>
+    <td width="50%"><img src="docs/img/dashboard/model_health.png" alt="Model health: model version, file hashes and the calibration table" width="100%"></td>
+  </tr>
+  <tr>
+    <td><em>Action planner: plans precomputed for the store date; every value rests on assumed effects.</em></td>
+    <td><em>Model health: the registered model's file hashes and its calibration on one month of 2016; drift is not monitored yet.</em></td>
+  </tr>
+</table>
+
+Page by page, with every caveat: [docs/dashboard.md](docs/dashboard.md).
+
+## Contents
+
+- [Headline results](#headline-results)
+- [Quick start](#quick-start)
+- [Architecture](#architecture)
+- [Tech stack](#tech-stack)
+- [How it was built](#how-it-was-built)
+- [Scoring service](#scoring-service)
+- [Limitations](#limitations)
+- [Full setup](#full-setup)
+- [Repository layout](#repository-layout)
+- [Data and licence](#data-and-licence)
+- [Acknowledgements](#acknowledgements)
+
+## Headline results
+
+| Result | Figure | Caveat | Source |
+| --- | --- | --- | --- |
+| 30-day discrimination of the LightGBM classifier, test month 2017-01 | AUC 0.8429 [0.8374, 0.8484], against 0.7687 for the strongest simple baseline | one test month; the interval covers which customers were in it, not month-to-month change | [model comparison](reports/model_comparison.md) |
+| Survival model against the classifier at 7 days | AUC difference -0.0339 in 2017-01 and -0.0527 in 2017-02 | the survival model was worse; its registered goal at 7 days was not met | [model comparison](reports/model_comparison.md) |
+| Replayed store against batch scoring | 169,673 scored customers, largest gap 0.0 | one store date (2016-11-01); over HTTP, 996 of 1,000 answers matched as written, and 1,000 of 1,000 only under amendment A10 | [serving parity](reports/serving_parity.md) |
+| Scoring latency over HTTP | p95 69.429 ms over 1,000 calls | one run on one Mac, before the 1.5 GiB memory limit and the dashboard endpoints; the 100 ms threshold is unvalidated | [serving parity](reports/serving_parity.md) |
+| Budget plan at 5,000 price units, 2016-11-01 | optimizer net value 5,313, against 3,995 for contacting the highest risk | assumed effects; the optimizer maximizes this quantity by design; the plan is unstable under 5 of 11 variants | [strategy backtest](reports/strategy_backtest.md) |
+
+## Quick start
+
+The repository holds code, configs and docs, not data. These commands assume the KKBox data and the models have been built locally (see [Full setup](#full-setup)).
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh   # once per machine
-make setup                                        # Python 3.11, dev and training dependencies, pre-commit hook
-make test                                         # ruff + pytest
+uv sync --group dev --group training --group api --group dashboard
+make up
+uv run python -m retention.api load-snapshot --snapshot 2016-11-01
+make dashboard
+make test
 ```
 
-On macOS, LightGBM and XGBoost need the OpenMP runtime: `brew install libomp` (on Linux they use the system libgomp).
+- `uv sync` needs [uv](https://docs.astral.sh/uv/); it installs Python 3.11 and every dependency from `uv.lock`.
+- `make up` needs Docker; it starts Valkey on 127.0.0.1:6379 and the scoring API on 127.0.0.1:8000.
+- `load-snapshot` needs the processed 20% sample and the registered models; Valkey stores nothing on disk, so after any restart the store is empty, and a load after the first one needs `--reload-reason "<why>"`.
+- `make dashboard` needs the API to be ready; it serves the dashboard on 127.0.0.1:8501 only.
+- `make test` runs ruff and pytest; tests that need the local data skip without it.
 
-Dependency groups, installed with `uv sync --group <name>`:
+## Architecture
 
-| Group | Contents | Needed from |
+```mermaid
+flowchart LR
+  raw["KKBox files (Kaggle)"] --> data["Data: download, sample, clean"]
+  data --> labels["Churn labels"]
+  labels --> features["Feature table"]
+  features --> models["Models: LightGBM classifier, discrete-time survival, Platt calibration"]
+  data --> trends["Trend alerts"]
+  features --> effects["Treatment-effect validation"]
+  models --> reasons["Reasons"]
+  models --> optimizer["Budget optimizer"]
+  models --> registry["MLflow registry"]
+  data --> replay["Replay stream"]
+  subgraph compose["Docker compose stack"]
+    valkey["Valkey store"]
+    api["Scoring API (FastAPI)"]
+  end
+  features --> valkey
+  replay --> valkey
+  registry --> api
+  valkey --> api
+  reasons --> api
+  optimizer --> api
+  trends --> api
+  api --> dashboard["Dashboard (Streamlit)"]
+```
+
+The raw KKBox files are downloaded from Kaggle, sampled to 20% of customers and typed. Churn labels are built from each customer's membership timeline, and a feature table describes each customer at each monthly snapshot using only rows dated before it. A LightGBM classifier gives the 7, 30 and 59-day probabilities (the 59-day one is a demonstration), a discrete-time survival model gives the shape of the curve used for value, and Platt calibration with an ordering fix makes the three probabilities consistent. The reasons come from the classifier's per-feature contributions; trend alerts come from change points in the weekly churn rate; the treatment-effect work validated its method on two public randomized datasets but found no usable KKBox effect, so the budget optimizer uses assumed effects. The models are registered in MLflow, and the scoring API, running beside a Valkey store in a Docker Compose stack, loads them by alias. Valkey also carries the replay stream that feeds recorded 2016 rows through the service. The dashboard reads only the scoring API.
+
+## Tech stack
+
+| Tool | Role | Where it is used |
 | --- | --- | --- |
-| core (base install) | DuckDB, pandas, pyarrow, Kaggle CLI, py7zr | Phase 0 |
-| `training` | scikit-learn, LightGBM, XGBoost, lifelines, scikit-survival, MLflow | Phase 3 |
-| `models` | `training` plus SHAP, UMAP, EconML, DiCE, ruptures, OR-Tools | Phases 4 to 7 |
-| `serving` | FastAPI, Redis, Streamlit, Evidently, Prefect | Phase 8 |
-| `dev` | pytest, ruff, pre-commit | Phase 0 |
+| Python 3.11 and uv | language; locked environments | everywhere; `pyproject.toml`, `uv.lock`, the `Dockerfile` |
+| DuckDB, pandas, NumPy, PyArrow | SQL over CSV and Parquet; tables | `src/retention/data`, `labels`, `features` and throughout |
+| Kaggle CLI, py7zr | downloading and extracting the competition files | `src/retention/data` |
+| LightGBM | the classifier and its per-feature contributions | `src/retention/models`, `explain`, `api` |
+| scikit-learn | baselines, calibration, propensity models, archetype clustering | `src/retention/models`, `explain` and the treatment-effect code |
+| lifelines, XGBoost | survival candidates (Cox, accelerated failure time) | `src/retention/models` |
+| SciPy | the HiGHS check of the optimizer's plans; trend statistics | `src/retention/optimize`, `trends` |
+| ruptures | change-point detection | `src/retention/trends` |
+| MLflow | run tracking and the model registry | `src/retention/models`, `src/retention/api/registry.py` |
+| FastAPI, Pydantic, Uvicorn | the scoring API and its response schemas | `src/retention/api` |
+| Valkey (redis client) | the scoring store and the replay stream | `src/retention/api/store.py`, `src/retention/stream`, `docker-compose.yml` |
+| Streamlit, Altair, httpx | the dashboard, its charts, its API client | `dashboard/` |
+| Docker Compose | the Valkey and API stack | `docker-compose.yml`, `Dockerfile` |
+| pytest, ruff, pre-commit, GitHub Actions | tests, linting, CI | `tests/`, `.pre-commit-config.yaml`, `.github/workflows/ci.yml` |
 
-## Kaggle API setup
+## How it was built
 
-1. Easiest: run `uv run kaggle auth login` and approve in the browser. The CLI caches the credentials and you have no token to manage. Then skip to step 3.
-2. Or use a token. Sign in at kaggle.com, open **Settings → API** (<https://www.kaggle.com/settings/api>) and generate a token. You get either an API token string or a legacy `kaggle.json`. Store it in one of these ways:
-   - **API token, file:** `mkdir -p ~/.kaggle && pbpaste > ~/.kaggle/access_token && chmod 600 ~/.kaggle/access_token`
-   - **Legacy key, file:** `mkdir -p ~/.kaggle && mv ~/Downloads/kaggle.json ~/.kaggle/ && chmod 600 ~/.kaggle/kaggle.json`
-   - **Environment:** `cp .env.example .env`, then uncomment `KAGGLE_API_TOKEN`, or `KAGGLE_USERNAME` and `KAGGLE_KEY`. `.env` is git-ignored and the Makefile loads it.
-3. Accept the competition rules while signed in: <https://www.kaggle.com/competitions/kkbox-churn-prediction-challenge/rules>. Downloads fail with 403 until you do.
-4. Check it works: `uv run kaggle competitions files -c kkbox-churn-prediction-challenge`.
-
-## Download the KKBox data
-
-```bash
-make data                       # download, extract, then a 20% customer sample as Parquet
-make data SAMPLE_FRACTION=0.5   # a bigger sample later; the 20% customers are all included
-make data SKIP_V1_LOGS=1        # skip the large v1 listening log (user_logs.csv)
-```
-
-What `make data` does (the file list is in [configs/kkbox.yaml](configs/kkbox.yaml)):
-
-1. **Download** each competition file into `data/raw/archives/.incoming/`. It moves to `data/raw/archives/` only once its size matches what Kaggle reports. An archive already there at the right size is skipped, and one at the wrong size stops the run (archives are never modified or deleted automatically). If a download stops growing for 120 s, it's killed and retried, up to 3 times, resuming from the partial file. Settings are in the config under `download`.
-2. **Extract** into `data/raw/csv/`. Files that already exist are skipped, so re-running is safe and never overwrites raw data.
-3. **Sample**: keep a customer when the first 8 hex digits of `md5(msno)`, mod 100, are below the sample percent. The same customers are chosen in every table, and smaller samples are subsets of larger ones. Output goes to `data/interim/kkbox/sample_<pct>/<table>.parquet`, with a `manifest.json` that gives rows, customers and date ranges for each table. Column types here are DuckDB's guesses. Phase 1 replaces them with explicit types and validation.
-
-Files:
-
-| File | Set | Contents |
+| Phase | What was built | Read more |
 | --- | --- | --- |
-| `train_v2.csv` | v2 | churn labels for March 2017 expiries |
-| `transactions_v2.csv` | v2 | payment transactions, refreshed |
-| `user_logs_v2.csv` | v2 | daily listening logs, refreshed |
-| `members_v3.csv` | v2 | member attributes |
-| `train.csv` | v1 | churn labels for February 2017 expiries |
-| `transactions.csv` | v1 | payment transaction history |
-| `user_logs.csv` | v1 | daily listening log history (the large one) |
-| `WSDMChurnLabeller.scala` | — | the official labelling script |
+| 0 | data download, a 20% customer sample, data-quality checks | [setup](docs/setup.md) |
+| 1 | the churn definition and labels, checked against the competition labels | [churn definition](docs/churn_definition.md) |
+| 2 | a leakage-safe feature table for every monthly snapshot | [features](docs/features.md) |
+| 3 | classifier, survival and baseline models, scored once on the test months | [model comparison](reports/model_comparison.md) |
+| 4 | per-customer reasons; churn archetypes were tried and none held up | [archetypes](docs/archetypes.md) |
+| 5 | change-point detection on the weekly churn rate, with exploratory alerts | [change points](docs/changepoints.md) |
+| 6 | treatment effects and counterfactuals; the method was checked on public randomized data, and no KKBox effect could be estimated | [effect validation](docs/uplift_validation.md), [causal assumptions](docs/causal_assumptions.md), [counterfactuals](docs/counterfactuals.md) |
+| 7 | the budget optimizer under assumed effects, with a strategy backtest | [strategy backtest](reports/strategy_backtest.md) |
+| 8 | the replay stream, the scoring API and the Docker stack | [scoring API](docs/scoring_api.md), [serving parity](reports/serving_parity.md) |
+| 9 | the dashboard | [dashboard](docs/dashboard.md) |
 
-Measured on 2026-10-09, on the full files:
-
-| File | Archive | Rows | Customers | Dates |
-| --- | --- | --- | --- | --- |
-| `transactions.csv` | 708 MB | 21,547,746 | 2,363,626 | transactions 2015-01-01 to 2017-02-28 |
-| `transactions_v2.csv` | 49 MB | 1,431,009 | 1,197,050 | transactions 2015-01-01 to 2017-03-31, 75% in March 2017 |
-| `user_logs.csv` | 7.14 GB (30.5 GB as CSV, never unpacked) | 392,106,543 | 5,234,111 | 2015-01-01 to 2017-02-28 |
-| `user_logs_v2.csv` | 686 MB | 18,396,362 | 1,103,894 | 2017-03-01 to 2017-03-31 |
-| `train.csv` | 34 MB | 992,931 | 992,931 | labels, churn rate 6.39% |
-| `train_v2.csv` | 33 MB | 970,960 | 970,960 | labels, churn rate 8.99% |
-
-The two listening logs join up with no gap and no overlap: every day from 2015-01-01 to 2017-03-31 is present. Disk use with the 20% sample is about 14 GB: 8.3 GB of archives, 3.6 GB of extracted CSVs (everything except `user_logs.csv`) and 1.9 GB of Parquet.
-
-`user_logs.csv` is never unpacked. `make data` streams it out of the archive and keeps only sampled customers. At 20% this takes about 7.5 minutes (measured 445 s) and writes a 1.6 GB Parquet file.
-
-All data stays under `data/`, which git ignores. The KKBox files are competition data and are not redistributed by this project.
-
-## Churn labels
-
-```bash
-make labels                        # all five stages for the sample made by `make data`
-uv run python -m retention.labels quality   # or one stage: clean, timeline, quality, labels, compare
-```
-
-Churn means no new subscription within 30 days (inclusive) after a membership expiry. The full definition, with the reasons for each choice, is in [docs/churn_definition.md](docs/churn_definition.md); every number that defines a label is in the `labels` block of [configs/kkbox.yaml](configs/kkbox.yaml).
-
-| Stage | Writes to `data/processed/kkbox/sample_<pct>/` | Does |
-| --- | --- | --- |
-| clean | `transactions`, `members`, `train`, `train_v2` (.parquet) | explicit types, strict date parsing, v1 + v2 union, row flags; structural errors stop the run |
-| timeline | `timeline`, `spells` | each customer's effective expiry after every row, and continuous memberships |
-| quality | `month_quality`, `snapshot_reliability` | monthly check for months with missing transactions; reliable / uncertain / unreliable |
-| labels | `labels` | one row per customer with coverage at each snapshot: time to churn, censoring, churn within 7 / 30 / 60 days |
-| compare | `label_comparison` | agreement with the competition labels, one reason code per disagreement |
-
-Every stage also writes its checks and counts to `validation.json`. On the 20% sample the five stages take about 5 minutes (305 s measured) and write about 410 MB.
-
-## Features
-
-```bash
-make features                      # features.parquet for every labelled snapshot (needs make labels)
-uv run python -m retention.features docs   # regenerate the feature dictionary from the registry
-```
-
-One row per customer and snapshot, keyed to the labels table; every feature for snapshot T reads only rows dated before T. The feature dictionary, with the window and null rule of every column, is in [docs/features.md](docs/features.md).
-
-## Budget optimizer
-
-```bash
-uv run python -m retention.optimize recount    # counts only: prices, customers without a usable price
-uv run python -m retention.optimize value      # dt01 refit with an exact reproduction check, value inputs
-uv run python -m retention.optimize plan       # every scenario and budget level, strategies, stability
-uv run python -m retention.optimize observed   # one read of 2016 outcomes per snapshot
-uv run python -m retention.optimize report     # reports/strategy_backtest.md from the logged runs
-```
-
-Chooses at most one action per customer (a reminder, an auto-renew prompt or a discount) to maximize the expected net value within a budget. Every effect, cost and margin is a labelled assumption in `configs/actions.yaml`; no KKBox effect of any action has been estimated. KKBox backtest figures are model estimates under assumed effects, not observed outcomes. The comparison with simpler targeting rules (highest risk, highest assumed uplift x value, random, reminder only, no action) is arithmetic on assumed effects, and the optimizer maximizes that quantity by design. The observed churn of each strategy's targeted customers says nothing about whether any action works. Each step runs once, at a clean commit; the results are in [reports/strategy_backtest.md](reports/strategy_backtest.md) once the steps have run.
+Every phase was registered before it ran. Pass marks, populations and settings were written to a config file and committed alone before any code or run they judge, and they were never edited after a result was seen. A mark that failed is reported as not met. When a rule turned out to be wrong, the change was added as a labelled amendment that says whether it was written before or after the result, and the original result stays on record; HTTP parity under amendment A10, written after the 996 of 1,000 result, is one example. Every number in a report or doc comes from a logged run, and tests check the public texts against those numbers and against the wording rules.
 
 ## Scoring service
 
@@ -150,7 +159,21 @@ Memory: the API container is limited to 1.5 GiB, my choice. After one filtered `
 
 Unverified: `ps` showed Docker's VM process at 9.83 GB resident, above the VM's 7.75 GiB, while free memory read 74% and swap 0, and this is not explained; the API image is listed at 1.47GB by `docker images` and at 322,050,115 bytes by `docker image inspect`, and the two sizes are not reconciled. The figures 672.4 MiB, 97.38 MB and 9.83 GB are console readings (docker stats, sysctl, ps) with no report written to disk.
 
-## Make targets
+## Limitations
+
+- The data is recorded 2016 KKBox data replayed through the service, with one store date (2016-11-01) and no daily dates. The dashboard labels every page "Replay of 2016 data, not real-time."
+- Plans exist for two dates only (2016-10-01 and 2016-11-01), and nothing is re-planned.
+- Every action effect is an assumption, because no KKBox discount effect was identified; the plan is unstable under 5 of 11 variants.
+- Every 59-day probability is a demonstration: no validation fold chose that model's settings.
+- Drift is not monitored, and the models are not retrained.
+- There is no hosted demo. Capture mode (`?capture=1`) hides customer IDs from screenshots but is not access control, so the dashboard must never be hosted with customer rows.
+- The scores cover only paying customers expiring within 30 days: the Overview tile "Expiring more than 30 days ahead" shows 22%: 51,692 of the 230,286 customers with coverage on 2016-11-01 get no score. With the trial-only and promo-only customers, the customers outside the population are 60,613 of the same 230,286, about 26%.
+
+## Full setup
+
+Prerequisites: macOS or Linux, [uv](https://docs.astral.sh/uv/), Docker (Docker Desktop on macOS), the OpenMP runtime on macOS (`brew install libomp`), and a Kaggle account that has accepted the KKBox competition rules.
+
+The data comes from Kaggle with the Kaggle CLI (`make data`); it is competition data, it is not redistributed here, and the KKBox data terms are not part of this repository. The detail (credentials, the download, the files, sizes and timings, the label and feature stages) is in [docs/setup.md](docs/setup.md).
 
 | Target | Does |
 | --- | --- |
@@ -163,34 +186,26 @@ Unverified: `ps` showed Docker's VM process at 9.83 GB resident, above the VM's 
 | `make up` | starts Valkey and the scoring API (docker compose), then prints `/health` |
 | `make down` | stops them |
 | `make dashboard` | serves the dashboard on 127.0.0.1:8501, reading only the API |
+| `make dashboard` | serves the dashboard on 127.0.0.1:8501, reading only the API |
 
-## Dashboard
+What each step needs: `make data` needs the Kaggle credentials and about 14 GB of disk for the 20% sample; the label, feature and model steps run on a laptop, each limited by a registered memory ceiling of 10 GB; `make up` needs Docker, with the API container limited to 1.5 GiB; every step runs once, at a clean commit.
 
-> Replay of 2016 data, not real-time.
+## Repository layout
 
-A Streamlit app with five pages that reads only the scoring API: `GET /health`, `/at-risk`, `/alerts`, `/summary`, `/plans` and `/model`, and `POST /score`. It has no store client and no data reader, and it reads no file under `data/`; a test fails if one appears. Pages, API calls, tooltips and every change since the plan: [docs/dashboard.md](docs/dashboard.md).
-
-```bash
-make up         # the scoring API on 127.0.0.1:8000 (load the snapshot as above)
-make dashboard  # the dashboard on 127.0.0.1:8501 only; RETENTION_API_URL must be a loopback address
+```
+configs/        registered settings and pass marks (one file per area)
+src/retention/  the pipeline, one package per stage: data, labels, features, models, explain, trends, the treatment-effect work, optimize, stream, api
+dashboard/      the Streamlit app, its theme and the self-hosted fonts
+tests/          pytest suite, including the wording and number checks of the public texts
+docs/           method and design notes, setup, the scoring API, the dashboard
+reports/        results generated from logged runs
+data/           local data only, ignored by git
 ```
 
-| Page | What it answers |
-| --- | --- |
-| Overview | how many scored customers are expected to lapse in days 1 to 7, 8 to 30 and 31 to 59 (a demonstration), the reason groups the model lists first among the 1,000 customers most at risk, the knowable trend alerts, and the top 20 at risk |
-| At-risk list | who is most at risk at 7, 30 or 59 days, with the auto_renew and in_plan filters and a CSV of the displayed rows |
-| Customer profile | one customer's three probabilities, two reasons, expected paid days and the labelled action block |
-| Action planner | the plans precomputed in Phase 7 for the store's date, per budget level, with the strategy comparison; nothing is re-planned |
-| Model health | the model version, its eight file hashes, the config hash and the calibration table before and after the ordering fix; drift is not monitored in this phase |
+## Data and licence
 
-![Overview, capture mode](docs/img/dashboard/overview.png)
+The KKBox files are competition data from Kaggle. They are not included in this repository and are not redistributed; anyone using them must accept the competition rules on Kaggle. No licence file has been added to this repository yet.
 
-![Action planner](docs/img/dashboard/planner.png)
+## Acknowledgements
 
-![Model health](docs/img/dashboard/model_health.png)
-
-The Overview tile "Expiring more than 30 days ahead" shows 22%: 51,692 of the 230,286 customers with coverage on 2016-11-01 expire more than 30 days ahead and get no score. It is not the whole population left out: with the trial-only (8,890) and promo-only (31) customers, the customers outside the population are 60,613 of the same 230,286, about 26%.
-
-Look: one cream background, near-black text, one orange accent used only as a fill for the leading at-risk item, and greys. The eight colours were sampled from a reference slide: background #F4EDE3, ink #090B0E, accent #FE5A00, rust #942A11 (orange text), card grey #1B222C, bar grey #40454B, body grey #413A31, label grey #514A40. The orange's contrast on the background is 2.71:1, so it is never used for text. The fonts are self-hosted, with no font service: Space Grotesk (headings and body), Instrument Serif italic (the one big number on each page, and the bucket shares on the Overview) and JetBrains Mono (small labels), each under the SIL Open Font License 1.1, whose text sits beside the font files in `dashboard/static/fonts/`.
-
-Captures: the screenshots above come from three pages only. The Overview is captured with `?capture=1`, which leaves out its top-20 table and the cancel events; the Action planner and Model health show no customer ID. The At-risk list and the Customer profile show customer IDs and are never captured; `scripts/capture_pages.py` refuses them. Capture mode is a convenience for screenshots, not access control: anyone who removes `?capture=1` sees the IDs again. The dashboard must never be hosted with customer rows.
+KKBox and Kaggle for the KKBox churn prediction challenge data (WSDM Cup 2018). The dashboard uses three self-hosted fonts, each under the SIL Open Font License 1.1: Space Grotesk (the Space Grotesk Project Authors), Instrument Serif (the Instrument Serif Project Authors) and JetBrains Mono (the JetBrains Mono Project Authors).

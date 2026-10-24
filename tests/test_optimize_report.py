@@ -184,10 +184,10 @@ def test_missing_caption_is_caught(run_dir):
 
 
 def readme_section() -> str:
-    text = Path("README.md").read_text()
-    m = re.search(r"^## Budget optimizer\n(.*?)(?=^## |\Z)", text, flags=re.S | re.M)
-    assert m, "README has no Budget optimizer section"
-    return m.group(0)
+    """The README's optimizer text. Since the README was restructured, the optimizer is
+    described across several sections (headline results, architecture, limitations), so
+    the whole README is checked."""
+    return Path("README.md").read_text()
 
 
 def test_readme_states_the_sentence_and_keeps_the_rules():

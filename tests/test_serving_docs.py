@@ -22,7 +22,7 @@ from retention.api.config import SERVING_CONFIG, load_serving
 WORDING = load_serving()["wording"]
 REPORTS = Path("data/processed/kkbox/sample_020/serving")
 README = Path("README.md").read_text()
-SECTION = README[README.index("## Scoring service") : README.index("## Make targets")]
+SECTION = README[README.index("## Scoring service") : README.index("## Limitations")]
 PARITY_REPORT = Path("reports/serving_parity.md").read_text()
 TEXTS = {"README Scoring service": SECTION, "reports/serving_parity.md": PARITY_REPORT}
 

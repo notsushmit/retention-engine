@@ -20,6 +20,10 @@ The three expected counts come from the final probabilities of the scored custom
 
 Every action carries the tag "assumed effect", the full scenario, "The plan is unstable under 5 of 11 variants." and "No KKBox effect estimate exists; every effect is an assumption." Every 59-day figure is muted, outlined with a dashed line and badged "demonstration"; it is never a metric card.
 
+## Look
+
+One cream background, near-black text, one orange accent used only as a fill for the leading at-risk item, and greys. The eight colours were sampled from a reference slide: background #F4EDE3, ink #090B0E, accent #FE5A00, rust #942A11 (orange text), card grey #1B222C, bar grey #40454B, body grey #413A31, label grey #514A40. The orange's contrast on the background is 2.71:1, so it is never used for text. The fonts are self-hosted, with no font service: Space Grotesk (headings and body), Instrument Serif italic (the one big number on each page, and the bucket shares on the Overview) and JetBrains Mono (small labels), each under the SIL Open Font License 1.1, whose text sits beside the font files in `dashboard/static/fonts/`.
+
 ## Tooltips
 
 Every number has a tooltip. Each tooltip names the API field it explains and quotes the calculation from registered text in `configs/` (dashboard.yaml, serving.yaml, actions.yaml); the connecting words add no number. `tests/test_dashboard_wording.py` checks that every number in a tooltip appears in a config and that every tooltip passes the wording rules.

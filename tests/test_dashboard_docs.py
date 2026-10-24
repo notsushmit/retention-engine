@@ -1,8 +1,10 @@
-"""The README "Dashboard" section and docs/dashboard.md (step 5 docs).
+"""The dashboard statements in the README and docs/dashboard.md (step 5 docs).
 
-Both pass every wording rule (the dashboard's two exact-string exceptions, each at most
-once). Every number comes from configs/ or from LISTED, where each figure names its
-source. The README's image links exist, and the statements the user asked for are there.
+Since the README was restructured, its dashboard statements are spread over the brief,
+the captions, the limitations and the acknowledgements, so the whole README is checked
+for them; its numbers and image links are checked in tests/test_readme.py. Both texts
+pass every wording rule (the dashboard's two exact-string exceptions, each at most once).
+Every number in docs/dashboard.md comes from configs/ or from LISTED.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ import pytest
 from test_dashboard_wording import check
 
 README = Path("README.md").read_text()
-SECTION = README[README.index("## Dashboard") :]
+SECTION = README
 DOC = Path("docs/dashboard.md").read_text()
 TEXTS = {"README Dashboard": SECTION, "docs/dashboard.md": DOC}
 
@@ -42,9 +44,8 @@ def test_each_text_passes_every_wording_rule(name):
     assert check(TEXTS[name]) == []
 
 
-@pytest.mark.parametrize("name", list(TEXTS))
-def test_every_number_comes_from_a_config_or_the_listed_set(name):
-    assert numbers(TEXTS[name]) - CONFIG_NUMBERS - set(LISTED) == set()
+def test_every_number_in_the_doc_comes_from_a_config_or_the_listed_set():
+    assert numbers(DOC) - CONFIG_NUMBERS - set(LISTED) == set()
 
 
 def test_every_listed_figure_is_still_used_and_right():
@@ -57,16 +58,6 @@ def test_every_listed_figure_is_still_used_and_right():
 
 def test_a_number_with_no_source_is_caught():
     assert numbers("about 41,999 customers") - CONFIG_NUMBERS - set(LISTED) == {"41999"}
-
-
-def test_the_readme_image_links_exist_and_are_the_three_captures():
-    links = re.findall(r"!\[[^\]]*\]\(([^)]+)\)", SECTION)
-    assert links == [
-        "docs/img/dashboard/overview.png",
-        "docs/img/dashboard/planner.png",
-        "docs/img/dashboard/model_health.png",
-    ]
-    assert all(Path(p).is_file() for p in links)
 
 
 @pytest.mark.parametrize(
@@ -106,9 +97,9 @@ def test_the_readme_latency_sentence_names_both_limits():
     assert "measured before the 1.5 GiB limit and before the dashboard endpoints" in README
 
 
-def test_every_token_named_in_the_readme_is_registered():
+def test_every_token_named_in_the_doc_is_registered():
     from dashboard.settings import load
 
     tokens = {v.upper() for v in load().tokens.values()}
-    named = {h.upper() for h in re.findall(r"#[0-9A-Fa-f]{6}\b", SECTION)}
+    named = {h.upper() for h in re.findall(r"#[0-9A-Fa-f]{6}\b", DOC)}
     assert named == tokens
