@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
 from datetime import date
 from pathlib import Path
 
@@ -18,6 +17,7 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
+from id_search import assert_no_ids
 from retention.api import dashboard as db
 from retention.api import schemas as sch
 from retention.api import scoring as sc
@@ -397,7 +397,6 @@ def test_model_reports_a_changed_model_file(make_client):  # noqa: F811
 
 
 ENDPOINTS = ("/summary", "/plans", "/model")
-HEX_RUN = re.compile(r"[0-9a-f]{32,}")  # a hash, not a name
 
 
 @pytest.mark.valkey
@@ -439,18 +438,7 @@ def test_no_body_of_the_three_names_a_never_used_attribute_or_a_customer(summary
     for path in ENDPOINTS:
         text = c.get(path).text
         assert never_used_hits(text) == [], path
-        # A SHA-256 is 64 hex characters; a short ID such as "c022" can sit inside one by chance
-        # (found after a CI run, D-265). Hashes are taken out; every other character is still
-        # searched, so an ID anywhere else in a body fails.
-        searched = HEX_RUN.sub(" ", text)
-        assert not any(m in searched for m in s.rows.msno), path
-
-
-def test_a_planted_id_is_found_and_one_inside_a_hash_is_not():
-    hashed = f'{{"config_sha256":"{"0" * 20}c022{"b" * 40}"}}'
-    assert HEX_RUN.sub(" ", hashed) == '{"config_sha256":" "}'
-    for leaked in ('{"x":"c022"}', '{"x":"id-c022-q"}', '{"x":"c022' + "f" * 8 + '"}'):
-        assert "c022" in HEX_RUN.sub(" ", leaked), leaked
+        assert_no_ids(text, s.rows.msno, path)
 
 
 def test_startup_is_refused_without_the_dashboard_pins(

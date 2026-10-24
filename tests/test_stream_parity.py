@@ -19,6 +19,7 @@ import pyarrow as pa
 import pytest
 import yaml
 
+from id_search import assert_no_ids
 from retention.api import __main__ as api_cli
 from retention.data.clean import _build_transactions, _load_transactions
 from retention.explain.contributions import SavedModel
@@ -196,7 +197,7 @@ def test_the_report_holds_no_customer_id(case):
     batch = planted(case.batch, "s-tie", "last_payment_method_id", 36)
     text = json.dumps(judge(case, batch=batch), default=str)
     ids = case.batch.column("msno").to_pylist()
-    assert not any(m in text for m in ids)
+    assert_no_ids(text, ids, "the parity report")
 
 
 # --- the command ---------------------------------------------------------------------------------
@@ -248,7 +249,7 @@ def test_the_command_writes_only_its_report_once_with_no_id(case, monkeypatch, t
     code = cli.stream_parity_cmd(args(), gather=gather)
     assert sorted(p.name for p in tmp_path.iterdir()) == ["stream_parity_2016-11-01.json"]
     text = (tmp_path / "stream_parity_2016-11-01.json").read_text()
-    assert not any(m in text for m in case.batch.column("msno").to_pylist())
+    assert_no_ids(text, case.batch.column("msno").to_pylist(), "the parity report file")
     assert json.loads(text)["registered_68_column_parity"].startswith("not met as written")
     assert code == 1  # the registered 230,286 rows are not the hand-made table's
     with pytest.raises(SystemExit, match="runs once"):

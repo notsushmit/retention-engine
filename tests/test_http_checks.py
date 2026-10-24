@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from id_search import assert_no_ids
 from retention.api import __main__ as cli
 from retention.api import http_checks as hc
 from retention.api.config import SERVING_CONFIG, file_sha256
@@ -375,7 +376,7 @@ def test_the_diagnosis_command_reads_only_runs_once_and_writes_no_id(quiet, serv
     assert report["store_keys_before"] == report["store_keys_after"] == keys == valkey.dbsize()
     assert report["customers"] == 12 and report["http_differs_from_host"] == 0
     text = (out / cli.HTTP_DIAGNOSIS_REPORT).read_text()
-    assert not any(m in text for m in hc.scored_ids(valkey))
+    assert_no_ids(text, hc.scored_ids(valkey), "the HTTP diagnosis report")
     with pytest.raises(SystemExit, match="runs once"):
         cli.http_diagnose_cmd(args(), client=c, ctx=c.app.state.ctx, r=valkey)
 

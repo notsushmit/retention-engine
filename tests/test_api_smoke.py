@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from id_search import assert_no_ids
 from retention.api import __main__ as cli
 from retention.api import service as svc
 from retention.api import smoke
@@ -73,7 +74,8 @@ def test_the_index_is_built_once_and_every_timing_is_recorded(start):
 def test_the_report_holds_no_customer_id(start, valkey):
     text = json.dumps(start())
     known = [m.decode() for m in valkey.smembers("rs:known")]
-    assert known and not any(m in text for m in known)
+    assert known
+    assert_no_ids(text, known, "the smoke report")
 
 
 def test_customers_are_chosen_by_the_fixed_rule(start, valkey):
