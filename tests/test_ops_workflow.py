@@ -104,6 +104,7 @@ def test_the_smoke_job_runs_the_synthetic_path_and_the_ops_tests():
         "tests/test_ops_group.py",
         "tests/test_ops_drift.py",
         "tests/test_ops_telemetry.py",
+        "tests/test_ops_real_drift.py",
     ):
         assert t in smoke
     checkout = workflow()["jobs"]["smoke"]["steps"][0]
