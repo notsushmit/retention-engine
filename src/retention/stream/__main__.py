@@ -9,6 +9,11 @@ new report. A registered run (no --bucket) is never rerun. Every replay appends 
 step to <report stem>_progress.jsonl as the step ends (D-232), so a stopped run leaves
 its step times and memory.
 
+drift-replay --db 1|2 [--shift]: one full-speed replay kept for the drift report (configs/ops.yaml,
+R1 and A15): database 1 unshifted, database 2 with the listening events halved. Refuses database
+0, a database that holds any key (it never overwrites a store; the user clears first), a dirty
+tree and a second run. Not a mark; the event count is reported against the registered one.
+
 stream-parity --db <replay database>: judge the registered feature and score parity of
 the replayed 2016-11-01 store (configs/serving.yaml, streaming.pass_marks, amendment
 A9): the stream feature table at step6.outputs.stream_features against features.parquet
@@ -333,6 +338,69 @@ def gather_replay(args) -> dict:
     }
 
 
+# --- the drift replays (configs/ops.yaml, R1 and A15) ---
+
+DRIFT_DATABASES = {False: 1, True: 2}  # unshifted -> database 1, shifted -> database 2
+
+
+def drift_tag(shift: bool) -> str:
+    return "shifted" if shift else "unshifted"
+
+
+def drift_report_name(shift: bool) -> str:
+    return f"drift_replay_{drift_tag(shift)}.json"
+
+
+def drift_table_path(shift: bool) -> Path:
+    registered = Path(load_serving()["step6"]["outputs"]["stream_features"])
+    return registered.with_name(f"{registered.stem}_drift_{drift_tag(shift)}.parquet")
+
+
+def check_drift_replay_args(args) -> None:
+    if args.db == int(load_serving()["step6"]["databases"]["loaded_store"]):
+        raise SystemExit("database 0 holds the loaded store; a drift replay never writes it")
+    want = DRIFT_DATABASES[bool(args.shift)]
+    if args.db != want:
+        raise SystemExit(f"the {drift_tag(bool(args.shift))} drift replay goes to database {want}")
+
+
+def require_empty_database(r, database: int) -> None:
+    """A drift replay writes only a database that holds nothing: it never overwrites an earlier
+    replay's store; the user clears a database first."""
+    found = int(r.dbsize())
+    if found:
+        raise SystemExit(
+            f"database {database} holds {found} keys; clear it first (ask the user), "
+            "a drift replay does not overwrite a store"
+        )
+
+
+def drift_replay_cmd(args, gather=gather_replay) -> int:
+    """One full-speed replay of October 2016 into database 1 (unshifted) or 2 (--shift: the
+    listening events halved), kept for the drift report. Not a mark: the event count is
+    reported against the registered one for sanity."""
+    check_drift_replay_args(args)
+    shift = bool(args.shift)
+    repo, path, t0 = begin(args, drift_report_name(shift))
+    g = gather(args)
+    require_empty_database(g["r"], args.db)
+    report, _ = replay.run(
+        g["r"], args.db, g["folder"], g["cfg"], g["members"], g["is_scored"], g["c01"],
+        g["seed"], g["columns"], g["main"], drift_table_path(shift), shift=shift,
+        progress=path.with_name(path.stem + "_progress.jsonl"),
+    )  # fmt: skip
+    report["models_version"] = g["models_version"]
+    report["not_a_mark"] = "a replay kept for the drift report (configs/ops.yaml, R1)"
+    report["event_count_check"] = {
+        "registered": replay.EXPECTED_EVENTS,
+        "produced": report["produced"],
+        "consumed": report["consumed"],
+        "equal": report["produced"] == report["consumed"] == replay.EXPECTED_EVENTS,
+    }
+    finish(report, repo, path, t0)
+    return 0 if report["event_count_check"]["equal"] else 1
+
+
 def to_percent_of(fraction) -> int:
     from retention.data.sample import resolve_fraction, to_percent
 
@@ -413,6 +481,10 @@ def main(argv: list[str] | None = None) -> int:
     rp.add_argument("--speed", choices=["full", "throttled"], required=True)
     rp.add_argument("--bucket", type=int, action="append", default=None)
     rp.add_argument("--rerun-reason", default=None)
+    dp = sub.add_parser("drift-replay", help="a replay kept for the drift report (R1, A15)")
+    dp.add_argument("--fraction", type=float, default=None)
+    dp.add_argument("--db", type=int, required=True)
+    dp.add_argument("--shift", action="store_true", help="halve the listening events")
     args = parser.parse_args(argv)
     if args.command == "recount":
         return recount_cmd(args)
@@ -420,6 +492,8 @@ def main(argv: list[str] | None = None) -> int:
         return cancel_ids_cmd(args)
     if args.command == "replay":
         return replay_cmd(args)
+    if args.command == "drift-replay":
+        return drift_replay_cmd(args)
     return stream_parity_cmd(args)
 
 

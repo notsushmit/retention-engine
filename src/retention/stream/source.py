@@ -239,16 +239,39 @@ def keyed(
         yield sort_key(src, row), src.name, row
 
 
+LISTENING_COUNTS = ("num_25", "num_50", "num_75", "num_985", "num_100", "num_unq")
+
+
+def halve_listening(row: dict[str, Any]) -> dict[str, Any]:
+    """The registered drift shift (configs/ops.yaml, drift.shift.rule): total_secs times 0.5,
+    and each count halved and rounded down. A missing value stays missing; nothing else
+    changes."""
+    out = dict(row)
+    if out.get("total_secs") is not None:
+        out["total_secs"] = out["total_secs"] * 0.5
+    for c in LISTENING_COUNTS:
+        if out.get(c) is not None:
+            out[c] = int(out[c]) // 2
+    return out
+
+
 def events(
     folder: Path,
     lo: date = FIRST_DAY,
     hi: date = STORE_DATE,
     ceiling: date = STORE_DATE,
     bucket: Buckets = None,
+    shift: bool = False,
 ) -> Iterator[dict[str, Any]]:
-    """The replay's events, numbered from 1 in the registered order."""
+    """The replay's events, numbered from 1 in the registered order.
+
+    With `shift`, the listening events (the user_logs rows) are halved after the order and the
+    numbers are fixed, so the event count, the order and the numbering do not change; transaction
+    events are never touched (configs/ops.yaml, drift.shift)."""
     streams = [keyed(s, lo, hi, ceiling, bucket) for s in sources(folder)]
     for seq, (_, name, row) in enumerate(heapq.merge(*streams, key=lambda x: x[0]), start=1):
+        if shift and name == "user_logs":
+            row = halve_listening(row)
         yield {"seq": seq, "source": name, **row}
 
 

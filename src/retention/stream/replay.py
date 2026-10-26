@@ -154,6 +154,7 @@ def run(
     n_chunks: int = move.WORK_CHUNKS,
     keep_link: bool = False,
     progress: Path | None = None,
+    shift: bool = False,
 ) -> tuple[dict[str, Any], move.MoveResult]:
     """One replay into `database`: its report (counts, times, memory; no customer ID) and
     the move's result. Steps are timed under step_seconds and the process's running peak
@@ -210,7 +211,9 @@ def run(
     lap("bootstrap")
     move.write_bootstrap_timelines(r, cfg, work, n_chunks)
     lap("bootstrap_timelines")
-    produced = producer.produce(r, source.events(folder, bucket=bucket), throttled=throttled)
+    produced = producer.produce(
+        r, source.events(folder, bucket=bucket, shift=shift), throttled=throttled
+    )
     lap("produce")
     consumed = c.consume()
     lap("consume")
@@ -231,6 +234,7 @@ def run(
     known = written["known"]
     return {
         "database": database,
+        "shift": "listening halved (configs/ops.yaml, drift.shift)" if shift else None,
         "speed": "throttled" if throttled else "full",
         "bucket": list(bucket) if isinstance(bucket, tuple) else bucket,
         "chunks": n_chunks,
