@@ -2,7 +2,7 @@
 
 > Replay of 2016 data, not real-time.
 
-The dashboard is a Streamlit app (`dashboard/`, started with `make dashboard` on 127.0.0.1:8501). Its settings are registered in `configs/dashboard.yaml` before any code that uses them; the later keys C1 to C4 change earlier entries without editing them. It reads only the scoring API, through one client that refuses any host other than loopback and any call other than the seven listed below, with a 10-second timeout (30 seconds for `GET /summary`). It imports no store client, no data reader and no project package; `tests/test_dashboard_isolation.py` fails if one appears.
+The dashboard is a Streamlit app (`dashboard/`). It runs as the `dashboard` service of the compose stack (`make up`, 127.0.0.1:8501), or from the working tree with `make dashboard`. Its settings are registered in `configs/dashboard.yaml` before any code that uses them; the later keys C1 to C4 change earlier entries without editing them. It reads only the scoring API, through one client that refuses any host other than loopback and any call other than the eight listed below, with a 10-second timeout (30 seconds for `GET /summary`). It imports no store client, no data reader and no project package; `tests/test_dashboard_isolation.py` fails if one appears.
 
 Every page carries the same frame: the application name in a header bar, the replay banner above, the breadcrumb, the store date line ("one date per loaded snapshot; no daily dates"), the replay progress ("no replay running" when no replay runs) and the four fixed disclaimers of the scoring service at the foot. When the service is not ready, the page shows the reason from `GET /health` in place of every number.
 
@@ -14,7 +14,7 @@ Every page carries the same frame: the application name in a header bar, the rep
 | At-risk list | `GET /at-risk` | the ranking at 7, 30 or 59 days in the API's order, the auto_renew and in_plan filters, pages of up to 1,000 rows and a CSV of the displayed rows with the store date and horizon |
 | Customer profile | `POST /score` | the three probabilities (the 59-day one as a demonstration), the two reasons, expected paid days and the action block with every label; the outside-population and not-active answers as served |
 | Action planner | `GET /plans` | the plans precomputed in Phase 7 for the store's date at every registered budget level, the strategy comparison with its registered caption and the random strategy's spread; nothing calls an optimizer |
-| Model health | `GET /health`, `GET /model` | the model version, the eight file hashes, the config hash and the calibration table before and after the ordering fix at 7 and 30 days; "drift: not monitored (Phase 10)" |
+| Model health | `GET /health`, `GET /model`, `GET /drift` | the model version, the eight file hashes, the config hash and the calibration table before and after the ordering fix at 7 and 30 days; "drift: not monitored (Phase 10)" unless a drift file is present, in which case the drift panel from `GET /drift` (drift shown on synthetic data only, never on KKBox) |
 
 The three expected counts come from the final probabilities of the scored customers only: the sum of p7, of p30 - p7 and of p59 - p30. No survival curve is used. Each share is the expected count divided by the number of scored customers (C5): an expected share, not a share of named people.
 

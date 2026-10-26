@@ -59,14 +59,13 @@ The repository holds code, configs and docs, not data. These commands assume the
 uv sync --group dev --group training --group api --group dashboard
 make up
 uv run python -m retention.api load-snapshot --snapshot 2016-11-01
-make dashboard
 make test
 ```
 
 - `uv sync` needs [uv](https://docs.astral.sh/uv/); it installs Python 3.11 and every dependency from `uv.lock`.
-- `make up` needs Docker; it starts Valkey on 127.0.0.1:6379 and the scoring API on 127.0.0.1:8000.
+- `make up` needs Docker; it starts the whole stack with one command: Valkey on 127.0.0.1:6379, the scoring API on 127.0.0.1:8000 and the dashboard on 127.0.0.1:8501. The dashboard reads only the API, at the service address `http://api:8000`, and shows why when the service is not ready.
 - `load-snapshot` needs the processed 20% sample and the registered models; Valkey stores nothing on disk, so after any restart the store is empty, and a load after the first one needs `--reload-reason "<why>"`.
-- `make dashboard` needs the API to be ready; it serves the dashboard on 127.0.0.1:8501 only.
+- `make dashboard` runs the same app from the working tree instead of the container; it needs the API to be ready and serves 127.0.0.1:8501 only, so stop the container first.
 - `make test` runs ruff and pytest; tests that need the local data skip without it.
 
 ## Architecture
@@ -86,6 +85,7 @@ flowchart LR
   subgraph compose["Docker compose stack"]
     valkey["Valkey store"]
     api["Scoring API (FastAPI)"]
+    dashboard["Dashboard (Streamlit)"]
   end
   features --> valkey
   replay --> valkey
@@ -94,10 +94,10 @@ flowchart LR
   reasons --> api
   optimizer --> api
   trends --> api
-  api --> dashboard["Dashboard (Streamlit)"]
+  api --> dashboard
 ```
 
-The raw KKBox files are downloaded from Kaggle, sampled to 20% of customers and typed. Churn labels are built from each customer's membership timeline, and a feature table describes each customer at each monthly snapshot using only rows dated before it. A LightGBM classifier gives the 7, 30 and 59-day probabilities (the 59-day one is a demonstration), a discrete-time survival model gives the shape of the curve used for value, and Platt calibration with an ordering fix makes the three probabilities consistent. The reasons come from the classifier's per-feature contributions; trend alerts come from change points in the weekly churn rate; the treatment-effect work validated its method on two public randomized datasets but found no usable KKBox effect, so the budget optimizer uses assumed effects. The models are registered in MLflow, and the scoring API, running beside a Valkey store in a Docker Compose stack, loads them by alias. Valkey also carries the replay stream that feeds recorded 2016 rows through the service. The dashboard reads only the scoring API.
+The raw KKBox files are downloaded from Kaggle, sampled to 20% of customers and typed. Churn labels are built from each customer's membership timeline, and a feature table describes each customer at each monthly snapshot using only rows dated before it. A LightGBM classifier gives the 7, 30 and 59-day probabilities (the 59-day one is a demonstration), a discrete-time survival model gives the shape of the curve used for value, and Platt calibration with an ordering fix makes the three probabilities consistent. The reasons come from the classifier's per-feature contributions; trend alerts come from change points in the weekly churn rate; the treatment-effect work validated its method on two public randomized datasets but found no usable KKBox effect, so the budget optimizer uses assumed effects. The models are registered in MLflow, and the scoring API, running beside a Valkey store in a Docker Compose stack, loads them by alias. Valkey also carries the replay stream that feeds recorded 2016 rows through the service. The dashboard reads only the scoring API and runs as the third service of the same compose stack.
 
 ## Tech stack
 
@@ -115,7 +115,7 @@ The raw KKBox files are downloaded from Kaggle, sampled to 20% of customers and 
 | FastAPI, Pydantic, Uvicorn | the scoring API and its response schemas | `src/retention/api` |
 | Valkey (redis client) | the scoring store and the replay stream | `src/retention/api/store.py`, `src/retention/stream`, `docker-compose.yml` |
 | Streamlit, Altair, httpx | the dashboard, its charts, its API client | `dashboard/` |
-| Docker Compose | the Valkey and API stack | `docker-compose.yml`, `Dockerfile` |
+| Docker Compose | the Valkey, API and dashboard stack | `docker-compose.yml`, `Dockerfile` |
 | pytest, ruff, pre-commit, GitHub Actions | tests, linting, CI | `tests/`, `.pre-commit-config.yaml`, `.github/workflows/ci.yml` |
 
 ## How it was built
@@ -132,6 +132,7 @@ The raw KKBox files are downloaded from Kaggle, sampled to 20% of customers and 
 | 7 | the budget optimizer under assumed effects, with a strategy backtest | [strategy backtest](reports/strategy_backtest.md) |
 | 8 | the replay stream, the scoring API and the Docker stack | [scoring API](docs/scoring_api.md), [serving parity](reports/serving_parity.md) |
 | 9 | the dashboard | [dashboard](docs/dashboard.md) |
+| 10 | a synthetic dataset and path, drift demonstrated on synthetic data only, the dashboard as a compose service, CI workflows, a model card | [model card](docs/model_card.md) |
 
 Every phase was registered before it ran. Pass marks, populations and settings were written to a config file and committed alone before any code or run they judge, and they were never edited after a result was seen. A mark that failed is reported as not met. When a rule turned out to be wrong, the change was added as a labelled amendment that says whether it was written before or after the result, and the original result stays on record; HTTP parity under amendment A10, written after the 996 of 1,000 result, is one example. Every number in a report or doc comes from a logged run, and tests check the public texts against those numbers and against the wording rules.
 
@@ -169,8 +170,8 @@ Unverified: `ps` showed Docker's VM process at 9.83 GB resident, above the VM's 
 - Plans exist for two dates only (2016-10-01 and 2016-11-01), and nothing is re-planned.
 - Every action effect is an assumption, because no KKBox discount effect was identified; the plan is unstable under 5 of 11 variants.
 - Every 59-day probability is a demonstration: no validation fold chose that model's settings.
-- Drift is not monitored, and the models are not retrained.
-- There is no hosted demo. Capture mode (`?capture=1`) hides customer IDs from screenshots but is not access control, so the dashboard must never be hosted with customer rows.
+- Drift is demonstrated on synthetic data only, never on KKBox, and the models are not retrained: the retraining flow is not built. See the [model card](docs/model_card.md).
+- There is no public site or server for this project. The real stack needs the KKBox data, which anyone using it must download from Kaggle under the competition rules (see [Full setup](#full-setup)). Capture mode (`?capture=1`) hides customer IDs from screenshots but is not access control, so the dashboard must never be hosted with customer rows.
 - The scores cover only paying customers expiring within 30 days: the Overview tile "Expiring more than 30 days ahead" shows 22%: 51,692 of the 230,286 customers with coverage on 2016-11-01 get no score. With the trial-only and promo-only customers, the customers outside the population are 60,613 of the same 230,286, about 26%.
 
 ## Full setup
@@ -186,13 +187,12 @@ The data comes from Kaggle with the Kaggle CLI (`make data`); it is competition 
 | `make labels` | typed tables, timelines, data-quality check, churn labels, comparison with the competition labels |
 | `make test` | ruff check, ruff format check, pytest |
 | `make features` | leakage-safe feature table for every labelled snapshot (docs/features.md) |
-| `make train` | Phase 3 (not yet implemented) |
-| `make up` | starts Valkey and the scoring API (docker compose), then prints `/health` |
+| `make train` | a placeholder that prints a message and exits with an error; the models are built by the stages of `python -m retention.models` (see the model comparison report) |
+| `make up` | starts Valkey, the scoring API and the dashboard (docker compose), then prints `/health` |
 | `make down` | stops them |
-| `make dashboard` | serves the dashboard on 127.0.0.1:8501, reading only the API |
-| `make dashboard` | serves the dashboard on 127.0.0.1:8501, reading only the API |
+| `make dashboard` | runs the dashboard from the working tree on 127.0.0.1:8501, reading only the API |
 
-What each step needs: `make data` needs the Kaggle credentials and about 14 GB of disk for the 20% sample; the label, feature and model steps run on a laptop, each limited by a registered memory ceiling of 10 GB; `make up` needs Docker, with the API container limited to 1.5 GiB; every step runs once, at a clean commit.
+What each step needs: `make data` needs the Kaggle credentials and about 14 GB of disk for the 20% sample; the label, feature and model steps run on a laptop, each limited by a registered memory ceiling of 10 GB; `make up` needs Docker, with the API container limited to 1.5 GiB and the dashboard container to 512 MiB (my unvalidated choice); every step runs once, at a clean commit.
 
 ## Repository layout
 
@@ -201,7 +201,7 @@ configs/        registered settings and pass marks (one file per area)
 src/retention/  the pipeline, one package per stage: data, labels, features, models, explain, trends, the treatment-effect work, optimize, stream, api
 dashboard/      the Streamlit app, its theme and the self-hosted fonts
 tests/          pytest suite, including the wording and number checks of the public texts
-docs/           method and design notes, setup, the scoring API, the dashboard
+docs/           method and design notes, setup, the scoring API, the dashboard, the model card
 reports/        results generated from logged runs
 data/           local data only, ignored by git
 ```

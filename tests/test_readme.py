@@ -26,6 +26,7 @@ LISTED = {
     "26": "60,613 / 230,286 = 26.3%, rounded",
     "1.1": "the SIL Open Font License version, read from each OFL.txt in dashboard/static/fonts",
     "2018": "the competition's name, WSDM Cup 2018 (configs/kkbox.yaml names the competition)",
+    "512": "the dashboard container's memory limit in docker-compose.yml (my choice)",
 }
 # Every node of the diagram, and the file or folder it stands for.
 COMPONENTS = {
@@ -200,7 +201,7 @@ def test_every_tool_in_the_stack_is_in_the_lock_or_the_container_files():
 
 def test_the_build_table_has_one_line_per_phase():
     rows = re.findall(r"^\| (\d+) \|", section("How it was built"), flags=re.M)
-    assert rows == [str(i) for i in range(10)]
+    assert rows == [str(i) for i in range(11)]
     for link in re.findall(r"\]\(((?:docs|reports)/[^)]+)\)", section("How it was built")):
         assert Path(link).is_file(), link
 
@@ -234,8 +235,8 @@ def test_the_readme_claims_no_deployment():
     [
         "Plans exist for two dates only",
         "Every 59-day probability is a demonstration",
-        "Drift is not monitored",
-        "There is no hosted demo",
+        "Drift is demonstrated on synthetic data only, never on KKBox",
+        "There is no public site or server for this project",
     ],
 )
 def test_the_limitations_are_stated(line):
