@@ -12,6 +12,7 @@ REGISTRATIONS = {
     "e583248": "b76b9ba9d7032b05ffd31adcd1bcdb3722a01937dfa1c724745f02dce5a23622",  # A13
     "e1707c7": "0b68e3bb21b9516db4651068e97c7b272bc2616d2571e9969dbaed41e50824a2",  # A14
     "ab1b23f": "c182aa40cbb24860a05a62f53abfb08b4a5cf2c6a79db5be06a5a0ed666c48a8",  # A15
+    "6853e38": "e4cfbb51ccc0638b73c0b4dde1c7a596258c15301059a79f669bfb58acf194f9",  # A16
 }
 
 
@@ -78,3 +79,20 @@ def test_a15_adds_a_group_mark_and_replaces_nothing():
     assert c["drift"]["pass_marks"]["alert_rule"] == "the shifted store raises the alert"
     assert c["drift"]["pass_marks"]["margin_rule"]["margin"] == 0.20
     assert "NOT MET on synthetic data" in a["unchanged"]["dataset_level_alert"]
+
+
+def test_a16_records_what_was_not_run_and_never_as_met():
+    with open(OPS) as f:
+        a = yaml.safe_load(f)["amendment_A16"]
+    n = a["not_run"]
+    assert n["real_drift_replays"]["status"] == "NOT RUN"
+    assert n["retraining_flow"]["status"] == n["real_retraining_run"]["status"] == "NOT DONE"
+    assert n["embedding_origins"]["status"] == n["ops_folder_mount"]["status"] == "NOT DONE"
+    assert n["unshifted_365_day_columns"]["status"] == "not tested"
+    assert "0.2979" in n["real_drift_replays"]["drift_evidence"]
+    assert "synthetic data only, never on KKBox" in n["real_drift_replays"]["drift_evidence"]
+    assert a["reinstated"]["what"].startswith(
+        "the dashboard environment variable RETENTION_API_ALLOW_HOST"
+    )
+    assert "RETENTION_DEMO_LABEL" in a["reinstated"]["unchanged"]
+    assert "not changed" in a["dashboard_service"]["condition"]
