@@ -306,3 +306,46 @@ amendment_A15:
     neither_replaces_the_other: true
     label: "Group-level mark: added after a result was seen; unvalidated."  # printed beside the group-level result
   synthetic: the group mark is not applied to the synthetic run
+
+# --- A16: what is not run, and the dashboard as a compose service (a new key; nothing above is edited) -------------
+amendment_A16:
+  id: A16
+  date: "2026-10-26"
+  label: >-
+    written at the user's instruction to close Phase 10 early; A15 is already taken by the
+    group-level mark, so this entry is A16; no code is written for any item in not_run
+  not_run:  # each is recorded as "not run" or "not done", never as met
+    real_drift_replays:
+      status: NOT RUN
+      what: the shifted and unshifted replays of October 2016 on the 20% sample and the drift report on them
+      why: closed early at the user's instruction; the code exists and is tested on synthetic and tiny data only (the A15 group-level mark is therefore also not run)
+      drift_evidence: >-
+        drift is demonstrated on synthetic data only, never on KKBox; on synthetic data the
+        dataset-level alert rule was NOT MET (shifted share 0.2979, below 0.5) and the margin
+        rule was met (0.2553 against 0.20)
+    retraining_flow:
+      status: NOT DONE
+      what: the Prefect retraining flow of R2 (labels, features, train, evaluate, register)
+    real_retraining_run:
+      status: NOT DONE
+      what: the one retraining run on the 20% sample and the use of the check month under A12 (the check month 2016-11-01 therefore stays unseen)
+    embedding_origins:
+      status: NOT DONE
+      what: the explicit Streamlit embedding origins of C8 (client.allowedOrigins)
+    ops_folder_mount:
+      status: NOT DONE
+      what: the read-only ops-folder mount of R4 in the API's compose definition; GET /drift on the running API therefore answers "not monitored"
+    unshifted_365_day_columns:
+      status: not tested
+      what: >-
+        why n_paid_365 and n_txn_365 drift without the shift on synthetic data; only the premise
+        (the 365-day window never truncates in the 12-month synthetic data) was tested
+  reinstated:  # supersedes only the A14 drop of this one variable, for the compose dashboard service
+    what: the dashboard environment variable RETENTION_API_ALLOW_HOST of C8 (exact value "api", otherwise loopback only)
+    why: the dashboard becomes a service of the real compose stack and reaches the API at the service address http://api:8000
+    unchanged: RETENTION_DEMO_LABEL and the demo profile stay dropped
+  dashboard_service:
+    what: the dashboard image as a service of the real compose stack, on the normal port 127.0.0.1:8501
+    reads: only the scoring API, at the service address
+    condition: the api and valkey service definitions are not changed, so adding the service does not recreate them
+    claims: no hosting claim; the real stack needs the KKBox data
