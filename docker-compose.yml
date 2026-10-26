@@ -1,4 +1,5 @@
-# The scoring stack (configs/serving.yaml, step7): Valkey and the API, host loopback only.
+# The scoring stack (configs/serving.yaml, step7): Valkey and the API, host loopback only, and
+# the dashboard (configs/ops.yaml, A16), which reads only the API at http://api:8000.
 # The store is loaded from the host with load-snapshot into 127.0.0.1:6379.
 name: retention-engine
 
@@ -52,3 +53,32 @@ services:
       timeout: 6s
       retries: 6
       start_period: 60s
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    image: retention-dashboard:phase10
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      RETENTION_API_URL: http://api:8000
+      RETENTION_API_ALLOW_HOST: api  # exactly "api": the client accepts that one host besides loopback
+    ports:
+      - "127.0.0.1:8501:8501"
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 512m  # my unvalidated choice; the dashboard process used about 150 MiB on the host
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=5)"
+      interval: 10s
+      timeout: 6s
+      retries: 6
+      start_period: 30s

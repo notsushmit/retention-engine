@@ -5,6 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+import dashboard.client as dc
 from dashboard.client import ApiError, Client, Refused, check_url
 from dashboard.settings import load
 from dashboard_fake import FakeApi, client, not_ready
@@ -97,3 +98,52 @@ def test_at_risk_drops_unset_filters():
         "offset": "0",
         "in_plan": "true",
     }
+
+
+# --- the compose service host (C8, reinstated by A16) ---
+
+
+def test_loopback_is_the_default_and_the_service_host_is_refused_without_the_variable(monkeypatch):
+    monkeypatch.delenv("RETENTION_API_ALLOW_HOST", raising=False)
+    assert dc.allowed_hosts() == dc.LOOPBACK
+    assert dc.check_url("http://127.0.0.1:8000") == "http://127.0.0.1:8000"
+    with pytest.raises(Refused):
+        dc.check_url("http://api:8000", dc.allowed_hosts())
+
+
+def test_the_service_host_is_accepted_only_when_the_variable_is_exactly_api(monkeypatch):
+    monkeypatch.setenv("RETENTION_API_ALLOW_HOST", "api")
+    hosts = dc.allowed_hosts()
+    assert hosts == dc.LOOPBACK | {"api"}
+    assert dc.check_url("http://api:8000", hosts) == "http://api:8000"
+    assert dc.check_url("http://localhost:8000", hosts)  # loopback stays allowed
+    for third in ("http://example.com:8000", "http://api.example.com:8000", "http://10.0.0.5:8000"):
+        with pytest.raises(Refused):
+            dc.check_url(third, hosts)
+
+
+@pytest.mark.parametrize(
+    "value", ["", "API", "api.example.com", "api,localhost", "10.0.0.5", " api"]
+)
+def test_any_other_value_of_the_variable_stops_startup(monkeypatch, value):
+    monkeypatch.setenv("RETENTION_API_ALLOW_HOST", value)
+    with pytest.raises(Refused, match="must be unset or exactly 'api'"):
+        Client("http://127.0.0.1:8000", transport=httpx.MockTransport(FakeApi()))
+
+
+def test_a_third_host_is_refused_with_and_without_the_variable(monkeypatch):
+    for value in (None, "api"):
+        if value is None:
+            monkeypatch.delenv("RETENTION_API_ALLOW_HOST", raising=False)
+        else:
+            monkeypatch.setenv("RETENTION_API_ALLOW_HOST", value)
+        with pytest.raises(Refused):
+            Client("http://example.com:8000", transport=httpx.MockTransport(FakeApi()))
+
+
+def test_the_client_built_for_the_compose_service_reaches_the_api_host(monkeypatch):
+    monkeypatch.setenv("RETENTION_API_ALLOW_HOST", "api")
+    monkeypatch.setenv("RETENTION_API_URL", "http://api:8000")
+    c = Client(transport=httpx.MockTransport(FakeApi()))
+    assert c.base_url == "http://api:8000"
+    assert c.health()["ready"] is True

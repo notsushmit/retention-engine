@@ -1,6 +1,7 @@
 """The dashboard's only data source: the scoring API over HTTP (configs/dashboard.yaml source).
 
-The client refuses any host other than loopback, allows only the registered calls,
+The client refuses any host other than loopback (and, only when RETENTION_API_ALLOW_HOST is
+exactly "api", the compose service host "api"), allows only the registered calls,
 and uses the registered timeouts (10 s; 30 s for GET /summary, C1). An answer other
 than 200 becomes ApiError with the API's own detail and reason; GET /health also
 returns its 503 body, which says why the service is not ready.
@@ -9,6 +10,7 @@ returns its 503 body, which says why the service is not ready.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -29,10 +31,24 @@ class Refused(ValueError):
     """A call or a host the registered source does not allow."""
 
 
-def check_url(url: str) -> str:
+def allowed_hosts(settings: Settings | None = None, environ: Mapping[str, str] | None = None):
+    """Loopback only, unless RETENTION_API_ALLOW_HOST is exactly "api" (configs/dashboard.yaml,
+    C8, reinstated by configs/ops.yaml A16 for the compose dashboard service): then the host
+    "api", the compose service name of the API, is also allowed and no other. Any other value,
+    an empty one included, stops the app at startup."""
+    cfg = (settings or load()).raw["ops_dashboard"]["api_host_in_container"]
+    value = (os.environ if environ is None else environ).get(cfg["env"])
+    if value is None:
+        return LOOPBACK
+    if value != cfg["accepted_value"]:
+        raise Refused(f"{cfg['env']} must be unset or exactly {cfg['accepted_value']!r}")
+    return LOOPBACK | {value}
+
+
+def check_url(url: str, hosts: set[str] | frozenset[str] = LOOPBACK) -> str:
     parts = urlsplit(url)
-    if parts.scheme not in ("http", "https") or parts.hostname not in LOOPBACK:
-        raise Refused(f"the API URL must be on loopback: {url!r}")
+    if parts.scheme not in ("http", "https") or parts.hostname not in hosts:
+        raise Refused(f"the API URL must be on {', '.join(sorted(hosts))}: {url!r}")
     return url.rstrip("/")
 
 
@@ -45,7 +61,9 @@ class Client:
     ):
         self.settings = settings or load()
         s = self.settings
-        self.base_url = check_url(base_url or os.environ.get(s.api_env) or s.api_default)
+        self.base_url = check_url(
+            base_url or os.environ.get(s.api_env) or s.api_default, allowed_hosts(s)
+        )
         self._http = httpx.Client(base_url=self.base_url, transport=transport)
 
     def timeout_for(self, path: str) -> float:

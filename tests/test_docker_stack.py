@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -38,8 +39,8 @@ ALLOWED = [
 # --- the compose file ---------------------------------------------------------------------------
 
 
-def test_the_stack_is_valkey_and_the_api():
-    assert sorted(COMPOSE["services"]) == ["api", "valkey"]
+def test_the_stack_is_valkey_the_api_and_the_dashboard():
+    assert sorted(COMPOSE["services"]) == ["api", "dashboard", "valkey"]
 
 
 def test_every_port_is_bound_to_the_host_loopback_only():
@@ -47,6 +48,7 @@ def test_every_port_is_bound_to_the_host_loopback_only():
     assert ports == {
         "valkey": [f"{STEP7['ports']['valkey']}:6379"],
         "api": [f"{STEP7['ports']['api']}:8000"],
+        "dashboard": ["127.0.0.1:8501:8501"],
     }
     assert all(p.startswith("127.0.0.1:") for ps in ports.values() for p in ps)
 
@@ -86,7 +88,7 @@ def test_the_api_mounts_only_mlruns_and_the_four_pinned_files_read_only():
     assert not any("data/raw" in m or ".env" in m or "data/interim" in m for m in mounts)
 
 
-def test_both_services_restart_unless_stopped_and_have_healthchecks():
+def test_every_service_restarts_unless_stopped_and_has_a_healthcheck():
     for s in COMPOSE["services"].values():
         assert s["restart"] == STEP7["restart"] == "unless-stopped"
         assert s["healthcheck"]["test"]
@@ -191,3 +193,42 @@ def test_the_service_loads_from_the_container_s_files_alone(tmp_path, monkeypatc
     assert after == before
     assert schema_version(root / "mlruns" / "mlflow.db") == "dc11669786a5"
     assert ctx.models.version == 1 and ctx.config_sha256
+
+
+# --- the dashboard service (configs/ops.yaml, A16) ---
+
+
+def committed_services(commit: str) -> dict:
+    out = subprocess.run(
+        ["git", "show", f"{commit}:docker-compose.yml"], capture_output=True, text=True, check=True
+    ).stdout
+    return yaml.safe_load(out)["services"]
+
+
+def test_adding_the_dashboard_changes_neither_the_api_nor_the_valkey_definition():
+    """65b08ee is the last commit before the dashboard service: adding a service must not
+    recreate the running containers, so their definitions stay equal to it."""
+    before = committed_services("65b08ee")
+    for name in ("api", "valkey"):
+        assert COMPOSE["services"][name] == before[name], name
+
+
+def test_the_dashboard_is_built_from_its_dockerfile_and_reads_only_the_api():
+    d = COMPOSE["services"]["dashboard"]
+    assert d["build"] == {"context": ".", "dockerfile": "Dockerfile.dashboard"}
+    assert d["environment"] == {
+        "RETENTION_API_URL": "http://api:8000",
+        "RETENTION_API_ALLOW_HOST": "api",
+    }
+    assert d["depends_on"] == {"api": {"condition": "service_healthy"}}
+    assert "volumes" not in d and "env_file" not in d  # no data, no model, no secret reaches it
+    assert "valkey" not in str(d).lower()  # it holds no store client or address
+
+
+def test_the_dashboard_is_read_only_loopback_only_and_limited():
+    d = COMPOSE["services"]["dashboard"]
+    assert d["read_only"] is True and d["tmpfs"] == ["/tmp"]
+    assert d["ports"] == ["127.0.0.1:8501:8501"]
+    assert d["mem_limit"] == "512m"
+    script = d["healthcheck"]["test"][-1]
+    assert "http://127.0.0.1:8501/_stcore/health" in script
