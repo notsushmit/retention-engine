@@ -78,15 +78,9 @@ def shift_logs(src: Path, dst: Path, first: date, last: date) -> int:
 
 def daily_events(setup: Setup, month: str) -> pd.Series:
     """Transactions plus listening rows per day of a month (YYYY-MM), zero-filled."""
-    y, m = int(month[:4]), int(month[5:7])
-    lo, hi = y * 10000 + m * 100 + 1, y * 10000 + m * 100 + 31
-    tx, logs = f"{setup.interim}/transactions.parquet", f"{setup.interim}/user_logs.parquet"
-    q = f"""select d, count(*) n from (
-        select transaction_date d from '{tx}' union all select date d from '{logs}')
-        where d between {lo} and {hi} group by d order by d"""
-    counts = duckdb.sql(q).df().set_index("d").n
-    index = [y * 10000 + m * 100 + k for k in range(1, pd.Period(month).days_in_month + 1)]
-    return counts.reindex(index, fill_value=0)
+    return dr.daily_events(
+        [setup.interim / "transactions.parquet"], [setup.interim / "user_logs.parquet"], month
+    )
 
 
 def _reference(setup: Setup, models: dict, cfg: dict[str, Any]) -> tuple[pd.DataFrame, dict]:

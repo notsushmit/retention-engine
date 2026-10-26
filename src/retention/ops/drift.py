@@ -196,6 +196,64 @@ def margin_result(unshifted: dict[str, Any], shifted: dict[str, Any]) -> dict[st
     }
 
 
+GROUP_LABEL = (
+    "Group-level mark: added after a result was seen; unvalidated."  # configs/ops.yaml A15
+)
+
+
+def usage_columns() -> list[str]:
+    """The usage-group columns among the 47 compared (23)."""
+    from retention.features.spec import FEATURE_COLUMNS
+
+    cols = [c for c in compared_columns()[:-3] if FEATURE_COLUMNS[c] == "usage"]
+    if len(cols) != 23:
+        raise ValueError(f"{len(cols)} usage columns among the compared, A15 names 23")
+    return cols
+
+
+def group_mark(unshifted: dict[str, Any], shifted: dict[str, Any]) -> dict[str, Any]:
+    """The group-level mark of amendment A15 (real replay only, unvalidated): the share of the
+    23 usage columns that drift in the shifted replay is at least the library's own default
+    dataset share (0.5), and the registered margin rule holds. Neither replaces the dataset-level
+    result of `margin_result`."""
+    group = usage_columns()
+    drifted = [c["column"] for c in shifted["columns"] if c["column"] in group and c["drifted"]]
+    share = len(drifted) / len(group)
+    rule = library_defaults()["dataset_drift_share"]
+    margin = margin_result(unshifted, shifted)
+    return {
+        "group": "usage",
+        "group_columns": len(group),
+        "drifted_in_group": len(drifted),
+        "drifted_columns": sorted(drifted),
+        "share": share,
+        "rule_share": rule,
+        "group_rule_met": bool(share >= rule),
+        "margin_rule_met": margin["margin_met"],
+        "met": bool(share >= rule and margin["margin_met"]),
+        "unvalidated": True,
+        "label": GROUP_LABEL,
+    }
+
+
+def daily_events(transactions: list[Path], logs: list[Path], month: str) -> pd.Series:
+    """Transaction rows plus listening rows per day of a month (YYYY-MM), zero-filled; the
+    files hold YYYYMMDD integers in transaction_date and date."""
+    import duckdb
+
+    y, m = int(month[:4]), int(month[5:7])
+    lo, hi = y * 10000 + m * 100 + 1, y * 10000 + m * 100 + 31
+    parts = [f"select transaction_date d from '{p}'" for p in transactions]
+    parts += [f"select date d from '{p}'" for p in logs]
+    sql = (
+        f"select d, count(*) n from ({' union all '.join(parts)}) "
+        f"where d between {lo} and {hi} group by d order by d"
+    )
+    counts = duckdb.sql(sql).df().set_index("d").n
+    index = [y * 10000 + m * 100 + k for k in range(1, pd.Period(month).days_in_month + 1)]
+    return counts.reindex(index, fill_value=0)
+
+
 def batch_size_indicator(reference_days: pd.Series, current_days: pd.Series) -> dict[str, Any]:
     """Events per day against mean +/- 3 sample standard deviations of the reference days."""
     mean, sd = float(reference_days.mean()), float(reference_days.std(ddof=1))
