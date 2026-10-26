@@ -6,6 +6,7 @@ Hand-made data only; the Valkey test database (15) stands in for databases 1 and
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -210,3 +211,50 @@ def test_a_wrong_event_count_is_reported_and_not_clean(quiet, monkeypatch):  # n
 def test_the_parity_report_names_are_not_used_by_the_drift_replays():
     assert cli.drift_report_name(False) != cli.replay_name(args(bucket=None, speed="full"))
     assert parity  # the parity module is imported to show the two paths share no name
+
+
+# --- drift-clear ---------------------------------------------------------------------------------
+
+
+class FakeDb:
+    def __init__(self, database, keys=7):
+        self.database, self.keys, self.flushed = database, keys, False
+
+    def client_info(self):
+        return {"db": self.database}
+
+    def dbsize(self):
+        return 0 if self.flushed else self.keys
+
+    def flushdb(self):
+        self.flushed = True
+
+
+@pytest.mark.parametrize("db", [1, 2])
+def test_drift_clear_flushes_the_drift_database_and_reports_the_count(db, capsys):
+    r = FakeDb(db)
+    assert cli.drift_clear_cmd(SimpleNamespace(db=db), client=r) == 0
+    assert r.flushed
+    assert json.loads(capsys.readouterr().out) == {"database": db, "keys_removed": 7, "keys_now": 0}
+
+
+@pytest.mark.parametrize(
+    ("db", "message"),
+    [
+        (0, "database 0 holds the loaded store"),
+        (3, "clears database 1 or 2 only"),
+        (15, "1 or 2 only"),
+    ],
+)
+def test_drift_clear_never_touches_database_0_or_another_one(db, message):
+    r = FakeDb(db)
+    with pytest.raises(SystemExit, match=message):
+        cli.drift_clear_cmd(SimpleNamespace(db=db), client=r)
+    assert not r.flushed
+
+
+def test_drift_clear_refuses_a_client_that_is_on_database_0_whatever_was_asked():
+    r = FakeDb(0)
+    with pytest.raises(PermissionError):
+        cli.drift_clear_cmd(SimpleNamespace(db=1), client=r)
+    assert not r.flushed

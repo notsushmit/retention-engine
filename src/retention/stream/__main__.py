@@ -14,6 +14,8 @@ R1 and A15): database 1 unshifted, database 2 with the listening events halved. 
 0, a database that holds any key (it never overwrites a store; the user clears first), a dirty
 tree and a second run. Not a mark; the event count is reported against the registered one.
 
+drift-clear --db 1|2: FLUSHDB on that database only (never 0, never another); the user asks for it.
+
 stream-parity --db <replay database>: judge the registered feature and score parity of
 the replayed 2016-11-01 store (configs/serving.yaml, streaming.pass_marks, amendment
 A9): the stream feature table at step6.outputs.stream_features against features.parquet
@@ -401,6 +403,24 @@ def drift_replay_cmd(args, gather=gather_replay) -> int:
     return 0 if report["event_count_check"]["equal"] else 1
 
 
+def drift_clear_cmd(args, client=None) -> int:
+    """FLUSHDB on database 1 or 2 (the drift replays' databases) and nothing else: never database
+    0, never another database. The user asks for it each time; it removes the replay's store."""
+    if args.db == int(load_serving()["step6"]["databases"]["loaded_store"]):
+        raise SystemExit("database 0 holds the loaded store; drift-clear never touches it")
+    if args.db not in DRIFT_DATABASES.values():
+        raise SystemExit(
+            f"drift-clear clears database {' or '.join(map(str, DRIFT_DATABASES.values()))} only"
+        )
+    r = client or producer.client_for(args.db)
+    producer.refuse_loaded_store(r)
+    producer.require_database(r, args.db)
+    keys = int(r.dbsize())
+    r.flushdb()
+    print(json.dumps({"database": args.db, "keys_removed": keys, "keys_now": int(r.dbsize())}))
+    return 0
+
+
 def to_percent_of(fraction) -> int:
     from retention.data.sample import resolve_fraction, to_percent
 
@@ -485,6 +505,8 @@ def main(argv: list[str] | None = None) -> int:
     dp.add_argument("--fraction", type=float, default=None)
     dp.add_argument("--db", type=int, required=True)
     dp.add_argument("--shift", action="store_true", help="halve the listening events")
+    dc = sub.add_parser("drift-clear", help="FLUSHDB on database 1 or 2 only")
+    dc.add_argument("--db", type=int, required=True)
     args = parser.parse_args(argv)
     if args.command == "recount":
         return recount_cmd(args)
@@ -494,6 +516,8 @@ def main(argv: list[str] | None = None) -> int:
         return replay_cmd(args)
     if args.command == "drift-replay":
         return drift_replay_cmd(args)
+    if args.command == "drift-clear":
+        return drift_clear_cmd(args)
     return stream_parity_cmd(args)
 
 
