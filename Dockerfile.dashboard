@@ -27,5 +27,7 @@ ENV PATH=/app/.venv/bin:$PATH \
 USER app
 EXPOSE 8501
 # Inside the container the app listens on every interface; the compose file publishes the port
-# on 127.0.0.1 of the host only.
-CMD ["streamlit", "run", "dashboard/app.py", "--server.address", "0.0.0.0", "--server.port", "8501"]
+# on 127.0.0.1 of the host only. --browser.serverAddress is set because Streamlit otherwise asks
+# an outside address-lookup service for the machine's public address at start-up (found in the
+# first container's log, which printed an "External URL"); with it set, no lookup is made.
+CMD ["streamlit", "run", "dashboard/app.py", "--server.address", "0.0.0.0", "--server.port", "8501", "--browser.serverAddress", "localhost"]

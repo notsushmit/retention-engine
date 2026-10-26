@@ -166,6 +166,9 @@ def test_the_dashboard_image_runs_as_a_user_without_secrets_and_binds_inside_onl
     assert re.search(r"^USER app$", text, re.M) and "useradd --system" in text
     assert not re.search(r"(?i)token|password|secret|api_key", text)
     assert '"--server.address", "0.0.0.0"' in text and "EXPOSE 8501" in text
+    # no start-up lookup of the public address: browser.serverAddress is set (Streamlit's own
+    # code skips the lookup when it is)
+    assert '"--browser.serverAddress", "localhost"' in text
 
 
 def test_the_build_context_allows_the_dashboard_and_nothing_under_data():
