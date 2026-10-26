@@ -11,6 +11,7 @@ REGISTRATIONS = {
     "9e0baa3": "15efb202c205998e069d3856463377dc439e163bb10b71f48b910f27c84f93c5",  # R0 to R3
     "e583248": "b76b9ba9d7032b05ffd31adcd1bcdb3722a01937dfa1c724745f02dce5a23622",  # A13
     "e1707c7": "0b68e3bb21b9516db4651068e97c7b272bc2616d2571e9969dbaed41e50824a2",  # A14
+    "ab1b23f": "c182aa40cbb24860a05a62f53abfb08b4a5cf2c6a79db5be06a5a0ed666c48a8",  # A15
 }
 
 
@@ -66,3 +67,14 @@ def test_a14_records_the_hosted_link_as_not_met_and_the_dropped_marks_as_not_run
     assert len(marks) == 5 and all(list(m) == ["the R3 API smoke mark"] for m in marks)
     assert "the synthetic dataset and its small-data path" in a["stays"]
     assert any("images job" in x for x in a["stays"])
+
+
+def test_a15_adds_a_group_mark_and_replaces_nothing():
+    with open(OPS) as f:
+        c = yaml.safe_load(f)
+    a = c["amendment_A15"]
+    assert a["group_mark"]["unvalidated"] is True and "AFTER a result" in a["label"]
+    assert a["reporting"]["neither_replaces_the_other"] is True
+    assert c["drift"]["pass_marks"]["alert_rule"] == "the shifted store raises the alert"
+    assert c["drift"]["pass_marks"]["margin_rule"]["margin"] == 0.20
+    assert "NOT MET on synthetic data" in a["unchanged"]["dataset_level_alert"]
