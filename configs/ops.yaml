@@ -273,3 +273,36 @@ amendment_A14:
     rule: no tracked public file says "demo" or claims a hosted version, a live link or a one-command start
     real_stack: the real stack needs the KKBox data; the README gives the setup steps for someone who has it
     change_due: README.md, in step 7  # the sentence "There is no hosted demo." is the one to reword
+
+# --- A15: a second, group-level mark for the real replay (a new key; nothing above is edited) -------------------
+amendment_A15:
+  id: A15
+  date: "2026-10-26"
+  label: >-
+    written AFTER a result was seen (the dataset-level alert was not met on synthetic data) and
+    before any real replay or any real-sample drift code; unvalidated
+  unchanged:
+    dataset_level_alert: >-
+      drift.pass_marks.alert_rule (the dataset-level alert: the drifted-column share is at or
+      above the library's default of 0.5) is NOT MET on synthetic data (shifted share 0.2979) and
+      stays recorded so; it is not replaced
+    why_hard: >-
+      the shift is confined to the listening columns, which are 23 of the 47 compared columns;
+      23 of 47 is 0.489, below 0.5, so the usage columns alone cannot reach the dataset-level
+      alert and at least one other column must drift too
+  group_mark:
+    scope: the real replay on the 20% sample only
+    group: the 23 columns of the usage feature group among the 47 compared columns
+    rule: >-
+      the share of those 23 columns that drift in the shifted replay is at least 0.5, the
+      library's own default share applied to the group instead of the dataset
+    margin: >-
+      drift.pass_marks.margin_rule still applies unchanged (the shifted dataset-level share
+      exceeds the unshifted one by at least 0.20)
+    met_only_if: both the group rule and the margin rule hold
+    unvalidated: true
+  reporting:
+    both: the real replay report gives the original dataset-level result as registered and the group-level mark, side by side
+    neither_replaces_the_other: true
+    label: "Group-level mark: added after a result was seen; unvalidated."  # printed beside the group-level result
+  synthetic: the group mark is not applied to the synthetic run
