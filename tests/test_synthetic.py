@@ -285,3 +285,36 @@ def test_changing_only_post_snapshot_listening_leaves_the_features_unchanged(sma
     rows, before = _features_with_listening_changed(setup, tmp_path, "before", 20160820, 20160831)
     assert rows > 0
     assert not base[before.columns].equals(before)
+
+
+def test_the_365_day_counts_are_all_time_counts_in_the_synthetic_data(small_run):
+    """The premise of the calendar-growth explanation of the two 365-day columns' drift.
+
+    The synthetic data span 2016-01-01 to 2016-12-31, so the 365 days before every snapshot reach
+    back past the first row: the look-back never truncates, n_txn_365 and n_paid_365 equal the
+    customer's count of all earlier rows, and they can only grow as the snapshot moves later.
+    This tests that premise on the synthetic tables. It does not test that the unshifted drift of
+    those two columns in the drift run is caused by it, and it says nothing about the KKBox data.
+    """
+    import duckdb
+
+    setup, _ = small_run
+    tx = f"'{setup.processed}/transactions.parquet'"
+    feats = f"'{setup.processed}/features.parquet'"
+    q = f"""
+    with t as (select msno, transaction_date d, is_cancel, actual_amount_paid paid from {tx}),
+    f as (select msno, snapshot_date T, n_txn_365, n_paid_365 from {feats})
+    select f.T, f.msno, f.n_txn_365, f.n_paid_365,
+      (select count(*) from t where t.msno = f.msno and t.d < f.T and t.is_cancel = 0) as all_txn,
+      (select count(*) from t where t.msno = f.msno and t.d < f.T and t.d >= f.T - 365
+         and t.is_cancel = 0) as win_txn,
+      (select count(*) from t where t.msno = f.msno and t.d < f.T and t.is_cancel = 0
+         and t.paid > 0) as all_paid
+    from f where f.n_txn_365 is not null
+    """
+    df = duckdb.sql(q).df()
+    assert len(df) > 1000
+    assert (df.all_txn == df.win_txn).all()  # the look-back never truncates
+    assert (df.n_txn_365 == df.win_txn).all() and (df.n_paid_365 == df.all_paid).all()
+    means = df.groupby("T").n_txn_365.mean().sort_index()
+    assert len(means) >= 4 and means.is_monotonic_increasing  # grows as the snapshot moves
